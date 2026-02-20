@@ -42,7 +42,7 @@ Permite a clientes conectar Odoo + Amazon + MercadoLibre en 10 minutos.
 | URL | Descripción | Protección |
 |-----|-------------|------------|
 | `https://meli.goncloud.cc/setup` | Wizard (bloqueado si ya configurado) | Auto-detecta config existente |
-| `https://meli.goncloud.cc/setup/force?secret=goncloud2026` | Wizard forzado | Requiere secret |
+| `https://meli.goncloud.cc/setup/force?secret=<SETUP_SECRET>` | Wizard forzado | Requiere secret |
 | `https://meli.goncloud.cc/mapper` | SKU Mapper (post-setup) | Ninguna |
 
 ### Endpoints API
@@ -50,7 +50,7 @@ Permite a clientes conectar Odoo + Amazon + MercadoLibre en 10 minutos.
 | Endpoint | Método | Descripción |
 |----------|--------|-------------|
 | `/setup` | GET | Sirve wizard HTML (si no configurado) |
-| `/setup/force` | GET | Sirve wizard HTML (requiere `?secret=goncloud2026`) |
+| `/setup/force` | GET | Sirve wizard HTML (requiere `?secret=<SETUP_SECRET>`) |
 | `/setup/api/test-odoo` | POST | Valida credenciales Odoo |
 | `/setup/api/status` | GET | Estado actual (MeLi/Amazon conectados) |
 | `/setup/api/auto-map` | POST | Mapeo automático de SKUs |
@@ -131,7 +131,7 @@ Si **cualquiera** de estas condiciones es verdadera → **bloqueado**.
 
 ### Bypass (Solo Administrador)
 ```
-/setup/force?secret=goncloud2026
+/setup/force?secret=<SETUP_SECRET>
 ```
 
 ---
@@ -324,7 +324,7 @@ curl -s http://localhost:8099/setup | head -5
 
 ### Acceso forzado
 ```bash
-curl -s "http://localhost:8099/setup/force?secret=goncloud2026" | head -5
+curl -s "http://localhost:8099/setup/force?secret=<SETUP_SECRET>" | head -5
 ```
 
 ### Ver estado de conexiones
@@ -374,7 +374,7 @@ cd /mnt/data/appdata/bridge && sudo docker compose restart bridge-api
 
 Usar URL con secret:
 ```
-https://meli.goncloud.cc/setup/force?secret=goncloud2026
+https://meli.goncloud.cc/setup/force?secret=<SETUP_SECRET>
 ```
 
 ### Test Odoo falla pero credenciales son correctas
@@ -448,12 +448,12 @@ Verificar:
 | Aspecto | Protección |
 |---------|------------|
 | Acceso a wizard | Bloqueado si ya hay config |
-| Bypass administrativo | Requiere `?secret=goncloud2026` |
+| Bypass administrativo | Requiere `?secret=<SETUP_SECRET>` |
 | Credenciales Odoo | Guardadas en bridge_settings (no en logs) |
 | Tokens MeLi | En archivo separado `.meli_tokens.json` |
 | Secret del bypass | Cambiar en producción SaaS |
 
-**⚠️ IMPORTANTE:** Cambiar el secret `goncloud2026` antes de deploy SaaS.
+**⚠️ IMPORTANTE:** Cambiar el secret `<SETUP_SECRET>` antes de deploy SaaS.
 
 ---
 
