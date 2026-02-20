@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SKU Mapper - GONCLOUD</title>
+  <style>
+    :root{
+      --bg:#0b1220;
+      --bg2:#101a33;
+      --card:#16244a;
+      --border:#243c72;
+      --text:#eaf0ff;
+      --muted:#a9b8da;
+      --blue:#4f6bd6;
+      --teal:#09c5d1;
+      --yellow:#f4c430;
+      --orange:#f59e0b;
+      --ok:#22c55e;
+      --bad:#ef4444;
+      --r:12px;
+    }
+    *{ box-sizing:border-box; }
+    body{
+      margin:0; padding:18px;
+      font-family: system-ui, -apple-system, sans-serif;
+      color:var(--text);
+      background: linear-gradient(180deg, var(--bg), var(--bg2));
+      min-height:100vh;
+    }
+    .wrap{ max-width:1200px; margin:0 auto; }
+    h1{ margin:0 0 20px; font-size:24px; }
+    
+    /* Tabs */
+    .tabs{ display:flex; gap:10px; margin-bottom:20px; }
+    .tab{
+      padding:12px 24px;
+      border-radius:var(--r) var(--r) 0 0;
+      cursor:pointer;
+      font-weight:700;
+      border:1px solid var(--border);
+      border-bottom:none;
+      background:var(--bg);
+      color:var(--muted);
+      transition: all 0.2s;
+    }
+    .tab:hover{ background:var(--card); }
+    .tab.active{ background:var(--card); color:var(--text); border-color:var(--teal); }
+    .tab.amazon.active{ border-color:var(--orange); }
+    .tab.meli.active{ border-color:var(--yellow); }
+    
+    .panel{ display:none; }
+    .panel.active{ display:block; }
+    
+    /* Cards */
+    .grid{ display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    @media(max-width:900px){ .grid{ grid-template-columns:1fr; } }
+    
+    .card{
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:var(--r);
+      padding:16px;
+    }
+    .card h3{ margin:0 0 12px; font-size:14px; color:var(--muted); }
+    
+    /* Lists */
+    .list{ max-height:400px; overflow-y:auto; }
+    .item{
+      padding:10px;
+      border-radius:8px;
+      cursor:pointer;
+      margin-bottom:4px;
+      font-size:13px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+    }
+    .item:hover{ background:rgba(255,255,255,0.05); }
+    .item.selected{ background:rgba(79,107,214,0.3); border:1px solid var(--blue); }
+    .item .sku{ font-family:monospace; }
+    .item .name{ color:var(--muted); font-size:11px; margin-left:8px; }
+    .item .badge{
+      font-size:10px;
+      padding:2px 6px;
+      border-radius:4px;
+      background:var(--ok);
+      color:#000;
+    }
+    .item .badge.warn{ background:var(--yellow); }
+    .item .badge.bad{ background:var(--bad); }
+    
+    /* Inputs */
+    input[type="text"]{
+      width:100%;
+      padding:10px;
+      border-radius:8px;
+      border:1px solid var(--border);
+      background:var(--bg);
+      color:var(--text);
+      margin-bottom:12px;
+    }
+    input:focus{ outline:none; border-color:var(--teal); }
+    
+    /* Buttons */
+    .btn{
+      padding:10px 16px;
+      border-radius:8px;
+      border:none;
+      cursor:pointer;
+      font-weight:700;
+      font-size:13px;
+    }
+    .btn.primary{ background:var(--teal); color:#000; }
+    .btn.danger{ background:var(--bad); color:#fff; }
+    .btn:disabled{ opacity:0.5; cursor:not-allowed; }
+    
+    /* Mappings table */
+    .mappings{ margin-top:20px; }
+    table{ width:100%; border-collapse:collapse; font-size:13px; }
+    th{ text-align:left; padding:10px; color:var(--muted); border-bottom:1px solid var(--border); }
+    td{ padding:10px; border-bottom:1px solid rgba(36,60,114,0.5); }
+    td.mono{ font-family:monospace; }
+    .del-btn{
+      background:none;
+      border:none;
+      color:var(--bad);
+      cursor:pointer;
+      font-size:16px;
+    }
+    .del-btn:hover{ color:#ff6b6b; }
+    
+    /* Status */
+    .status{ padding:10px; border-radius:8px; margin:10px 0; font-size:13px; }
+    .status.ok{ background:rgba(34,197,94,0.2); color:var(--ok); }
+    .status.err{ background:rgba(239,68,68,0.2); color:var(--bad); }
+    
+    /* Selected display */
+    .selected-box{
+      background:var(--bg);
+      padding:12px;
+      border-radius:8px;
+      margin-bottom:12px;
+      font-family:monospace;
+      min-height:40px;
+    }
+    .selected-box.empty{ color:var(--muted); font-family:inherit; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🔗 SKU Mapper</h1>
+    
+    <div class="tabs">
+      <div class="tab amazon active" onclick="switchTab('amazon')">🟠 Amazon</div>
+      <div class="tab meli" onclick="switchTab('meli')">🟡 MercadoLibre</div>
+    </div>
+    
+    <!-- AMAZON PANEL -->
+    <div id="panel-amazon" class="panel active">
+      <div class="grid">
+        <div class="card">
+          <h3>📦 SKUs en Odoo (sell_on_amazon_fbm)</h3>
+          <input type="text" id="amz-odoo-search" placeholder="Buscar SKU..." oninput="filterList('amz-odoo')">
+          <div class="list" id="amz-odoo-list"></div>
+        </div>
+        <div class="card">
+          <h3>🛒 SKUs en Amazon</h3>
+          <input type="text" id="amz-amazon-search" placeholder="Buscar SKU..." oninput="filterList('amz-amazon')">
+          <div class="list" id="amz-amazon-list"></div>
+        </div>
+      </div>
+      
+      <div class="card" style="margin-top:20px;">
+        <h3>➕ Crear Mapeo</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;">
+          <div>
+            <label style="font-size:12px;color:var(--muted);">Odoo SKU</label>
+            <div class="selected-box empty" id="amz-sel-odoo">(selecciona de la lista)</div>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);">Amazon SKU</label>
+            <div class="selected-box empty" id="amz-sel-amazon">(selecciona de la lista)</div>
+          </div>
+          <button class="btn primary" onclick="saveMapping('amazon')" id="amz-save-btn" disabled>Guardar</button>
+        </div>
+        <div id="amz-status"></div>
+      </div>
+      
+      <div class="card mappings">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;">📋 Mapeos Existentes</h3>
+          <button class="btn" onclick="refreshAmazonInventory()">🔄 Refrescar inventario</button>
+          <button class="btn primary" onclick="autoMapAmazon()">🔄 Auto-mapear coincidentes</button>
+        </div>
+        <input type="text" id="amz-map-search" placeholder="Buscar mapeo..." oninput="filterMappings('amazon')">
+        <table>
+          <thead><tr><th>Odoo SKU</th><th>Amazon SKU</th><th>sell_on_amazon</th><th>Fecha</th><th></th></tr></thead>
+          <tbody id="amz-mappings"></tbody>
+        </table>
+      </div>
+    </div>
+    
+    <!-- MELI PANEL -->
+    <div id="panel-meli" class="panel">
+      <div class="grid">
+        <div class="card">
+          <h3>📦 SKUs en Odoo (sell_on_meli)</h3>
+          <input type="text" id="meli-odoo-search" placeholder="Buscar SKU..." oninput="filterList('meli-odoo')">
+          <div class="list" id="meli-odoo-list"></div>
+        </div>
+        <div class="card">
+          <h3>🛒 Listings en MercadoLibre</h3>
+          <input type="text" id="meli-meli-search" placeholder="Buscar..." oninput="filterMeliListings()">
+          <div class="list" id="meli-meli-list"></div>
+        </div>
+      </div>
+      
+      <div class="card" style="margin-top:20px;">
+        <h3>➕ Crear Mapeo</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;">
+          <div>
+            <label style="font-size:12px;color:var(--muted);">Odoo SKU</label>
+            <div class="selected-box empty" id="meli-sel-odoo">(selecciona de la lista)</div>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);">MeLi Listing</label>
+            <div class="selected-box empty" id="meli-sel-listing">(selecciona de la lista)</div>
+          </div>
+          <button class="btn primary" onclick="saveMapping('meli')" id="meli-save-btn" disabled>Guardar</button>
+        </div>
+        <div id="meli-status"></div>
+      </div>
+      
+      <div class="card mappings">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;">📋 Mapeos Existentes</h3>
+          <button class="btn primary" onclick="autoMapMeli()">🔄 Auto-mapear coincidentes</button>
+        </div>
+        <input type="text" id="meli-map-search" placeholder="Buscar mapeo..." oninput="filterMappings('meli')">
+        <table>
+          <thead><tr><th>Odoo SKU</th><th>Item ID</th><th>Variation ID</th><th>sell_on_meli</th><th></th></tr></thead>
+          <tbody id="meli-mappings"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // State
+  let state = {
+    amazon: { odooSkus: [], amazonSkus: [], mappings: [], selOdoo: null, selAmazon: null, odooPage: 1, amazonPage: 1 },
+    meli: { odooSkus: [], listings: [], mappings: [], selOdoo: null, selListing: null, odooPage: 1, listingPage: 1 }
+  };
+  const PAGE_SIZE = 50;
+  
+  // Tab switching
+  function switchTab(tab) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelector(`.tab.${tab}`).classList.add('active');
+    document.getElementById(`panel-${tab}`).classList.add('active');
+    if (tab === 'amazon') loadAmazonData();
+    else loadMeliData();
+  }
+  
+  // Load Amazon data
+  async function loadAmazonData() {
+    const odooResp = await fetch('/api/amazon/odoo-skus');
+    const odooData = await odooResp.json();
+    if (odooData.ok) {
+      state.amazon.odooSkus = odooData.skus;
+      renderList('amz-odoo', odooData.skus, 'amazon', 'odoo');
+    }
+    const amzResp = await fetch('/api/amazon/amazon-skus');
+    const amzData = await amzResp.json();
+    if (amzData.ok) {
+      state.amazon.amazonSkus = amzData.skus;
+      renderList('amz-amazon', amzData.skus, 'amazon', 'amazon');
+    }
+    const mapResp = await fetch('/api/amazon/mappings');
+    const mapData = await mapResp.json();
+    if (mapData.ok) {
+      state.amazon.mappings = mapData.mappings;
+      renderAmazonMappings();
+    }
+  }
+  
+  // Load MeLi data
+  async function loadMeliData() {
+    const odooResp = await fetch('/api/meli/odoo-skus');
+    const odooData = await odooResp.json();
+    if (odooData.ok) {
+      state.meli.odooSkus = odooData.skus;
+      renderList('meli-odoo', odooData.skus, 'meli', 'odoo');
+    }
+    document.getElementById('meli-meli-list').innerHTML = '<div style="padding:10px;color:var(--muted);">Cargando listings...</div>';
+    const meliResp = await fetch('/api/meli/listings');
+    const meliData = await meliResp.json();
+    if (meliData.ok) {
+      state.meli.listings = meliData.listings;
+      renderMeliListings();
+    } else {
+      document.getElementById('meli-meli-list').innerHTML = '<div style="padding:10px;color:var(--bad);">Error: ' + (meliData.error || 'Unknown') + '</div>';
+    }
+    const mapResp = await fetch('/api/meli/sku-mappings');
+    const mapData = await mapResp.json();
+    if (mapData.ok) {
+      state.meli.mappings = mapData.mappings;
+      renderMeliMappings();
+    }
+  }
+  
+  function renderMeliListings() {
+    const search = document.getElementById('meli-meli-search')?.value?.toLowerCase() || '';
+    const filtered = (state.meli.listings || []).filter(l => 
+      l.item_id.toLowerCase().includes(search) || 
+      l.title.toLowerCase().includes(search) ||
+      (l.sku && l.sku.toLowerCase().includes(search)) ||
+      (l.var_name && l.var_name.toLowerCase().includes(search))
+    );
+    const page = state.meli.listingPage || 1;
+    const pageSize = 50;
+    const totalPages = Math.ceil(filtered.length / pageSize) || 1;
+    const start = (page - 1) * pageSize;
+    const pageItems = filtered.slice(start, start + pageSize);
+    
+    const container = document.getElementById('meli-meli-list');
+    let html = pageItems.map(l => `
+      <div class="item" onclick="selectMeliListing('${l.item_id}', '${l.variation_id}', '${l.title.replace(/'/g, "\\'")}')">
+        <span>
+          <span class="sku">${l.item_id}${l.variation_id ? ':' + l.variation_id : ''}</span>
+          <span class="name">${l.title}${l.var_name ? ' - ' + l.var_name : ''}</span>
+          ${l.sku ? '<br><span style="color:var(--teal);font-size:11px;">SKU: ' + l.sku + '</span>' : ''}
+        </span>
+        <span class="badge">${l.qty}</span>
+      </div>
+    `).join('');
+    
+    if (totalPages > 1) {
+      html += `<div style="display:flex;justify-content:center;align-items:center;gap:10px;padding:10px;border-top:1px solid var(--border);margin-top:10px;">
+        <button class="btn small" onclick="changeMeliPage(-1)" ${page <= 1 ? 'disabled' : ''}>◀</button>
+        <span style="font-size:12px;color:var(--muted);">Pág ${page}/${totalPages} (${filtered.length})</span>
+        <button class="btn small" onclick="changeMeliPage(1)" ${page >= totalPages ? 'disabled' : ''}>▶</button>
+      </div>`;
+    }
+    if (filtered.length === 0) {
+      html = '<div style="padding:10px;color:var(--muted);">No hay listings</div>';
+    }
+    container.innerHTML = html;
+  }
+  
+  function changeMeliPage(delta) {
+    state.meli.listingPage = Math.max(1, (state.meli.listingPage || 1) + delta);
+    renderMeliListings();
+  }
+  
+  function filterMeliListings() {
+    state.meli.listingPage = 1;
+    renderMeliListings();
+  }
+  
+  function selectMeliListing(itemId, varId, title) {
+    state.meli.selListing = { item_id: itemId, variation_id: varId };
+    document.getElementById('meli-sel-listing').textContent = itemId + (varId ? ':' + varId : '') + ' - ' + title.substring(0, 25);
+    document.getElementById('meli-sel-listing').classList.remove('empty');
+    updateMeliSaveBtn();
+  }
+  
+  function renderList(id, items, channel, type) {
+    const search = document.getElementById(`${id}-search`)?.value?.toLowerCase() || '';
+    const filtered = items.filter(i => 
+      i.sku.toLowerCase().includes(search) || 
+      (i.name && i.name.toLowerCase().includes(search))
+    );
+    const pageKey = type === 'odoo' ? 'odooPage' : 'amazonPage';
+    const page = state[channel][pageKey] || 1;
+    const pageSize = 50;
+    const totalPages = Math.ceil(filtered.length / pageSize) || 1;
+    const start = (page - 1) * pageSize;
+    const pageItems = filtered.slice(start, start + pageSize);
+    
+    const container = document.getElementById(`${id}-list`);
+
+    let html = pageItems.map(i => {
+      let displayName = i.name || '';
+      let variant = '';
+      
+      if (type === 'amazon') {
+        const match = displayName.match(/^(.+)\s*\(([^)]+)\)\s*$/);
+        if (match) {
+          displayName = match[1].trim();
+          variant = match[2];
+        }
+      }
+      
+      return `
+        <div class="item" onclick="selectItem('${channel}', '${type}', '${i.sku.replace(/'/g, "\\'")}')">
+          <span>
+            <span class="sku">${i.sku}</span>
+            <span class="name">${displayName.substring(0, 50)}</span>
+            ${variant && type === 'amazon' ? '<br><span style="color:var(--teal);font-size:11px;">Variante: ' + variant + '</span>' : ''}
+          </span>
+          ${i.qty !== undefined ? `<span class="badge">${i.qty}</span>` : ''}
+        </div>
+      `;
+    }).join('');
+    
+    if (totalPages > 1) {
+      html += `<div style="display:flex;justify-content:center;align-items:center;gap:10px;padding:10px;border-top:1px solid var(--border);margin-top:10px;">
+        <button class="btn small" onclick="changePage('${channel}','${type}',-1)" ${page <= 1 ? 'disabled' : ''}>◀ Ant</button>
+        <span style="font-size:12px;color:var(--muted);">Pág ${page}/${totalPages} (${filtered.length} total)</span>
+        <button class="btn small" onclick="changePage('${channel}','${type}',1)" ${page >= totalPages ? 'disabled' : ''}>Sig ▶</button>
+      </div>`;
+    }
+    container.innerHTML = html;
+  }
+  
+  function changePage(channel, type, delta) {
+    const pageKey = type === 'odoo' ? 'odooPage' : 'amazonPage';
+    state[channel][pageKey] = Math.max(1, (state[channel][pageKey] || 1) + delta);
+    if (channel === 'amazon') {
+      if (type === 'odoo') renderList('amz-odoo', state.amazon.odooSkus, 'amazon', 'odoo');
+      else renderList('amz-amazon', state.amazon.amazonSkus, 'amazon', 'amazon');
+    } else {
+      renderList('meli-odoo', state.meli.odooSkus, 'meli', 'odoo');
+    }
+  }
+
+  function filterList(id) {
+    const [channel, type] = id.split('-');
+    if (channel === 'amz') {
+      if (type === 'odoo') { state.amazon.odooPage = 1; renderList('amz-odoo', state.amazon.odooSkus, 'amazon', 'odoo'); }
+      else { state.amazon.amazonPage = 1; renderList('amz-amazon', state.amazon.amazonSkus, 'amazon', 'amazon'); }
+    } else {
+      if (type === 'odoo') { state.meli.odooPage = 1; renderList('meli-odoo', state.meli.odooSkus, 'meli', 'odoo'); }
+    }
+  }
+  
+  function selectItem(channel, type, sku) {
+    if (channel === 'amazon') {
+      if (type === 'odoo') {
+        state.amazon.selOdoo = sku;
+        document.getElementById('amz-sel-odoo').textContent = sku;
+        document.getElementById('amz-sel-odoo').classList.remove('empty');
+      } else {
+        state.amazon.selAmazon = sku;
+        document.getElementById('amz-sel-amazon').textContent = sku;
+        document.getElementById('amz-sel-amazon').classList.remove('empty');
+      }
+      document.getElementById('amz-save-btn').disabled = !(state.amazon.selOdoo && state.amazon.selAmazon);
+    } else {
+      state.meli.selOdoo = sku;
+      document.getElementById('meli-sel-odoo').textContent = sku;
+      document.getElementById('meli-sel-odoo').classList.remove('empty');
+      updateMeliSaveBtn();
+    }
+  }
+  
+  function updateMeliSaveBtn() {
+    const hasOdoo = state.meli.selOdoo;
+    const hasListing = state.meli.selListing;
+    document.getElementById('meli-save-btn').disabled = !(hasOdoo && hasListing);
+  }
+  
+  async function saveMapping(channel) {
+    if (channel === 'amazon') {
+      const resp = await fetch('/api/amazon/mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ odoo_sku: state.amazon.selOdoo, amazon_sku: state.amazon.selAmazon })
+      });
+      const data = await resp.json();
+      showStatus('amz-status', data.ok, data.ok ? 'Mapeo guardado!' : data.error);
+      if (data.ok) loadAmazonData();
+    } else {
+      const listing = state.meli.selListing;
+      const resp = await fetch('/api/meli/sku-mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ odoo_sku: state.meli.selOdoo, item_id: listing.item_id, variation_id: listing.variation_id })
+      });
+      const data = await resp.json();
+      showStatus('meli-status', data.ok, data.ok ? 'Mapeo guardado!' : data.error);
+      if (data.ok) loadMeliData();
+    }
+  }
+  
+  async function deleteMapping(channel, itemIdOrSku, variationId = null) {
+    const displayText = variationId ? `${itemIdOrSku}:${variationId}` : itemIdOrSku;
+    if (!confirm(`¿Eliminar mapeo para ${displayText}?`)) return;
+    
+    try {
+      if (channel === 'amazon') {
+        const resp = await fetch(`/api/amazon/mappings/${encodeURIComponent(itemIdOrSku)}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.ok) {
+          loadAmazonData();
+        } else {
+          alert('Error al eliminar: ' + (data.error || 'Desconocido'));
+        }
+      } else {
+        const url = `/api/meli/sku-mappings/${encodeURIComponent(itemIdOrSku)}/${encodeURIComponent(variationId)}`;
+        const resp = await fetch(url, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.ok) {
+          loadMeliData();
+        } else {
+          alert('Error al eliminar: ' + (data.error || 'Desconocido'));
+        }
+      }
+    } catch (error) {
+      alert('Error de conexión: ' + error.message);
+    }
+  }
+  
+  function renderAmazonMappings() {
+    const search = document.getElementById('amz-map-search')?.value?.toLowerCase() || '';
+    const filtered = state.amazon.mappings.filter(m => 
+      m.odoo_sku.toLowerCase().includes(search) || m.amazon_sku.toLowerCase().includes(search)
+    );
+    document.getElementById('amz-mappings').innerHTML = filtered.map(m => `
+      <tr>
+        <td class="mono">${m.odoo_sku}</td>
+        <td class="mono">${m.amazon_sku}</td>
+        <td>${m.has_sell_on_amazon ? '<span class="badge">✅</span>' : '<span class="badge bad">❌</span>'}</td>
+        <td>${m.created_at ? m.created_at.substring(0,10) : '-'}</td>
+        <td><button class="del-btn" onclick="deleteMapping('amazon', '${m.odoo_sku}')">🗑️</button></td>
+      </tr>
+    `).join('');
+  }
+  
+  function renderMeliMappings() {
+    const search = document.getElementById('meli-map-search')?.value?.toLowerCase() || '';
+    const filtered = state.meli.mappings.filter(m => 
+      m.sku.toLowerCase().includes(search) || m.remote_item_id.toLowerCase().includes(search)
+    );
+    document.getElementById('meli-mappings').innerHTML = filtered.map(m => `
+      <tr>
+        <td class="mono">${m.sku}</td>
+        <td class="mono">${m.remote_item_id}</td>
+        <td class="mono">${m.remote_variation_id || '-'}</td>
+        <td>${m.has_sell_on_meli ? '<span class="badge">✅</span>' : '<span class="badge bad">❌</span>'}</td>
+        <td><button class="del-btn" onclick="deleteMapping('meli', '${m.remote_item_id}', '${m.remote_variation_id}')">🗑️</button></td>
+      </tr>
+    `).join('');
+  }
+  
+  function filterMappings(channel) {
+    if (channel === 'amazon') renderAmazonMappings();
+    else renderMeliMappings();
+  }
+  
+  function showStatus(id, ok, msg) {
+    const el = document.getElementById(id);
+    el.className = 'status ' + (ok ? 'ok' : 'err');
+    el.textContent = msg;
+    setTimeout(() => el.textContent = '', 3000);
+  }
+  
+  async function refreshAmazonInventory() {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = "Actualizando...";
+    try {
+      const resp = await fetch("/api/amazon/refresh-inventory", { method: "POST" });
+      const data = await resp.json();
+      if (data.ok) {
+        alert(`Inventario actualizado: ${data.count} SKUs`);
+        loadAmazonData();
+      } else {
+        alert("Error: " + data.error);
+      }
+    } catch(e) {
+      alert("Error de conexión");
+    }
+    btn.disabled = false;
+    btn.textContent = "🔄 Refrescar inventario";
+  }
+
+  async function autoMapAmazon() {
+    if (!confirm('¿Mapear automáticamente todos los SKUs que coincidan entre Odoo y Amazon?')) return;
+    const odooSkus = new Set(state.amazon.odooSkus.map(s => s.sku));
+    const amazonSkus = state.amazon.amazonSkus;
+    const mappedSkus = new Set(state.amazon.mappings.map(m => m.odoo_sku));
+    
+    let count = 0;
+    for (const amz of amazonSkus) {
+      if (odooSkus.has(amz.sku) && !mappedSkus.has(amz.sku)) {
+        try {
+          const resp = await fetch('/api/amazon/mappings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ odoo_sku: amz.sku, amazon_sku: amz.sku })
+          });
+          if ((await resp.json()).ok) count++;
+        } catch(e) {}
+      }
+    }
+    alert(`Se mapearon ${count} SKUs automáticamente`);
+    loadAmazonData();
+  }
+  
+  async function autoMapMeli() {
+    if (!confirm('¿Mapear automáticamente todos los SKUs que coincidan entre Odoo y MercadoLibre?')) return;
+    const odooSkus = new Set(state.meli.odooSkus.map(s => s.sku));
+    const listings = state.meli.listings || [];
+    const mappedVariations = new Set(state.meli.mappings.map(m => `${m.remote_item_id}:${m.remote_variation_id}`));
+    
+    let count = 0;
+    for (const listing of listings) {
+      const varKey = `${listing.item_id}:${listing.variation_id}`;
+      if (listing.sku && odooSkus.has(listing.sku) && !mappedVariations.has(varKey)) {
+        try {
+          const resp = await fetch('/api/meli/sku-mappings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ odoo_sku: listing.sku, item_id: listing.item_id, variation_id: listing.variation_id })
+          });
+          if ((await resp.json()).ok) count++;
+        } catch(e) {}
+      }
+    }
+    alert(`Se mapearon ${count} variaciones automáticamente`);
+    loadMeliData();
+  }
+
+  loadAmazonData();
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

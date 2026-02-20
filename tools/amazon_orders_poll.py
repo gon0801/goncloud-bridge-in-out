@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""
+AMAZON ORDERS POLL — GONCLOUD BRIDGE
+Consulta órdenes de Amazon SP-API y las envía a Redis para procesar.
+
+Uso: python3 amazon_orders_poll.py [--days N] [--marketplace MX|US|BOTH]
+
+Este script:
+1. Obtiene access token de Amazon
+2. Consulta órdenes de los últimos N días (default: 1)
+3. Para cada orden, obtiene los items
+4. Envía a Redis cola amazon_orders_jobs
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import sqlite3
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+import redis
+import httpx
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+DB_PATH = os.getenv("BRIDGE_DB_PATH") or os.getenv("BRIDGE_DB") or "/data/bridge.db"
+REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
+QUEUE = "amazon_orders_jobs"
+
+# Amazon endpoints
+AMAZON_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
+AMAZON_API_BASE = "https://sellingpartnerapi-na.amazon.com"
+
+# Marketplaces
+MARKETPLACES = {
+    "MX": "A1AM78C64UM0Y8",
+    "US": "ATVPDKIKX0DER",
+}
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def db_conn():
+    conn = sqlite3.connect(DB_PATH, timeout=20)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def get_setting(key: str, default: str = "") -> str:
+    try:
+        with db_conn() as conn:
+            row = conn.execute(
+                "SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,)
+            ).fetchone()
+        return str(row["value"]) if row else default
+    except Exception:
+        return default
+
+
+def get_credentials():
+    return {
+        "client_id": get_setting("amazon_sp_api_client_id"),
+        "client_secret": get_setting("amazon_sp_api_client_secret"),
+        "refresh_token": get_setting("amazon_sp_api_refresh_token"),
+    }
+
+
+def get_access_token(creds: dict) -> str:
+    """Obtiene access token usando refresh token."""
+    resp = httpx.post(
+        AMAZON_TOKEN_URL,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": creds["refresh_token"],
+            "client_id": creds["client_id"],
+            "client_secret": creds["client_secret"],
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "access_token" not in data:
+        raise ValueError(f"No access_token in response: {data}")
+    return data["access_token"]
+
+
+def _sp_api_get(token: str, url: str, params: dict = None, max_retries: int = 4) -> httpx.Response:
+    """GET a SP-API endpoint con retry exponencial en 429 (rate limit)."""
+    for attempt in range(max_retries):
+        resp = httpx.get(
+            url,
+            params=params,
+            headers={"x-amz-access-token": token},
+            timeout=30,
+        )
+        if resp.status_code == 429:
+            wait = 2 ** attempt  # 1s, 2s, 4s, 8s
+            print(f"[poll] WARN 429 rate-limited on {url} — retry {attempt + 1}/{max_retries} in {wait}s")
+            time.sleep(wait)
+            continue
+        return resp
+    # Último intento después del último backoff
+    return resp
+
+
+def get_orders(token: str, marketplace_id: str, created_after: str) -> list:
+    """Obtiene órdenes de Amazon con paginación y retry en 429."""
+    orders = []
+    next_token = None
+
+    while True:
+        params = {
+            "MarketplaceIds": marketplace_id,
+            "CreatedAfter": created_after,
+        }
+        if next_token:
+            params["NextToken"] = next_token
+
+        resp = _sp_api_get(token, f"{AMAZON_API_BASE}/orders/v0/orders", params)
+
+        if resp.status_code != 200:
+            print(f"[poll] ERROR getting orders: {resp.status_code} {resp.text[:500]}", file=sys.stderr)
+            break
+
+        data = resp.json()
+        payload = data.get("payload", {})
+        orders.extend(payload.get("Orders", []))
+
+        next_token = payload.get("NextToken")
+        if not next_token:
+            break
+
+    return orders
+
+
+def get_order_items(token: str, order_id: str) -> list:
+    """Obtiene items de una orden con retry en 429."""
+    resp = _sp_api_get(token, f"{AMAZON_API_BASE}/orders/v0/orders/{order_id}/orderItems")
+
+    if resp.status_code != 200:
+        print(f"[poll] ERROR getting items for {order_id}: {resp.status_code}", file=sys.stderr)
+        return []
+
+    data = resp.json()
+    return data.get("payload", {}).get("OrderItems", [])
+
+
+def make_dedupe_key(order: dict, marketplace_id: str) -> str:
+    """Genera clave única para deduplicación.
+
+    Formato: amz:{marketplace_id}:{order_id}:{status}
+    - Incluye marketplace_id para coincidir con el prefijo del worker.
+    - Incluye status para que cada transición de estado sea un job independiente.
+    - No incluye LastUpdateDate (puede variar entre polls sin cambio real de estado).
+    """
+    order_id = order.get("AmazonOrderId", "")
+    status = order.get("OrderStatus", "")
+    return f"amz:{marketplace_id}:{order_id}:{status}"
+
+
+def already_processed(dedupe_key: str) -> bool:
+    """Verifica si ya se procesó este evento en la tabla correcta del worker."""
+    try:
+        with db_conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM amazon_processed_events WHERE dedupe_key=? LIMIT 1",
+                (dedupe_key,)
+            ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def push_to_redis(r: redis.Redis, order: dict, dedupe_key: str) -> bool:
+    """Envía orden a cola Redis."""
+    job = {
+        "dedupe_key": dedupe_key,
+        "order_json": order,
+        "source": "polling",
+        "polled_at": datetime.now(timezone.utc).isoformat(),
+    }
+    r.rpush(QUEUE, json.dumps(job, ensure_ascii=False))
+    return True
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="Poll Amazon orders")
+    parser.add_argument("--days", type=int, default=1, help="Days to look back (default: 1)")
+    parser.add_argument("--marketplace", choices=["MX", "US", "BOTH"], default="BOTH", help="Marketplace (default: BOTH)")
+    parser.add_argument("--dry-run", action="store_true", help="Don't push to Redis, just show")
+    args = parser.parse_args()
+    
+    # Check if enabled
+    if get_setting("amazon_inbound_enabled", "0") != "1":
+        print("[poll] Amazon inbound disabled, skipping")
+        return 0
+    
+    # Get credentials
+    creds = get_credentials()
+    if not all(creds.values()):
+        print("[poll] ERROR: Missing Amazon credentials in bridge_settings", file=sys.stderr)
+        return 1
+    
+    # Get access token
+    try:
+        token = get_access_token(creds)
+        print(f"[poll] Got access token ({len(token)} chars)")
+    except Exception as e:
+        print(f"[poll] ERROR getting token: {e}", file=sys.stderr)
+        return 1
+    
+    # Connect Redis
+    try:
+        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        r.ping()
+    except Exception as e:
+        print(f"[poll] ERROR connecting Redis: {e}", file=sys.stderr)
+        return 1
+    
+    # Calculate date range
+    created_after = (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
+    print(f"[poll] Looking for orders since {created_after}")
+    
+    # Determine marketplaces
+    if args.marketplace == "BOTH":
+        marketplaces = list(MARKETPLACES.items())
+    else:
+        marketplaces = [(args.marketplace, MARKETPLACES[args.marketplace])]
+    
+    total_orders = 0
+    total_pushed = 0
+    total_skipped = 0
+    
+    for mp_name, mp_id in marketplaces:
+        print(f"[poll] Checking {mp_name} ({mp_id})...")
+        
+        try:
+            orders = get_orders(token, mp_id, created_after)
+            print(f"[poll] Found {len(orders)} orders in {mp_name}")
+        except Exception as e:
+            print(f"[poll] ERROR fetching {mp_name}: {e}", file=sys.stderr)
+            continue
+        
+        for order in orders:
+            total_orders += 1
+            order_id = order.get("AmazonOrderId", "unknown")
+            status = order.get("OrderStatus", "unknown")
+            
+            # Skip pending orders
+            if status == "Pending":
+                print(f"[poll]   {order_id}: status=Pending, skipping")
+                total_skipped += 1
+                continue
+            
+            # Check dedupe
+            dedupe_key = make_dedupe_key(order, mp_id)
+            if already_processed(dedupe_key):
+                print(f"[poll]   {order_id}: already processed, skipping")
+                total_skipped += 1
+                continue
+            
+            # Get order items
+            try:
+                items = get_order_items(token, order_id)
+                order["OrderItems"] = items
+                print(f"[poll]   {order_id}: {status}, {len(items)} items")
+            except Exception as e:
+                print(f"[poll]   {order_id}: ERROR getting items: {e}")
+                order["OrderItems"] = []
+            
+            # Push to Redis
+            if args.dry_run:
+                print(f"[poll]   {order_id}: DRY RUN - would push")
+            else:
+                push_to_redis(r, order, dedupe_key)
+                print(f"[poll]   {order_id}: pushed to Redis")
+            
+            total_pushed += 1
+    
+    print(f"[poll] Done. Total: {total_orders}, Pushed: {total_pushed}, Skipped: {total_skipped}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

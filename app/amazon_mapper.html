@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SKU Mapper</title>
+  <style>
+    :root{
+      --bg:#0b1220;
+      --bg2:#101a33;
+      --card:#16244a;
+      --card2:#141f3f;
+      --border:#243c72;
+
+      --text:#eaf0ff;
+      --muted:#a9b8da;
+      --muted2:#7f94c4;
+
+      --blue:#4f6bd6;
+      --teal:#09c5d1;
+      --yellow:#f4c430;
+
+      --ok:#22c55e;
+      --bad:#ef4444;
+
+      --shadow: 0 10px 28px rgba(0,0,0,.38);
+      --r:16px;
+      --r2:12px;
+
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+    *{ box-sizing:border-box; }
+    body{
+      margin:0; padding:18px;
+      font-family:var(--sans);
+      color:var(--text);
+      background:
+        radial-gradient(1100px 600px at 18% 0%, rgba(57,189,247,.16), transparent 60%),
+        radial-gradient(900px 560px at 90% 10%, rgba(138,149,255,.10), transparent 55%),
+        radial-gradient(900px 600px at 50% 120%, rgba(16,185,129,.06), transparent 55%),
+        linear-gradient(180deg, var(--bg), var(--bg2));
+    }
+    .wrap{ max-width:1320px; margin:0 auto; }
+
+    .top{
+      display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap;
+      margin-bottom:14px;
+    }
+    .title{ font-weight:900; letter-spacing:.2px; font-size:18px; }
+    .sub{ margin-top:6px; color:var(--muted); font-size:13px; line-height:1.35; }
+
+    .actions{ display:flex; gap:10px; flex-wrap:wrap; }
+    .btn{
+      border:1px solid rgba(36,60,114,.95);
+      background: rgba(255,255,255,.03);
+      color: var(--text);
+      padding:10px 12px;
+      border-radius: 12px;
+      cursor:pointer;
+      font-weight: 900;
+      font-size:13px;
+      transition: background .12s ease, border-color .12s ease, transform .06s ease;
+    }
+    .btn:hover{ background: rgba(255,255,255,.06); border-color: rgba(57,189,247,.65); }
+    .btn:active{ transform: translateY(1px); }
+    .btn.primary{
+      border-color: rgba(57,189,247,.75);
+      background: linear-gradient(135deg, rgba(57,189,247,.18), rgba(138,149,255,.14));
+    }
+    .btn.danger{
+      border-color: rgba(239,68,68,.55);
+      background: rgba(239,68,68,.10);
+    }
+    .btn.small{ padding:8px 10px; font-size:12px; }
+
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 1100px){ .grid{ grid-template-columns: 1fr; } }
+
+    .card{
+      border-radius: var(--r);
+      border:1px solid rgba(36,60,114,.85);
+      background: linear-gradient(180deg, rgba(22,36,74,.92), rgba(20,31,63,.82));
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      min-height: 620px;
+      display:flex;
+      flex-direction:column;
+    }
+    .bar{
+      height:44px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:0 14px;
+      font-weight:900;
+      letter-spacing:.2px;
+      font-size:13px;
+      color:rgba(255,255,255,.95);
+    }
+    .bar.blue{ background: linear-gradient(90deg, rgba(79,107,214,.95), rgba(79,107,214,.55)); }
+    .bar.teal{ background: linear-gradient(90deg, rgba(9,197,209,.95), rgba(16,185,129,.65)); }
+    .bar.yellow{ background: linear-gradient(90deg, rgba(244,196,48,.95), rgba(244,196,48,.55)); color:#101a33; }
+
+    .pill{
+      font-size:12px;
+      padding: 3px 10px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,.18);
+      background: rgba(0,0,0,.16);
+      color: rgba(255,255,255,.9);
+      font-weight:900;
+    }
+
+    .body{
+      padding:12px;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      flex:1;
+      min-height:0;
+    }
+
+    .input{
+      width:100%;
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid rgba(36,60,114,.95);
+      background: rgba(6,10,20,.30);
+      color: var(--text);
+      outline:none;
+      font-size:13px;
+    }
+    .input::placeholder{ color: rgba(169,184,218,.65); }
+    .input:focus{ border-color: rgba(57,189,247,.7); }
+
+    .list{
+      flex:1;
+      min-height:0;
+      overflow:auto;
+      padding:2px;
+    }
+
+    .row{
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      padding:10px 10px;
+      border-radius:14px;
+      border:1px solid rgba(36,60,114,.65);
+      background: rgba(255,255,255,.02);
+      margin:8px 2px;
+      cursor:pointer;
+      transition: border-color .12s ease, background .12s ease, transform .06s ease;
+    }
+    .row:hover{ border-color: rgba(57,189,247,.55); background: rgba(255,255,255,.04); }
+    .row:active{ transform: translateY(1px); }
+    .row.selected{
+      border-color: rgba(57,189,247,.90);
+      background: linear-gradient(135deg, rgba(57,189,247,.12), rgba(138,149,255,.10));
+    }
+
+    .main{ display:flex; flex-direction:column; gap:4px; }
+    .sku{ font-family: var(--mono); font-weight:900; font-size:12.5px; letter-spacing:.2px; }
+    .name{ font-size:12.5px; color: var(--muted); line-height:1.25; }
+    .meta{ font-size:12px; color: var(--muted2); }
+    .qty{
+      font-size:12px; font-weight:900;
+      padding:4px 8px;
+      border-radius:999px;
+      border:1px solid rgba(36,60,114,.95);
+      background: rgba(255,255,255,.02);
+      white-space:nowrap;
+      height: fit-content;
+    }
+
+    .kv{
+      border:1px solid rgba(36,60,114,.85);
+      border-radius: var(--r2);
+      background: rgba(255,255,255,.02);
+      padding:10px 12px;
+    }
+    .kvL{ font-size:12px; color: var(--muted2); font-weight:900; margin-bottom:6px; }
+    .kvV{ font-family: var(--mono); font-weight:900; font-size:13px; }
+
+    .rowActions{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+    .statusLine{
+      font-size:12.5px;
+      color: var(--muted);
+      line-height:1.35;
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid rgba(36,60,114,.85);
+      background: rgba(6,10,20,.22);
+    }
+    .statusOk{ border-color: rgba(34,197,94,.40); }
+    .statusBad{ border-color: rgba(239,68,68,.40); }
+    .statusLine b{ color: var(--text); }
+
+    /* Toast */
+    .toast{
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      width: min(520px, calc(100% - 32px));
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(36,60,114,.95);
+      background: rgba(10,16,32,.88);
+      box-shadow: var(--shadow);
+      display:none;
+      gap:10px;
+      align-items:flex-start;
+      z-index: 9999;
+    }
+    .toast.show{ display:flex; }
+    .dot{ width:10px; height:10px; border-radius:999px; margin-top:4px; }
+    .dot.ok{ background: var(--ok); }
+    .dot.bad{ background: var(--bad); }
+    .tTitle{ font-weight:900; margin-bottom:4px; font-size:13px; }
+    .tMsg{ color: var(--muted); font-size:12.5px; line-height:1.35; }
+  </style>
+</head>
+
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <div class="title">SKU Mapper</div>
+      <div class="sub">Selecciona un SKU de Odoo, verifica un SKU de Amazon y guarda el mapping.</div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="refreshBtn">Refrescar</button>
+      <button class="btn primary" id="saveBtn">Guardar</button>
+      <button class="btn danger" id="clearBtn">Limpiar</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Odoo -->
+    <section class="card">
+      <div class="bar blue">
+        <span>Odoo</span>
+        <span class="pill" id="odooPill">…</span>
+      </div>
+      <div class="body">
+        <input class="input" id="odooSearch" placeholder="Buscar (sku o nombre)" />
+        <div class="list" id="odooList"></div>
+      </div>
+    </section>
+
+    <!-- Amazon Verify -->
+    <section class="card">
+      <div class="bar yellow">
+        <span>Amazon</span>
+        <span class="pill" id="amzPill">Verificar</span>
+      </div>
+      <div class="body">
+        <div class="kv">
+          <div class="kvL">SKU Odoo seleccionado</div>
+          <div class="kvV" id="selOdoo">(ninguno)</div>
+        </div>
+
+        <div class="kv">
+          <div class="kvL">SKU Amazon</div>
+          <input class="input" id="amzSkuInput" placeholder="Escribe el SKU exacto (SellerSKU)" />
+          <div style="height:10px"></div>
+          <div class="rowActions">
+            <button class="btn primary" id="verifyBtn">Verificar</button>
+            <button class="btn" id="useVerifiedBtn">Usar</button>
+          </div>
+        </div>
+
+        <div class="kv">
+          <div class="kvL">Resultado</div>
+          <div id="verifyStatus" class="statusLine">Escribe un SKU y presiona <b>Verificar</b>.</div>
+        </div>
+
+        <div class="kv">
+          <div class="kvL">SKU Amazon seleccionado</div>
+          <div class="kvV" id="selAmazon">(ninguno)</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Mappings -->
+    <section class="card">
+      <div class="bar teal">
+        <span>Mappings</span>
+        <span class="pill" id="mapPill">…</span>
+      </div>
+      <div class="body">
+        <input class="input" id="mapSearch" placeholder="Buscar (odoo o amazon)" />
+        <div class="list" id="mapList"></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="toast" id="toast">
+  <div class="dot ok" id="toastDot"></div>
+  <div>
+    <div class="tTitle" id="toastTitle">OK</div>
+    <div class="tMsg" id="toastMsg"></div>
+  </div>
+</div>
+
+<script>
+  let odooSkus = [];
+  let mappings = [];
+
+  let selectedOdoo = null;
+  let selectedAmazon = null;
+
+  // verification state
+  let verifiedAmazon = null;
+
+  // Cache amazon list ONLY when verifying (10 min)
+  let amazonCache = null;
+  let amazonCacheAt = 0;
+
+  const $ = (id)=>document.getElementById(id);
+  const norm = (s)=>(s||"").toString().toLowerCase().trim();
+
+  function toast(ok, title, msg){
+    $("toastDot").className = "dot " + (ok ? "ok" : "bad");
+    $("toastTitle").textContent = title;
+    $("toastMsg").textContent = msg;
+    $("toast").classList.add("show");
+    clearTimeout(window.__toastTimer);
+    window.__toastTimer = setTimeout(()=>$("toast").classList.remove("show"), 2600);
+  }
+
+  function setVerifyStatus(kind, html){
+    const el = $("verifyStatus");
+    el.className = "statusLine " + (kind === "ok" ? "statusOk" : (kind === "bad" ? "statusBad" : ""));
+    el.innerHTML = html;
+  }
+
+  function clearSelection(){
+    selectedOdoo = null;
+    selectedAmazon = null;
+    verifiedAmazon = null;
+    $("selOdoo").textContent = "(ninguno)";
+    $("selAmazon").textContent = "(ninguno)";
+    $("amzSkuInput").value = "";
+    setVerifyStatus("", "Escribe un SKU y presiona <b>Verificar</b>.");
+    document.querySelectorAll("#odooList .row").forEach(x=>x.classList.remove("selected"));
+  }
+
+  function renderOdoo(){
+    const q = norm($("odooSearch").value);
+    const filtered = odooSkus.filter(p => !q || norm(p.sku).includes(q) || norm(p.name).includes(q));
+
+    const list = $("odooList");
+    list.innerHTML = "";
+
+    for (const p of filtered){
+      const div = document.createElement("div");
+      div.className = "row" + (selectedOdoo && selectedOdoo.sku === p.sku ? " selected" : "");
+      const main = document.createElement("div");
+      main.className = "main";
+
+      const t = document.createElement("div");
+      t.className = "sku";
+      t.textContent = p.sku;
+
+      const s = document.createElement("div");
+      s.className = "name";
+      s.textContent = p.name || "";
+
+      main.appendChild(t);
+      main.appendChild(s);
+
+      const right = document.createElement("div");
+      right.className = "qty";
+      right.textContent = `qty: ${p.qty ?? 0}`;
+
+      div.appendChild(main);
+      div.appendChild(right);
+
+      div.onclick = ()=>{
+        selectedOdoo = p;
+        $("selOdoo").textContent = p.sku;
+        document.querySelectorAll("#odooList .row").forEach(x=>x.classList.remove("selected"));
+        div.classList.add("selected");
+        toast(true, "Odoo", "Seleccionado: " + p.sku);
+      };
+
+      list.appendChild(div);
+    }
+  }
+
+  function renderMappings(){
+    const q = norm($("mapSearch").value);
+    const filtered = mappings.filter(m => !q || norm(m.odoo_sku).includes(q) || norm(m.amazon_sku).includes(q));
+
+    const list = $("mapList");
+    list.innerHTML = "";
+
+    for (const m of filtered){
+      const div = document.createElement("div");
+      div.className = "row";
+      div.style.cursor = "default";
+
+      const left = document.createElement("div");
+      left.className = "main";
+
+      const t = document.createElement("div");
+      t.className = "sku";
+      t.textContent = `${m.odoo_sku}  →  ${m.amazon_sku}`;
+
+      const s = document.createElement("div");
+      s.className = "meta";
+      s.textContent = `${m.notes || ""}${m.created_at ? " • " + m.created_at : ""}`;
+
+      left.appendChild(t);
+      left.appendChild(s);
+
+      const btn = document.createElement("button");
+      btn.className = "btn small danger";
+      btn.textContent = "Eliminar";
+      btn.onclick = async ()=>{
+        if (!confirm(`Eliminar mapping de ${m.odoo_sku}?`)) return;
+        try{
+          const resp = await fetch(`/api/amazon/mappings/${encodeURIComponent(m.odoo_sku)}`, { method:"DELETE" });
+          const data = await resp.json();
+          if (!data.ok) throw new Error(data.error || "error");
+          toast(true, "OK", "Eliminado: " + m.odoo_sku);
+          await loadMappings();
+        }catch(e){
+          toast(false, "Error", "No pude eliminar: " + e);
+        }
+      };
+
+      div.appendChild(left);
+      div.appendChild(btn);
+      list.appendChild(div);
+    }
+
+    $("mapPill").textContent = `OK: ${filtered.length}`;
+  }
+
+  async function loadOdoo(){
+    $("odooPill").textContent = "Cargando…";
+    try{
+      const resp = await fetch("/api/amazon/odoo-skus");
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || "error");
+      odooSkus = (data.skus || []).map(p=>({ sku: p.sku, name: p.name || "", qty: p.qty ?? 0 }));
+      $("odooPill").textContent = `OK: ${odooSkus.length}`;
+      renderOdoo();
+    }catch(e){
+      $("odooPill").textContent = "ERROR";
+      toast(false, "Error", "Odoo: " + e);
+    }
+  }
+
+  async function loadMappings(){
+    $("mapPill").textContent = "Cargando…";
+    try{
+      const resp = await fetch("/api/amazon/mappings");
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || "error");
+      mappings = (data.mappings || []).map(x=>({
+        odoo_sku: x.odoo_sku || "",
+        amazon_sku: x.amazon_sku || "",
+        notes: x.notes || "",
+        created_at: x.created_at || ""
+      }));
+      renderMappings();
+    }catch(e){
+      $("mapPill").textContent = "ERROR";
+      toast(false, "Error", "Mappings: " + e);
+    }
+  }
+
+  async function getAmazonIndex(){
+    const now = Date.now();
+    const ttlMs = 10 * 60 * 1000;
+
+    if (amazonCache && (now - amazonCacheAt) < ttlMs) return amazonCache;
+
+    try{
+      const raw = localStorage.getItem("amz_sku_cache_v1");
+      const rawAt = parseInt(localStorage.getItem("amz_sku_cache_v1_at") || "0", 10);
+      if (raw && rawAt && (now - rawAt) < ttlMs){
+        amazonCache = JSON.parse(raw);
+        amazonCacheAt = rawAt;
+        return amazonCache;
+      }
+    }catch(_){}
+
+    const resp = await fetch("/api/amazon/amazon-skus");
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "Amazon API error");
+
+    amazonCache = (data.skus || []).map(a=>({
+      sku: (a.sku || "").trim(),
+      asin: (a.asin || "").trim(),
+      name: (a.name || "").trim(),
+      qty: a.qty ?? 0
+    }));
+    amazonCacheAt = now;
+
+    try{
+      localStorage.setItem("amz_sku_cache_v1", JSON.stringify(amazonCache));
+      localStorage.setItem("amz_sku_cache_v1_at", String(now));
+    }catch(_){}
+
+    return amazonCache;
+  }
+
+  async function verifyAmazonSku(){
+    const sku = ($("amzSkuInput").value || "").trim();
+    if (!sku){
+      setVerifyStatus("bad", "Escribe un SKU de Amazon.");
+      return;
+    }
+
+    $("amzPill").textContent = "Verificando…";
+    setVerifyStatus("", "Buscando SKU…");
+
+    try{
+      const idx = await getAmazonIndex();
+      const found = idx.find(x => x.sku === sku) || idx.find(x => norm(x.sku) === norm(sku));
+
+      if (!found){
+        verifiedAmazon = null;
+        setVerifyStatus("bad", `❌ No encontré <b>${sku}</b>.`);
+        $("amzPill").textContent = "No encontrado";
+        return;
+      }
+
+      verifiedAmazon = {
+        sku: found.sku,
+        asin: found.asin,
+        name: found.name,
+        qty: found.qty,
+        verified_at: new Date().toISOString()
+      };
+
+      const name = verifiedAmazon.name ? verifiedAmazon.name : "(sin nombre)";
+      const asin = verifiedAmazon.asin ? verifiedAmazon.asin : "(sin ASIN)";
+      setVerifyStatus("ok", `✅ Correcto: <b>${verifiedAmazon.sku}</b><br/>${name}<br/><span style="color:var(--muted2)">ASIN: ${asin}</span>`);
+      $("amzPill").textContent = "Verificado";
+      toast(true, "Amazon", "Verificado: " + verifiedAmazon.sku);
+    }catch(e){
+      verifiedAmazon = null;
+      $("amzPill").textContent = "ERROR";
+      setVerifyStatus("bad", "Error verificando: " + e);
+      toast(false, "Error", "Amazon: " + e);
+    }
+  }
+
+  function useVerified(){
+    if (!verifiedAmazon){
+      toast(false, "Falta", "Primero verifica un SKU de Amazon.");
+      return;
+    }
+    selectedAmazon = { sku: verifiedAmazon.sku };
+    $("selAmazon").textContent = selectedAmazon.sku;
+    toast(true, "OK", "Amazon seleccionado: " + selectedAmazon.sku);
+  }
+
+  async function saveMapping(){
+    if (!selectedOdoo || !selectedOdoo.sku) return toast(false, "Falta", "Selecciona un SKU de Odoo.");
+    if (!selectedAmazon || !selectedAmazon.sku) return toast(false, "Falta", "Selecciona un SKU de Amazon (Usar).");
+
+    try{
+      const resp = await fetch("/api/amazon/mappings", {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ odoo_sku: selectedOdoo.sku, amazon_sku: selectedAmazon.sku })
+      });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || "error");
+      toast(true, "OK", `${selectedOdoo.sku} → ${selectedAmazon.sku}`);
+      await loadMappings();
+    }catch(e){
+      toast(false, "Error", "Guardar: " + e);
+    }
+  }
+
+  $("odooSearch").addEventListener("input", renderOdoo);
+  $("mapSearch").addEventListener("input", renderMappings);
+  $("verifyBtn").addEventListener("click", verifyAmazonSku);
+  $("useVerifiedBtn").addEventListener("click", useVerified);
+  $("saveBtn").addEventListener("click", saveMapping);
+
+  $("refreshBtn").addEventListener("click", async ()=>{
+    await Promise.all([loadOdoo(), loadMappings()]);
+    $("amzPill").textContent = "Verificar";
+    setVerifyStatus("", "Escribe un SKU y presiona <b>Verificar</b>.");
+    toast(true, "OK", "Refrescado.");
+  });
+
+  $("clearBtn").addEventListener("click", ()=>{
+    clearSelection();
+    toast(true, "Listo", "Selección limpia.");
+  });
+
+  (async ()=>{
+    clearSelection();
+    await Promise.all([loadOdoo(), loadMappings()]);
+  })();
+</script>
+</body>
+</html>

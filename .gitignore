@@ -1,0 +1,67 @@
+# Secrets / env
+.env
+.env.*
+*.env
+/data/.env*
+/data/.meli_tokens.json*
+/data/.meli_last_code.txt
+**/.meli_tokens.json*
+**/.meli_last_code.txt
+**/*.secret*
+**/*secret*
+**/*token*
+**/*tokens*
+**/*password*
+**/*credentials*
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+/data/bridge.db
+/data/*.db
+
+# Logs / dumps / exports
+*.log
+exports/
+dump/
+*_snapshot_*.json
+amz_order_*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# =========================
+# NEVER COMMIT (runtime/state)
+# =========================
+redis/
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Backups / snapshots / dumps
+*.bak*
+*.BK*
+*.save
+*.rdb
+dump/
+exports/
+*_snapshot_*.json
+amz_order_*.json
+
+# Secrets / tokens
+.env
+.env.*
+*.env
+.meli_tokens*
+.meli_last_code*
+*.BAD*

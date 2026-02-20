@@ -1,0 +1,10 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# deps
+COPY requirements.inbound.txt /tmp/requirements.inbound.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.inbound.txt
+
+# tu código entra por volumen /app, pero dejamos default por si lo copias luego
+CMD ["python", "/app/inbound_worker.py"]

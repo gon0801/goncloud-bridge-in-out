@@ -1,0 +1,100 @@
+GONCLOUD — BRIDGE STOCK
+RECOVERY CHECKLIST (ULTRA CORTA)
+================================
+Última revisión: 2026-01-29
+Objetivo: Recuperar sincronización Odoo → Bridge → Canales en < 15 min
+
+--------------------------------------------------
+1) VERIFICAR SERVICIOS
+--------------------------------------------------
+docker ps | grep -E "bridge-api|bridge-worker|bridge-redis"
+docker ps | grep odoo
+
+Todos deben estar en estado "Up".
+
+--------------------------------------------------
+2) HEALTH CHECK BRIDGE
+--------------------------------------------------
+Desde host:
+curl http://127.0.0.1:8099/v1/health
+
+Desde Odoo:
+docker exec -it odoo-odoo-1 curl http://bridge-api:8099/v1/health
+
+Debe responder: {"ok": true}
+
+--------------------------------------------------
+3) ÚLTIMOS SNAPSHOTS RECIBIDOS
+--------------------------------------------------
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
+SELECT id, created_at, channel, item_count
+FROM events
+ORDER BY id DESC LIMIT 5;
+"
+
+Debe haber eventos recientes por canal.
+
+--------------------------------------------------
+4) MÉTRICAS CRÍTICAS
+--------------------------------------------------
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
+SELECT key,value FROM bridge_metrics
+WHERE key LIKE 'skus_rejected_total%';
+"
+
+Valores esperados: 0
+
+--------------------------------------------------
+5) DERIVED ZERO (missing=0)
+--------------------------------------------------
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
+SELECT channel, COUNT(*) 
+FROM snapshot_items
+WHERE derived_zero=1
+AND event_id = (SELECT MAX(id) FROM events)
+GROUP BY channel;
+"
+
+Solo valores esperados (no explosión).
+
+--------------------------------------------------
+6) CRON ODOO (FUENTE)
+--------------------------------------------------
+docker exec -it odoo-odoo-1 bash -lc "
+odoo shell -d EHV --db_host db --db_user odoo --db_password odoo <<'PY'
+c = env['ir.cron'].search([('name','=','Bridge: Stock Snapshot (Primary Channels)')])
+print(c.id, c.active)
+PY
+"
+
+Debe estar activo.
+
+--------------------------------------------------
+7) FORZAR SNAPSHOT MANUAL
+--------------------------------------------------
+docker exec -it odoo-odoo-1 bash -lc "
+odoo shell -d EHV --db_host db --db_user odoo --db_password odoo <<'PY'
+env['ir.cron'].browse(39).method_direct_trigger()
+print('SNAPSHOT OK')
+PY
+"
+
+--------------------------------------------------
+8) REINICIO LIMPIO (SI TODO FALLA)
+--------------------------------------------------
+cd /mnt/data/appdata/bridge
+docker compose restart
+
+--------------------------------------------------
+9) BACKUP (ÚLTIMO RECURSO)
+--------------------------------------------------
+/usr/local/bin/restic-server-backup.sh
+
+--------------------------------------------------
+ESTADO OK SI:
+- Health OK
+- Eventos recientes
+- skus_rejected_total = 0
+- Cron activo
+- Snapshot manual funciona
+--------------------------------------------------

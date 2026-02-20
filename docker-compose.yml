@@ -1,0 +1,61 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: bridge-redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - /mnt/data/appdata/bridge/redis:/data
+    restart: unless-stopped
+    networks:
+      - goncloud-net
+
+  bridge-api:
+    env_file:
+      - .env
+    build: ./app
+    container_name: bridge-api
+    working_dir: /app
+    dns:                           # ← AGREGAR ESTAS 3 LÍNEAS
+      - 8.8.8.8                    # ← 
+      - 1.1.1.1   
+    volumes:
+      - /mnt/data/appdata/bridge/data:/data
+      - /mnt/data/appdata/bridge/app:/app
+    environment:
+      - ENABLE_MISSING_ZERO_CHANNELS=amazon_fbm,meli
+      - BRIDGE_DB=/data/bridge.db
+      - REDIS_URL=redis://bridge-redis:6379/0
+    ports:
+      - "127.0.0.1:8099:8099"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - goncloud-net
+
+  bridge-worker:
+    build: ./app
+    container_name: bridge-worker
+    working_dir: /app
+    volumes:
+      - /mnt/data/appdata/bridge/data:/data
+      - /mnt/data/appdata/bridge/app:/app
+    environment:
+      - ODOO_URL=${ODOO_URL}
+      - ODOO_DB=${ODOO_DB}
+      - ODOO_USER=${ODOO_USER}
+      - ODOO_PASSWORD=${ODOO_PASSWORD}
+
+      - BRIDGE_DB=/data/bridge.db
+      - REDIS_URL=redis://bridge-redis:6379/0
+      - QUEUE_NAME=stock_jobs
+    command: ["python", "/app/worker.py"]
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - goncloud-net
+
+networks:
+  goncloud-net:
+    external: true

@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GONCLOUD Setup</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .step-circle { transition: all 0.3s ease; }
+        .step-line { transition: all 0.3s ease; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .spinner { border: 3px solid #f3f3f3; border-top: 3px solid #3b82f6; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-2xl mx-auto py-8 px-4">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800">🚀 GONCLOUD</h1>
+            <p class="text-gray-500 mt-2">Conecta tus marketplaces con Odoo en minutos</p>
+        </div>
+
+        <!-- Progress Steps -->
+        <div class="flex items-center justify-center mb-8">
+            <div class="flex items-center">
+                <div id="step1-circle" class="step-circle w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center font-bold">1</div>
+                <div id="step1-line" class="step-line w-16 h-1 bg-gray-300"></div>
+                <div id="step2-circle" class="step-circle w-10 h-10 rounded-full bg-gray-300 text-gray-600 flex items-center justify-center font-bold">2</div>
+                <div id="step2-line" class="step-line w-16 h-1 bg-gray-300"></div>
+                <div id="step3-circle" class="step-circle w-10 h-10 rounded-full bg-gray-300 text-gray-600 flex items-center justify-center font-bold">3</div>
+                <div id="step3-line" class="step-line w-16 h-1 bg-gray-300"></div>
+                <div id="step4-circle" class="step-circle w-10 h-10 rounded-full bg-gray-300 text-gray-600 flex items-center justify-center font-bold">4</div>
+                <div id="step4-line" class="step-line w-16 h-1 bg-gray-300"></div>
+                <div id="step5-circle" class="step-circle w-10 h-10 rounded-full bg-gray-300 text-gray-600 flex items-center justify-center font-bold">5</div>
+            </div>
+        </div>
+
+        <!-- Step 1: Odoo Connection -->
+        <div id="step1" class="bg-white rounded-lg shadow-lg p-6 fade-in">
+            <div class="flex items-center mb-6">
+                <span class="text-2xl mr-3">📦</span>
+                <div>
+                    <h2 class="text-xl font-bold text-gray-800">Conecta tu Odoo</h2>
+                    <p class="text-gray-500 text-sm">Tu ERP será la fuente de verdad</p>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">URL de Odoo</label>
+                    <input type="url" id="odoo_url" placeholder="https://miempresa.odoo.com" 
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Base de datos</label>
+                    <input type="text" id="odoo_db" placeholder="produccion" 
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Usuario (email)</label>
+                    <input type="email" id="odoo_user" placeholder="admin@miempresa.com" 
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
+                    <input type="password" id="odoo_password" 
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+
+                <button onclick="testOdoo()" id="btn-test-odoo"
+                        class="w-full bg-gray-100 text-gray-700 py-2 px-4 rounded-lg hover:bg-gray-200 transition flex items-center justify-center">
+                    <span id="odoo-test-text">Verificar conexión</span>
+                    <span id="odoo-test-spinner" class="spinner ml-2 hidden"></span>
+                </button>
+
+                <div id="odoo-result" class="hidden rounded-lg p-4"></div>
+            </div>
+
+            <div class="mt-6 flex justify-end">
+                <button onclick="goToStep(2)" id="btn-step1-next" disabled
+                        class="bg-blue-500 text-white py-2 px-6 rounded-lg hover:bg-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                    Siguiente →
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 2: Marketplace Selection -->
+        <div id="step2" class="bg-white rounded-lg shadow-lg p-6 fade-in hidden">
+            <div class="flex items-center mb-6">
+                <span class="text-2xl mr-3">🛒</span>
+                <div>
+                    <h2 class="text-xl font-bold text-gray-800">¿Qué marketplaces usas?</h2>
+                    <p class="text-gray-500 text-sm">Selecciona los que quieras conectar</p>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <!-- Amazon -->
+                <div class="border rounded-lg p-4">
+                    <label class="flex items-center cursor-pointer">
+                        <input type="checkbox" id="use_amazon" class="w-5 h-5 text-blue-500 rounded" onchange="toggleMarketplace('amazon')">
+                        <span class="ml-3 font-medium">Amazon</span>
+                    </label>
+                    <div id="amazon_sites" class="ml-8 mt-3 space-y-2 hidden">
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="amazon_mx" class="w-4 h-4 text-blue-500 rounded" checked>
+                            <span class="ml-2 text-sm">México (amazon.com.mx)</span>
+                        </label>
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="amazon_us" class="w-4 h-4 text-blue-500 rounded">
+                            <span class="ml-2 text-sm">Estados Unidos (amazon.com)</span>
+                        </label>
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="amazon_ca" class="w-4 h-4 text-blue-500 rounded">
+                            <span class="ml-2 text-sm">Canadá (amazon.ca)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- MercadoLibre -->
+                <div class="border rounded-lg p-4">
+                    <label class="flex items-center cursor-pointer">
+                        <input type="checkbox" id="use_meli" class="w-5 h-5 text-blue-500 rounded" onchange="toggleMarketplace('meli')">
+                        <span class="ml-3 font-medium">MercadoLibre</span>
+                    </label>
+                    <div id="meli_sites" class="ml-8 mt-3 space-y-2 hidden">
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="meli_mx" class="w-4 h-4 text-blue-500 rounded" checked>
+                            <span class="ml-2 text-sm">México (MLM)</span>
+                        </label>
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="meli_co" class="w-4 h-4 text-blue-500 rounded">
+                            <span class="ml-2 text-sm">Colombia (MCO)</span>
+                        </label>
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="meli_cl" class="w-4 h-4 text-blue-500 rounded">
+                            <span class="ml-2 text-sm">Chile (MLC)</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-6 flex justify-between">
+                <button onclick="goToStep(1)" class="text-gray-600 py-2 px-4 hover:text-gray-800 transition">
+                    ← Atrás
+                </button>
+                <button onclick="goToStep(3)" id="btn-step2-next"
+                        class="bg-blue-500 text-white py-2 px-6 rounded-lg hover:bg-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                    Siguiente →
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 3: Connect Accounts -->
+        <div id="step3" class="bg-white rounded-lg shadow-lg p-6 fade-in hidden">
+            <div class="flex items-center mb-6">
+                <span class="text-2xl mr-3">🔑</span>
+                <div>
+                    <h2 class="text-xl font-bold text-gray-800">Conecta tus cuentas</h2>
+                    <p class="text-gray-500 text-sm">Autoriza acceso a tus marketplaces</p>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <!-- Amazon Connection -->
+                <div id="amazon_connect" class="border rounded-lg p-4 hidden">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center">
+                            <span class="text-xl mr-2">📦</span>
+                            <span class="font-medium">Amazon</span>
+                        </div>
+                        <div id="amazon_status">
+                            <button onclick="connectAmazon()" class="bg-orange-500 text-white py-2 px-4 rounded-lg hover:bg-orange-600 transition text-sm">
+                                Conectar
+                            </button>
+                        </div>
+                    </div>
+                    <div id="amazon_connected" class="hidden mt-3 text-sm text-green-600">
+                        ✅ Conectado: <span id="amazon_account_name"></span>
+                    </div>
+                </div>
+
+                <!-- MeLi Connection -->
+                <div id="meli_connect" class="border rounded-lg p-4 hidden">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center">
+                            <span class="text-xl mr-2">🛒</span>
+                            <span class="font-medium">MercadoLibre</span>
+                        </div>
+                        <div id="meli_status">
+                            <button onclick="connectMeli()" class="bg-yellow-500 text-white py-2 px-4 rounded-lg hover:bg-yellow-600 transition text-sm">
+                                Conectar
+                            </button>
+                        </div>
+                    </div>
+                    <div id="meli_connected" class="hidden mt-3 text-sm text-green-600">
+                        ✅ Conectado: <span id="meli_account_name"></span>
+                    </div>
+                </div>
+
+                <div id="no_marketplace" class="text-center text-gray-500 py-8">
+                    Selecciona al menos un marketplace en el paso anterior
+                </div>
+            </div>
+
+            <div class="mt-6 flex justify-between">
+                <button onclick="goToStep(2)" class="text-gray-600 py-2 px-4 hover:text-gray-800 transition">
+                    ← Atrás
+                </button>
+                <button onclick="goToStep(4)" id="btn-step3-next"
+                        class="bg-blue-500 text-white py-2 px-6 rounded-lg hover:bg-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                    Siguiente →
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 4: Flow Configuration -->
+        <div id="step4" class="bg-white rounded-lg shadow-lg p-6 fade-in hidden">
+            <div class="flex items-center mb-6">
+                <span class="text-2xl mr-3">⚡</span>
+                <div>
+                    <h2 class="text-xl font-bold text-gray-800">Configura los flujos</h2>
+                    <p class="text-gray-500 text-sm">¿Qué quieres sincronizar?</p>
+                </div>
+            </div>
+
+            <div class="space-y-6">
+                <!-- Amazon Flows -->
+                <div id="amazon_flows" class="border rounded-lg p-4 hidden">
+                    <h3 class="font-bold text-gray-700 mb-3">Amazon</h3>
+                    <div class="space-y-3 ml-2">
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="amazon_inbound" class="w-4 h-4 text-blue-500 rounded" checked>
+                            <span class="ml-2 text-sm">📥 Órdenes Amazon → Odoo</span>
+                        </label>
+                        <div class="ml-6 space-y-2">
+                            <label class="flex items-center cursor-pointer">
+                                <input type="checkbox" id="amazon_fbm" class="w-4 h-4 text-blue-500 rounded" checked>
+                                <span class="ml-2 text-sm text-gray-600">FBM (tú envías)</span>
+                            </label>
+                            <label class="flex items-center cursor-pointer">
+                                <input type="checkbox" id="amazon_fba" class="w-4 h-4 text-blue-500 rounded">
+                                <span class="ml-2 text-sm text-gray-600">FBA (Amazon envía) - solo contable</span>
+                            </label>
+                        </div>
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="amazon_outbound" class="w-4 h-4 text-blue-500 rounded" checked>
+                            <span class="ml-2 text-sm">📤 Stock Odoo → Amazon</span>
+                        </label>
+                        <div class="ml-6">
+                            <label class="text-sm text-gray-600">Sincronizar cada: 
+                                <select id="amazon_interval" class="border rounded px-2 py-1 text-sm">
+                                    <option value="5">5 minutos</option>
+                                    <option value="10" selected>10 minutos</option>
+                                    <option value="15">15 minutos</option>
+                                    <option value="30">30 minutos</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- MeLi Flows -->
+                <div id="meli_flows" class="border rounded-lg p-4 hidden">
+                    <h3 class="font-bold text-gray-700 mb-3">MercadoLibre</h3>
+                    <div class="space-y-3 ml-2">
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="meli_inbound" class="w-4 h-4 text-blue-500 rounded" checked>
+                            <span class="ml-2 text-sm">📥 Órdenes MeLi → Odoo</span>
+                        </label>
+                        <div class="ml-6 space-y-2">
+                            <label class="flex items-center cursor-pointer">
+                                <input type="checkbox" id="meli_fbm" class="w-4 h-4 text-blue-500 rounded" checked>
+                                <span class="ml-2 text-sm text-gray-600">FBM (tú envías)</span>
+                            </label>
+                            <label class="flex items-center cursor-pointer">
+                                <input type="checkbox" id="meli_full" class="w-4 h-4 text-blue-500 rounded" checked>
+                                <span class="ml-2 text-sm text-gray-600">FULL (MeLi envía) - solo contable</span>
+                            </label>
+                        </div>
+                        <label class="flex items-center cursor-pointer">
+                            <input type="checkbox" id="meli_outbound" class="w-4 h-4 text-blue-500 rounded" checked>
+                            <span class="ml-2 text-sm">📤 Stock Odoo → MeLi</span>
+                        </label>
+                        <div class="ml-6">
+                            <label class="text-sm text-gray-600">Sincronizar cada: 
+                                <select id="meli_interval" class="border rounded px-2 py-1 text-sm">
+                                    <option value="5">5 minutos</option>
+                                    <option value="10" selected>10 minutos</option>
+                                    <option value="15">15 minutos</option>
+                                    <option value="30">30 minutos</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-6 flex justify-between">
+                <button onclick="goToStep(3)" class="text-gray-600 py-2 px-4 hover:text-gray-800 transition">
+                    ← Atrás
+                </button>
+                <button onclick="goToStep(5)" id="btn-step4-next"
+                        class="bg-blue-500 text-white py-2 px-6 rounded-lg hover:bg-blue-600 transition">
+                    Siguiente →
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 5: SKU Mapping & Activation -->
+        <div id="step5" class="bg-white rounded-lg shadow-lg p-6 fade-in hidden">
+            <div class="flex items-center mb-6">
+                <span class="text-2xl mr-3">🔗</span>
+                <div>
+                    <h2 class="text-xl font-bold text-gray-800">Mapeo de SKUs</h2>
+                    <p class="text-gray-500 text-sm">Conecta tus productos entre sistemas</p>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <button onclick="runAutoMap()" id="btn-automap"
+                        class="w-full bg-gray-100 text-gray-700 py-3 px-4 rounded-lg hover:bg-gray-200 transition flex items-center justify-center">
+                    <span id="automap-text">🔄 Ejecutar mapeo automático</span>
+                    <span id="automap-spinner" class="spinner ml-2 hidden"></span>
+                </button>
+
+                <div id="automap-results" class="hidden space-y-3">
+                    <div id="amazon_map_result" class="border rounded-lg p-3 hidden">
+                        <div class="flex items-center justify-between">
+                            <span class="font-medium">Amazon</span>
+                            <span class="text-sm text-green-600" id="amazon_map_count"></span>
+                        </div>
+                        <div id="amazon_map_pending" class="text-sm text-orange-500 mt-1 hidden">
+                            <span id="amazon_pending_count"></span> pendientes 
+                            <a href="/mapper" class="underline">Revisar</a>
+                        </div>
+                    </div>
+                    <div id="meli_map_result" class="border rounded-lg p-3 hidden">
+                        <div class="flex items-center justify-between">
+                            <span class="font-medium">MercadoLibre</span>
+                            <span class="text-sm text-green-600" id="meli_map_count"></span>
+                        </div>
+                        <div id="meli_map_pending" class="text-sm text-orange-500 mt-1 hidden">
+                            <span id="meli_pending_count"></span> pendientes 
+                            <a href="/mapper" class="underline">Revisar</a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-700">
+                    💡 Puedes mapear SKUs pendientes después en <strong>/mapper</strong>
+                </div>
+            </div>
+
+            <div class="mt-8 border-t pt-6">
+                <h3 class="font-bold text-gray-700 mb-4">Resumen de configuración</h3>
+                <div id="config-summary" class="space-y-2 text-sm text-gray-600">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+
+            <div class="mt-6 flex justify-between">
+                <button onclick="goToStep(4)" class="text-gray-600 py-2 px-4 hover:text-gray-800 transition">
+                    ← Atrás
+                </button>
+                <button onclick="activateGoncloud()" id="btn-activate"
+                        class="bg-green-500 text-white py-3 px-8 rounded-lg hover:bg-green-600 transition text-lg font-bold flex items-center">
+                    <span id="activate-text">🚀 Activar GONCLOUD</span>
+                    <span id="activate-spinner" class="spinner ml-2 hidden"></span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Success Screen -->
+        <div id="success" class="bg-white rounded-lg shadow-lg p-8 text-center fade-in hidden">
+            <div class="text-6xl mb-4">🎉</div>
+            <h2 class="text-2xl font-bold text-gray-800 mb-2">¡GONCLOUD Activado!</h2>
+            <p class="text-gray-500 mb-6">Tu sistema está sincronizando</p>
+            
+            <div class="space-y-3">
+                <a href="/mapper" class="block bg-blue-500 text-white py-3 px-6 rounded-lg hover:bg-blue-600 transition">
+                    Ir al Mapper de SKUs
+                </a>
+                <a href="/status" class="block bg-gray-100 text-gray-700 py-3 px-6 rounded-lg hover:bg-gray-200 transition">
+                    Ver estado del sistema
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        const state = {
+            odoo: { connected: false, url: '', db: '', user: '', password: '', products: 0 },
+            amazon: { enabled: false, connected: false, sites: [] },
+            meli: { enabled: false, connected: false, sites: [] },
+            flows: {}
+        };
+
+        // Step Navigation
+        function goToStep(step) {
+            // Hide all steps
+            for (let i = 1; i <= 5; i++) {
+                document.getElementById(`step${i}`).classList.add('hidden');
+            }
+            document.getElementById('success').classList.add('hidden');
+
+            // Show requested step
+            document.getElementById(`step${step}`).classList.remove('hidden');
+
+            // Update progress circles
+            for (let i = 1; i <= 5; i++) {
+                const circle = document.getElementById(`step${i}-circle`);
+                const line = document.getElementById(`step${i}-line`);
+                
+                if (i < step) {
+                    circle.classList.remove('bg-gray-300', 'text-gray-600', 'bg-blue-500');
+                    circle.classList.add('bg-green-500', 'text-white');
+                    circle.innerHTML = '✓';
+                    if (line) {
+                        line.classList.remove('bg-gray-300');
+                        line.classList.add('bg-green-500');
+                    }
+                } else if (i === step) {
+                    circle.classList.remove('bg-gray-300', 'text-gray-600', 'bg-green-500');
+                    circle.classList.add('bg-blue-500', 'text-white');
+                    circle.innerHTML = i;
+                } else {
+                    circle.classList.remove('bg-blue-500', 'bg-green-500', 'text-white');
+                    circle.classList.add('bg-gray-300', 'text-gray-600');
+                    circle.innerHTML = i;
+                    if (line) {
+                        line.classList.remove('bg-green-500');
+                        line.classList.add('bg-gray-300');
+                    }
+                }
+            }
+
+            // Step-specific logic
+            if (step === 3) updateStep3();
+            if (step === 4) updateStep4();
+            if (step === 5) updateStep5();
+        }
+
+        // Step 1: Test Odoo
+        async function testOdoo() {
+            const btn = document.getElementById('btn-test-odoo');
+            const spinner = document.getElementById('odoo-test-spinner');
+            const text = document.getElementById('odoo-test-text');
+            const result = document.getElementById('odoo-result');
+
+            state.odoo.url = document.getElementById('odoo_url').value.trim();
+            state.odoo.db = document.getElementById('odoo_db').value.trim();
+            state.odoo.user = document.getElementById('odoo_user').value.trim();
+            state.odoo.password = document.getElementById('odoo_password').value;
+
+            if (!state.odoo.url || !state.odoo.db || !state.odoo.user || !state.odoo.password) {
+                result.className = 'rounded-lg p-4 bg-red-50 text-red-700';
+                result.innerHTML = '⚠️ Completa todos los campos';
+                result.classList.remove('hidden');
+                return;
+            }
+
+            btn.disabled = true;
+            spinner.classList.remove('hidden');
+            text.textContent = 'Verificando...';
+
+            try {
+                const resp = await fetch('/setup/api/test-odoo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(state.odoo)
+                });
+                const data = await resp.json();
+
+                if (data.ok) {
+                    state.odoo.connected = true;
+                    state.odoo.products = data.products || 0;
+                    result.className = 'rounded-lg p-4 bg-green-50 text-green-700';
+                    result.innerHTML = `✅ Conectado<br>• ${data.products} productos<br>• ${data.warehouses || 1} almacenes`;
+                    document.getElementById('btn-step1-next').disabled = false;
+                } else {
+                    result.className = 'rounded-lg p-4 bg-red-50 text-red-700';
+                    result.innerHTML = `❌ Error: ${data.error || 'No se pudo conectar'}`;
+                }
+            } catch (e) {
+                result.className = 'rounded-lg p-4 bg-red-50 text-red-700';
+                result.innerHTML = `❌ Error de conexión: ${e.message}`;
+            }
+
+            result.classList.remove('hidden');
+            btn.disabled = false;
+            spinner.classList.add('hidden');
+            text.textContent = 'Verificar conexión';
+        }
+
+        // Step 2: Marketplace toggle
+        function toggleMarketplace(mp) {
+            const checkbox = document.getElementById(`use_${mp}`);
+            const sites = document.getElementById(`${mp}_sites`);
+            
+            if (checkbox.checked) {
+                sites.classList.remove('hidden');
+                state[mp].enabled = true;
+            } else {
+                sites.classList.add('hidden');
+                state[mp].enabled = false;
+            }
+        }
+
+        // Step 3: Update connections UI
+        function updateStep3() {
+            const amazonConnect = document.getElementById('amazon_connect');
+            const meliConnect = document.getElementById('meli_connect');
+            const noMarketplace = document.getElementById('no_marketplace');
+
+            amazonConnect.classList.toggle('hidden', !state.amazon.enabled);
+            meliConnect.classList.toggle('hidden', !state.meli.enabled);
+            noMarketplace.classList.toggle('hidden', state.amazon.enabled || state.meli.enabled);
+        }
+
+        // Connect Amazon (placeholder - needs SP-API OAuth)
+        function connectAmazon() {
+            // For now, just mark as connected (real implementation needs OAuth)
+            alert('Amazon SP-API OAuth requiere configuración adicional.\n\nPor ahora, configura las credenciales en bridge_settings.');
+            state.amazon.connected = true;
+            document.getElementById('amazon_status').innerHTML = '<span class="text-green-600 font-medium">✅ Conectado</span>';
+        }
+
+        // Connect MeLi
+        function connectMeli() {
+            // Redirect to existing OAuth flow
+            window.location.href = '/oauth/start';
+        }
+
+        // Step 4: Update flows UI
+        function updateStep4() {
+            document.getElementById('amazon_flows').classList.toggle('hidden', !state.amazon.enabled);
+            document.getElementById('meli_flows').classList.toggle('hidden', !state.meli.enabled);
+        }
+
+        // Step 5: Update summary
+        function updateStep5() {
+            const summary = document.getElementById('config-summary');
+            let html = `<div class="flex items-center"><span class="text-green-500 mr-2">✓</span> Odoo: ${state.odoo.url}</div>`;
+            
+            if (state.amazon.enabled) {
+                html += `<div class="flex items-center"><span class="text-green-500 mr-2">✓</span> Amazon habilitado</div>`;
+            }
+            if (state.meli.enabled) {
+                html += `<div class="flex items-center"><span class="text-green-500 mr-2">✓</span> MercadoLibre habilitado</div>`;
+            }
+            
+            summary.innerHTML = html;
+        }
+
+        // Auto-map SKUs
+        async function runAutoMap() {
+            const btn = document.getElementById('btn-automap');
+            const spinner = document.getElementById('automap-spinner');
+            const text = document.getElementById('automap-text');
+            const results = document.getElementById('automap-results');
+
+            btn.disabled = true;
+            spinner.classList.remove('hidden');
+            text.textContent = 'Mapeando SKUs...';
+
+            try {
+                const resp = await fetch('/setup/api/auto-map', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        amazon: state.amazon.enabled,
+                        meli: state.meli.enabled
+                    })
+                });
+                const data = await resp.json();
+
+                results.classList.remove('hidden');
+
+                if (state.amazon.enabled && data.amazon) {
+                    document.getElementById('amazon_map_result').classList.remove('hidden');
+                    document.getElementById('amazon_map_count').textContent = `${data.amazon.mapped} mapeados ✓`;
+                    if (data.amazon.pending > 0) {
+                        document.getElementById('amazon_map_pending').classList.remove('hidden');
+                        document.getElementById('amazon_pending_count').textContent = data.amazon.pending;
+                    }
+                }
+
+                if (state.meli.enabled && data.meli) {
+                    document.getElementById('meli_map_result').classList.remove('hidden');
+                    document.getElementById('meli_map_count').textContent = `${data.meli.mapped} mapeados ✓`;
+                    if (data.meli.pending > 0) {
+                        document.getElementById('meli_map_pending').classList.remove('hidden');
+                        document.getElementById('meli_pending_count').textContent = data.meli.pending;
+                    }
+                }
+            } catch (e) {
+                console.error(e);
+            }
+
+            btn.disabled = false;
+            spinner.classList.add('hidden');
+            text.textContent = '🔄 Ejecutar mapeo automático';
+        }
+
+        // Activate GONCLOUD
+        async function activateGoncloud() {
+            const btn = document.getElementById('btn-activate');
+            const spinner = document.getElementById('activate-spinner');
+            const text = document.getElementById('activate-text');
+
+            btn.disabled = true;
+            spinner.classList.remove('hidden');
+            text.textContent = 'Activando...';
+
+            // Collect all settings
+            const config = {
+                odoo: state.odoo,
+                amazon: {
+                    enabled: state.amazon.enabled,
+                    inbound: document.getElementById('amazon_inbound')?.checked || false,
+                    fbm: document.getElementById('amazon_fbm')?.checked || false,
+                    fba: document.getElementById('amazon_fba')?.checked || false,
+                    outbound: document.getElementById('amazon_outbound')?.checked || false,
+                    interval: document.getElementById('amazon_interval')?.value || '10'
+                },
+                meli: {
+                    enabled: state.meli.enabled,
+                    inbound: document.getElementById('meli_inbound')?.checked || false,
+                    fbm: document.getElementById('meli_fbm')?.checked || false,
+                    full: document.getElementById('meli_full')?.checked || false,
+                    outbound: document.getElementById('meli_outbound')?.checked || false,
+                    interval: document.getElementById('meli_interval')?.value || '10'
+                }
+            };
+
+            try {
+                const resp = await fetch('/setup/api/activate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                const data = await resp.json();
+
+                if (data.ok) {
+                    // Show success
+                    for (let i = 1; i <= 5; i++) {
+                        document.getElementById(`step${i}`).classList.add('hidden');
+                    }
+                    document.getElementById('success').classList.remove('hidden');
+
+                    // Mark all steps complete
+                    for (let i = 1; i <= 5; i++) {
+                        const circle = document.getElementById(`step${i}-circle`);
+                        circle.classList.remove('bg-gray-300', 'text-gray-600', 'bg-blue-500');
+                        circle.classList.add('bg-green-500', 'text-white');
+                        circle.innerHTML = '✓';
+                        const line = document.getElementById(`step${i}-line`);
+                        if (line) {
+                            line.classList.remove('bg-gray-300');
+                            line.classList.add('bg-green-500');
+                        }
+                    }
+                } else {
+                    alert('Error: ' + (data.error || 'No se pudo activar'));
+                }
+            } catch (e) {
+                alert('Error de conexión: ' + e.message);
+            }
+
+            btn.disabled = false;
+            spinner.classList.add('hidden');
+            text.textContent = '🚀 Activar GONCLOUD';
+        }
+
+        // Check existing MeLi token on load
+        async function checkMeliToken() {
+            try {
+                const resp = await fetch('/setup/api/status');
+                const data = await resp.json();
+                
+                if (data.meli_connected) {
+                    state.meli.connected = true;
+                    document.getElementById('meli_status').innerHTML = '<span class="text-green-600 font-medium">✅ Conectado</span>';
+                    document.getElementById('meli_account_name').textContent = data.meli_user || '';
+                    document.getElementById('meli_connected').classList.remove('hidden');
+                }
+                
+                if (data.amazon_connected) {
+                    state.amazon.connected = true;
+                    document.getElementById('amazon_status').innerHTML = '<span class="text-green-600 font-medium">✅ Conectado</span>';
+                }
+            } catch (e) {
+                console.log('Status check skipped');
+            }
+        }
+
+        // Init
+        checkMeliToken();
+    </script>
+</body>
+</html>
