@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -29,6 +30,7 @@ SKU_REGEX = re.compile(r"^[A-Z0-9]+(-[A-Z0-9]+)*$")
 r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 app = FastAPI(title="Stock Bridge", version="0.3")
+logger = logging.getLogger(__name__)
 
 # =========================================================
 # MERCADOLIBRE OAUTH — AUTHORIZATION CODE FLOW (SERVER SIDE)
