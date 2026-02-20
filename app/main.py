@@ -819,7 +819,7 @@ async def refresh_amazon_inventory():
                 asin = summary.get("asin", "")
                 name = summary.get("itemName", "")
                 skus.append((sku, asin, name, 0))
-            <logger.info>(f"Amazon listings page {page}: {len(data.get('items', []))} items (total: {len(skus)})")
+            logger.info(f"Amazon listings page {page}: {len(data.get('items', []))} items (total: {len(skus)})")
             next_token = data.get("pagination", {}).get("nextToken")
             if not next_token:
                 break
@@ -827,7 +827,7 @@ async def refresh_amazon_inventory():
         conn.executemany("INSERT INTO amazon_inventory_cache (seller_sku, asin, product_name, qty, updated_at) VALUES (?, ?, ?, ?, datetime('now'))", skus)
         conn.commit()
         conn.close()
-        <logger.info>(f"Amazon inventory cache updated: {len(skus)} listings")
+        logger.info(f"Amazon inventory cache updated: {len(skus)} listings")
         return {"ok": True, "count": len(skus)}
     except Exception as e:
         conn.close()

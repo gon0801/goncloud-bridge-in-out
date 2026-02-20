@@ -484,21 +484,21 @@ def main():
                     )
                     continue
 
-                  # 3.5) Guardrail: NO aplicar snapshots complete=true (ruido)
-                  # - MELI complete=true nos pisó stock (ej NH-CAR-AZU-CEN-DOR -> 0)
-                  # - AMAZON_FBM complete=true es ruido mientras no haya mapeos
-                  if channel.lower() in ("meli", "amazon_fbm") and _is_complete_snapshot_event(conn, str(event_id)):
-                      reason = "skip_complete_snapshot"
-                      mark_event_done(str(event_id), "ok", reason)
-                      bump_metric("events_blocked_total", 1)
-                      bump_metric(f"events_blocked_total_{channel}", 1)
-                      bump_metric("events_processed_ok_total", 1)
-                      set_metric("last_success_at", utc_now_iso())
-                      print(
-                          f"[{utc_now_iso()}] job(skipped): reason={reason} "
-                          f"channel={channel} sku={sku} qty={qty} event_id={event_id}"
-                      )
-                      continue
+                # 3.5) Guardrail: NO aplicar snapshots complete=true (ruido)
+                # - MELI complete=true nos pisó stock (ej NH-CAR-AZU-CEN-DOR -> 0)
+                # - AMAZON_FBM complete=true es ruido mientras no haya mapeos
+                if channel.lower() in ("meli", "amazon_fbm") and _is_complete_snapshot_event(conn, str(event_id)):
+                    reason = "skip_complete_snapshot"
+                    mark_event_done(str(event_id), "ok", reason)
+                    bump_metric("events_blocked_total", 1)
+                    bump_metric(f"events_blocked_total_{channel}", 1)
+                    bump_metric("events_processed_ok_total", 1)
+                    set_metric("last_success_at", utc_now_iso())
+                    print(
+                        f"[{utc_now_iso()}] job(skipped): reason={reason} "
+                        f"channel={channel} sku={sku} qty={qty} event_id={event_id}"
+                    )
+                    continue
 
             # 4) apply MELI si está habilitado
             if channel.lower() == "meli" and meli_adapter_enabled:
