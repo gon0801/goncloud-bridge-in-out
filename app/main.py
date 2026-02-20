@@ -643,17 +643,27 @@ async def amazon_orders_webhook(
             return {"ok": True, "confirmed": True}
     order_id = ""
     event_type = "notification"
+    message: dict = {}
     if isinstance(data, dict):
-        message = data.get("Message", "{}")
-        if isinstance(message, str):
+        msg_raw = data.get("Message", "{}")
+        if isinstance(msg_raw, str):
             try:
-                message = json.loads(message)
-            except:
+                message = json.loads(msg_raw)
+            except Exception:
                 message = {}
+        elif isinstance(msg_raw, dict):
+            message = msg_raw
         if isinstance(message, dict):
             order_id = message.get("AmazonOrderId", "")
             event_type = message.get("NotificationType", "notification")
-    dedupe_key = f"amz-webhook:{sha[:16]}"
+    # Use deterministic dedupe key matching the poll-script format when full
+    # order context is available, so webhook and poll don't double-process.
+    _mp = message.get("MarketplaceId", "") if message else ""
+    _st = message.get("OrderStatus", "") if message else ""
+    if order_id and _mp and _st:
+        dedupe_key = f"amz:{_mp}:{order_id}:{_st}"
+    else:
+        dedupe_key = f"amz-webhook:{sha[:16]}"
     try:
         con = sqlite3.connect(DB_PATH)
         cur = con.cursor()
@@ -662,7 +672,15 @@ async def amazon_orders_webhook(
         con.close()
     except Exception as e:
         print(f"[amazon_webhook] DB error: {e}")
-    job = {"dedupe_key": dedupe_key, "order_json": data.get("Message", data) if isinstance(data.get("Message"), dict) else data, "source": "webhook", "received_at": received_at}
+    # order_json must be the parsed SNS Message body (has AmazonOrderId, OrderStatus,
+    # FulfillmentChannel, MarketplaceId), NOT the raw SNS envelope.
+    # The worker will fetch OrderItems from SP-API when they are absent.
+    job = {
+        "dedupe_key": dedupe_key,
+        "order_json": message if message else data,
+        "source": "webhook",
+        "received_at": received_at,
+    }
     r.rpush("amazon_orders_jobs", json.dumps(job, ensure_ascii=False))
     return {"ok": True, "dedupe_key": dedupe_key}
 

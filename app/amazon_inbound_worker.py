@@ -28,6 +28,8 @@ import hashlib
 import threading
 import signal
 import random
+import urllib.request
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
 
@@ -320,6 +322,84 @@ def get_setting(key: str, default: str = "", use_short_ttl: bool = False) -> str
 
 def is_enabled(key: str) -> bool:
     return get_setting(key, "0", use_short_ttl=True) == "1"
+
+
+# =========================
+# SP-API ENRICHMENT
+# =========================
+_SPAPI_BASE = "https://sellingpartnerapi-na.amazon.com"
+_AMAZON_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
+
+def _get_amazon_access_token() -> Optional[str]:
+    """Obtain a short-lived SP-API access token via the stored refresh token."""
+    try:
+        client_id = get_setting("amazon_sp_api_client_id")
+        client_secret = get_setting("amazon_sp_api_client_secret")
+        refresh_token = get_setting("amazon_sp_api_refresh_token")
+        if not all([client_id, client_secret, refresh_token]):
+            return None
+        body = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }).encode()
+        req = urllib.request.Request(_AMAZON_TOKEN_URL, data=body, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read()).get("access_token")
+    except Exception as e:
+        log("SP-API token error", "WARN", {"error": str(e)})
+        return None
+
+
+def enrich_order_with_items(order_id: str) -> Optional[dict]:
+    """Fetch full order details + OrderItems from Amazon SP-API.
+
+    SNS ORDER_CHANGE notifications do not include line items.  The polling
+    path (amazon_orders_poll.py) fetches items before queuing, but the webhook
+    path does not.  This function bridges that gap so the processing tools
+    always receive a complete order dict.
+
+    Returns a dict ready to be merged into job["order_json"], or None on error.
+    """
+    try:
+        token = _get_amazon_access_token()
+        if not token:
+            log("SP-API enrich: no access token", "WARN", {"order_id": order_id})
+            return None
+
+        def _spapi_get(url: str) -> Optional[dict]:
+            req = urllib.request.Request(
+                url, headers={"x-amz-access-token": token}
+            )
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+
+        # Fetch order header (FulfillmentChannel, MarketplaceId, BuyerInfo, …)
+        order_resp = _spapi_get(f"{_SPAPI_BASE}/orders/v0/orders/{order_id}")
+        order_data: dict = {}
+        if isinstance(order_resp, dict):
+            order_data = order_resp.get("payload", {}) or {}
+
+        # Fetch order items
+        items_resp = _spapi_get(
+            f"{_SPAPI_BASE}/orders/v0/orders/{order_id}/orderItems"
+        )
+        if isinstance(items_resp, dict):
+            order_data["OrderItems"] = (
+                items_resp.get("payload", {}).get("OrderItems", [])
+            )
+
+        if order_data:
+            log("SP-API enrich OK", "INFO", {
+                "order_id": order_id,
+                "items": len(order_data.get("OrderItems", [])),
+            })
+            return order_data
+        return None
+    except Exception as e:
+        log("SP-API enrich error", "ERROR", {"order_id": order_id, "error": str(e)})
+        return None
 
 
 # =========================
@@ -1000,6 +1080,15 @@ def main():
                     current_job_dedupe_key = None
                     current_job_processing_key = None
                 continue
+
+            # SNS ORDER_CHANGE notifications do not include OrderItems.
+            # The poll path pre-fetches them; the webhook path does not.
+            # Enrich here so tools always receive a complete order dict.
+            if not order.get("OrderItems"):
+                enriched = enrich_order_with_items(order_id)
+                if enriched:
+                    order.update(enriched)
+                    job["order_json"] = order
 
             marketplace = str(order.get("MarketplaceId", "")).strip() or get_setting("amazon_marketplace_id", "A1AM78C64UM0Y8")
             status = str(order.get("OrderStatus", "")).strip()
