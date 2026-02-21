@@ -167,15 +167,20 @@ def make_dedupe_key(order: dict, marketplace_id: str) -> str:
 def already_processed(dedupe_key: str) -> bool:
     """Verifica si ya se procesó este evento en la tabla correcta del worker.
 
-    Solo bloquea resultados terminales permanentes (success, manual_review).
-    Los registros 'dead' (max_deferred_exceeded) se re-encolan para reintento
-    una vez que el problema subyacente (ej. SKU faltante) haya sido corregido.
+    Solo bloquea resultados terminales permanentes:
+    - 'success'  → orden completamente procesada en Odoo, no reintentar
+    - 'skipped'  → feature deshabilitada intencionalmente, no reintentar
+
+    NO bloquea:
+    - 'manual_review' → falló (ej. SKU no en Odoo): se reintenta en cada poll
+      para que el sistema se auto-cure cuando se agregue el producto faltante
+    - 'dead' → agotó reintentos: se reintenta para recuperación automática
     """
     try:
         with db_conn() as conn:
             row = conn.execute(
                 "SELECT 1 FROM amazon_processed_events"
-                " WHERE dedupe_key=? AND result IN ('success','manual_review') LIMIT 1",
+                " WHERE dedupe_key=? AND result IN ('success','skipped') LIMIT 1",
                 (dedupe_key,)
             ).fetchone()
         return row is not None

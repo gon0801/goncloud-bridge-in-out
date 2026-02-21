@@ -531,11 +531,18 @@ def update_heartbeat(dedupe_key: str):
         log("Heartbeat update error", "ERROR", {"dedupe_key": dedupe_key, "error": str(e)})
 
 def is_already_completed(dedupe_key: str) -> bool:
-    """Checks for terminal states only. 'deferred' is NOT terminal — it must be retried."""
+    """Checks for terminal states only. 'deferred' is NOT terminal — it must be retried.
+
+    Solo bloquea 'success' y 'skipped'. Los registros 'manual_review' y 'dead'
+    son retryables: el poll los re-encola automáticamente para que el sistema
+    se auto-cure (ej. cuando se agrega un SKU faltante en Odoo).
+    mark_completed usa ON CONFLICT DO UPDATE, por lo que la re-ejecución
+    simplemente sobreescribe el resultado anterior.
+    """
     try:
         row = db.execute(
             """SELECT 1 FROM amazon_processed_events
-               WHERE dedupe_key=? AND result IN ('success','manual_review','dead')""",
+               WHERE dedupe_key=? AND result IN ('success','skipped')""",
             (dedupe_key,),
         ).fetchone()
         return row is not None
