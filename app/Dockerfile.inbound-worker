@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # deps runtime
-RUN pip install --no-cache-dir requests
+RUN pip install --no-cache-dir requests redis httpx
 
 # app (montaremos /app desde host igualmente, pero esto deja requests listo)
 CMD ["python", "/app/inbound_worker.py"]

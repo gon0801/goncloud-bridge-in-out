@@ -36,7 +36,7 @@ def die(msg, code=2):
 
 for k, v in [("ODOO_URL", ODOO_URL), ("ODOO_DB", DB), ("ODOO_USER", USER), ("ODOO_PASS", PW), ("ORDER_JSON", ORDER_JSON_RAW), ("CLIENT_ORDER_REF", CLIENT_ORDER_REF)]:
     if not v:
-        die(f"missing env {k}")
+        die(f"missing env {k}", code=1)
 
 # =========================
 # JSON-RPC helpers
@@ -63,11 +63,11 @@ try:
     if not isinstance(order, dict):
         raise ValueError("not_dict")
 except Exception as e:
-    die(f"bad ORDER_JSON: {e}")
+    die(f"bad ORDER_JSON: {e}", code=1)
 
 order_id = str(order.get("AmazonOrderId") or "").strip()
 if not order_id:
-    die("ORDER_JSON missing AmazonOrderId")
+    die("ORDER_JSON missing AmazonOrderId", code=1)
 
 def parse_items(order_dict):
     """Extrae items de orden Amazon"""
@@ -99,7 +99,7 @@ def parse_items(order_dict):
 
 items = parse_items(order)
 if not items:
-    die("no valid items in order")
+    die("no valid items in order", code=1)
 
 print(f"[FBA_PAID] order_id={order_id} ref={CLIENT_ORDER_REF} items={len(items)}")
 
@@ -166,7 +166,7 @@ for sku in skus:
 
 missing = [s for s in skus if s not in sku_to_pid]
 if missing:
-    die(f"missing products (sale_ok=true) for SKUs: {missing}")
+    die(f"missing products (sale_ok=true) for SKUs: {missing}", code=1)
 
 print(f"[FBA_PAID] products resolved: {len(sku_to_pid)}")
 
