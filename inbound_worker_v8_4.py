@@ -818,8 +818,8 @@ def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: 
         full_name = (f"{buyer_name} {buyer_last}".strip() if buyer_last else buyer_name)
 
         so_note = (
-            f"ML:FULL | STATE={state} | PACK={visible_ref} | ORDER={visible_ref}"
-            + (f" | NAME={full_name}" if full_name else "")
+            f"MercadoLibre FULL | #{visible_ref} | {state}"
+            + (f" | {full_name}" if full_name else "")
         )
 
         rc, out, err = run_tool("inbound_full_paid_one_shot_no_stock", {
@@ -863,7 +863,7 @@ def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: s
         buyer_last = (buyer.get("last_name") or "").strip()
         full_name = (buyer_name + (" " + buyer_last if buyer_last else "")).strip() or "UNKNOWN"
 
-        so_note = f"ML:FBM | STATE={state} | PACK={visible_ref} | ORDER={visible_ref} | NAME={full_name}"
+        so_note = f"MercadoLibre FBM | #{visible_ref} | {state} | {full_name}"
 
         rc, out, err = run_tool("inbound_fbm_so_apply_paid_one_shot", {
             "CLIENT_ORDER_REF": ref,
