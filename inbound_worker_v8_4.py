@@ -712,29 +712,35 @@ def is_allowed_sku(sku: str) -> bool:
 def parse_items(order: dict) -> List[dict]:
     """Extrae SKUs válidos de la orden"""
     items = []
-    
+
     for it in order.get("order_items", []):
         item = it.get("item", {})
-        item_id = str(item.get("id", ""))
-        var_id = str(item.get("variation_id", ""))
-        
+        item_id = str(item.get("id") or "").strip()
+        # variation_id puede llegar como None — evitar convertir None a "None"
+        raw_var = item.get("variation_id") or it.get("variation_id")
+        var_id = str(raw_var).strip() if raw_var is not None else ""
+
         sku = None
-        
-        # 1. Buscar en mapping local
+
+        # 1. Buscar en mapping local (item_id + variation_id)
         if item_id and var_id:
             row = db.execute(
                 "SELECT sku FROM sku_mapping WHERE channel='meli' AND remote_item_id=? AND remote_variation_id=?",
                 (item_id, var_id)
             ).fetchone()
             sku = row[0] if row else None
-        
-        # 2. Fallback a atributos de ML
+
+        # 2. Fallback: campo seller_sku directo en el item (campo top-level de la API de MeLi)
+        if not sku:
+            sku = (item.get("seller_sku") or item.get("SELLER_SKU") or "").strip() or None
+
+        # 3. Fallback: seller_sku dentro del array attributes
         if not sku:
             for attr in item.get("attributes", []):
                 if str(attr.get("id", "")).upper() == "SELLER_SKU":
                     sku = attr.get("value_name")
                     break
-        
+
         if not sku:
             continue
             
