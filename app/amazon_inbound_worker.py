@@ -206,6 +206,15 @@ class Database:
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS amazon_sku_mapping (
+                seller_sku TEXT PRIMARY KEY,
+                odoo_default_code TEXT NOT NULL,
+                notes TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
     def _col_exists(self, conn: sqlite3.Connection, table: str, col: str) -> bool:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
         return any(r["name"] == col for r in rows)
@@ -815,6 +824,7 @@ def run_tool(tool_name: str, env_vars: dict) -> Tuple[int, str, str]:
         "ODOO_DB": Config.ODOO_DB or "",
         "ODOO_USER": Config.ODOO_USER or "",
         "ODOO_PASS": Config.ODOO_PASS or "",
+        "BRIDGE_DB": Config.DB_PATH,
     })
     env.update(env_vars)
 
@@ -1119,8 +1129,16 @@ def main():
                             it["SellerSKU"] = mapped
                             it["sku"] = mapped
                             order["amazon_sku_mapped"] = True
-            except Exception:
-                pass
+                            log("SKU mapped (legacy)", "INFO", {
+                                "order_id": order_id,
+                                "amazon_sku": raw_sku,
+                                "odoo_sku": mapped,
+                            })
+            except Exception as e:
+                log("SKU mapping warning: could not apply amazon_sku_mapping", "WARN", {
+                    "order_id": order_id,
+                    "error": str(e),
+                })
 
             channel_type, channel_label, profile = detect_order_profile(order)
 

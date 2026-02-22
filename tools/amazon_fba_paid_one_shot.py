@@ -15,8 +15,11 @@ ENV requeridas:
 import os
 import sys
 import json
+import sqlite3
 import requests
 from datetime import datetime, timezone
+
+BRIDGE_DB = os.getenv("BRIDGE_DB") or "/data/bridge.db"
 
 # =========================
 # ENV
@@ -69,8 +72,26 @@ order_id = str(order.get("AmazonOrderId") or "").strip()
 if not order_id:
     die("ORDER_JSON missing AmazonOrderId", code=1)
 
+def map_sku(seller_sku):
+    """Busca seller_sku en amazon_sku_mapping → odoo_default_code. Retorna seller_sku si no hay mapeo."""
+    try:
+        con = sqlite3.connect(BRIDGE_DB)
+        row = con.execute(
+            "SELECT odoo_default_code FROM amazon_sku_mapping WHERE seller_sku=? LIMIT 1",
+            (seller_sku,)
+        ).fetchone()
+        con.close()
+        if row and row[0]:
+            mapped = str(row[0]).strip()
+            if mapped and mapped != seller_sku:
+                print(f"[FBA_PAID] SKU mapped (legacy): {seller_sku} -> {mapped}")
+                return mapped
+    except Exception as e:
+        print(f"[FBA_PAID] WARN sku mapping lookup failed for {seller_sku}: {e}", file=sys.stderr)
+    return seller_sku
+
 def parse_items(order_dict):
-    """Extrae items de orden Amazon"""
+    """Extrae items de orden Amazon, aplicando amazon_sku_mapping para SKUs legacy."""
     items = order_dict.get("OrderItems", [])
     if not isinstance(items, list):
         return []
@@ -81,6 +102,7 @@ def parse_items(order_dict):
         sku = (it.get("SellerSKU") or "").strip()
         if not sku:
             continue
+        sku = map_sku(sku)
         try:
             qty = int(it.get("QuantityOrdered", 0))
         except:
