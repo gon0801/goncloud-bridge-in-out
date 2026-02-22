@@ -203,6 +203,19 @@ class Database:
             )
         """)
 
+        # Auto-sync: cualquier SKU insertado en sku_mapping queda automáticamente en inbound_allowed_skus
+        try:
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_sku_mapping_to_allowlist
+                AFTER INSERT ON sku_mapping
+                BEGIN
+                    INSERT OR IGNORE INTO inbound_allowed_skus (sku, enabled)
+                    VALUES (NEW.sku, 1);
+                END
+            """)
+        except Exception:
+            pass  # sku_mapping puede no existir aún en este contexto
+
 class Transaction:
     def __init__(self, conn: sqlite3.Connection, writer_lock: threading.Lock):
         self.conn = conn
@@ -450,11 +463,22 @@ def release_lock(dedupe_key: str):
         log(f"Lock release error: {dedupe_key}: {e}", "ERROR")
 
 def is_already_completed(dedupe_key: str) -> bool:
-    """Verifica si ya fue procesado (audit table)"""
+    """Verifica si ya fue procesado exitosamente (audit table).
+
+    Solo bloquea resultados TERMINALES permanentes:
+    - 'success'  → procesado correctamente en Odoo, no reintentar
+    - 'dead'     → agotó MAX_RETRIES, no reintentar automáticamente
+
+    NO bloquea:
+    - 'manual_review' → falló por error de negocio (ej. sell_on_meli=False,
+      SKU no en Odoo). Se puede auto-curar si se corrige el dato en Odoo
+      y MeLi reenvía el webhook o se usa recover_manual_review.py.
+    - 'skipped' → kill-switch estaba OFF; si se reactiva, se reintentará.
+    - 'error'   → error transiente, retryable.
+    """
     try:
         row = db.execute(
-            """SELECT 1 FROM processed_inbound_events 
-               WHERE dedupe_key=? AND result IN ('success', 'manual_review', 'dead')""",
+            "SELECT 1 FROM processed_inbound_events WHERE dedupe_key=? AND result IN ('success', 'dead')",
             (dedupe_key,)
         ).fetchone()
         return row is not None
@@ -676,11 +700,12 @@ def is_full(order: dict, shipment: Optional[dict]) -> Optional[bool]:
     return None
 
 def is_allowed_sku(sku: str) -> bool:
-    """Fail-closed: si no puede verificar, rechaza"""
+    """Fail-closed: si no puede verificar, rechaza.
+    Fallback: si el SKU tiene mapping en sku_mapping, se permite aunque no esté en la allowlist."""
     sku = (sku or "").strip()
     if not sku:
         return False
-    
+
     try:
         # Si no existe tabla de allowlist, permitir todo (modo legacy)
         row = db.execute(
@@ -688,9 +713,17 @@ def is_allowed_sku(sku: str) -> bool:
         ).fetchone()
         if not row:
             return True
-        
+
         row = db.execute(
             "SELECT 1 FROM inbound_allowed_skus WHERE sku=? AND enabled=1",
+            (sku,)
+        ).fetchone()
+        if row:
+            return True
+
+        # Fallback: SKU con mapping activo en sku_mapping siempre se permite
+        row = db.execute(
+            "SELECT 1 FROM sku_mapping WHERE sku=?",
             (sku,)
         ).fetchone()
         return row is not None
@@ -701,29 +734,35 @@ def is_allowed_sku(sku: str) -> bool:
 def parse_items(order: dict) -> List[dict]:
     """Extrae SKUs válidos de la orden"""
     items = []
-    
+
     for it in order.get("order_items", []):
         item = it.get("item", {})
-        item_id = str(item.get("id", ""))
-        var_id = str(item.get("variation_id", ""))
-        
+        item_id = str(item.get("id") or "").strip()
+        # variation_id puede llegar como None — evitar convertir None a "None"
+        raw_var = item.get("variation_id") or it.get("variation_id")
+        var_id = str(raw_var).strip() if raw_var is not None else ""
+
         sku = None
-        
-        # 1. Buscar en mapping local
+
+        # 1. Buscar en mapping local (item_id + variation_id)
         if item_id and var_id:
             row = db.execute(
                 "SELECT sku FROM sku_mapping WHERE channel='meli' AND remote_item_id=? AND remote_variation_id=?",
                 (item_id, var_id)
             ).fetchone()
             sku = row[0] if row else None
-        
-        # 2. Fallback a atributos de ML
+
+        # 2. Fallback: campo seller_sku directo en el item (campo top-level de la API de MeLi)
+        if not sku:
+            sku = (item.get("seller_sku") or item.get("SELLER_SKU") or "").strip() or None
+
+        # 3. Fallback: seller_sku dentro del array attributes
         if not sku:
             for attr in item.get("attributes", []):
                 if str(attr.get("id", "")).upper() == "SELLER_SKU":
                     sku = attr.get("value_name")
                     break
-        
+
         if not sku:
             continue
             
@@ -817,10 +856,7 @@ def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: 
         buyer_last = (buyer.get("last_name") or "").strip()
         full_name = (f"{buyer_name} {buyer_last}".strip() if buyer_last else buyer_name)
 
-        so_note = (
-            f"ML:FULL | STATE={state} | PACK={visible_ref} | ORDER={visible_ref}"
-            + (f" | NAME={full_name}" if full_name else "")
-        )
+        so_note = f"MercadoLibre FULL | ORDER={visible_ref} | {full_name or 'N/A'}"
 
         rc, out, err = run_tool("inbound_full_paid_one_shot_no_stock", {
             "CLIENT_ORDER_REF": ref,
@@ -863,7 +899,7 @@ def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: s
         buyer_last = (buyer.get("last_name") or "").strip()
         full_name = (buyer_name + (" " + buyer_last if buyer_last else "")).strip() or "UNKNOWN"
 
-        so_note = f"ML:FBM | STATE={state} | PACK={visible_ref} | ORDER={visible_ref} | NAME={full_name}"
+        so_note = f"MercadoLibre FBM | ORDER={visible_ref} | {full_name or 'N/A'}"
 
         rc, out, err = run_tool("inbound_fbm_so_apply_paid_one_shot", {
             "CLIENT_ORDER_REF": ref,

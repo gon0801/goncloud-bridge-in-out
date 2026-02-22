@@ -17,7 +17,10 @@ ENV requeridas:
 import os
 import sys
 import json
+import sqlite3
 import requests
+
+BRIDGE_DB = os.getenv("BRIDGE_DB") or "/data/bridge.db"
 
 # =========================
 # ENV
@@ -30,6 +33,7 @@ ORDER_JSON_RAW = os.getenv("ORDER_JSON") or ""
 CLIENT_ORDER_REF = os.getenv("CLIENT_ORDER_REF") or ""
 CHANNEL_LABEL = (os.getenv("CHANNEL_LABEL") or "Amazon FBM").strip()
 BUYER_NAME = (os.getenv("BUYER_NAME") or "").strip()
+IS_USD_ORDER = os.getenv("IS_USD_ORDER", "0") == "1"
 
 def die(msg, code=2):
     print(f"[FBM_PAID] ERROR {msg}", file=sys.stderr)
@@ -37,7 +41,7 @@ def die(msg, code=2):
 
 for k, v in [("ODOO_URL", ODOO_URL), ("ODOO_DB", DB), ("ODOO_USER", USER), ("ODOO_PASS", PW), ("ORDER_JSON", ORDER_JSON_RAW), ("CLIENT_ORDER_REF", CLIENT_ORDER_REF)]:
     if not v:
-        die(f"missing env {k}")
+        die(f"missing env {k}", code=1)
 
 # =========================
 # JSON-RPC helpers
@@ -64,14 +68,46 @@ try:
     if not isinstance(order, dict):
         raise ValueError("not_dict")
 except Exception as e:
-    die(f"bad ORDER_JSON: {e}")
+    die(f"bad ORDER_JSON: {e}", code=1)
 
 order_id = str(order.get("AmazonOrderId") or "").strip()
 if not order_id:
-    die("ORDER_JSON missing AmazonOrderId")
+    die("ORDER_JSON missing AmazonOrderId", code=1)
+
+def map_sku(seller_sku):
+    """Busca seller_sku en amazon_sku_mapping → odoo_default_code. Retorna seller_sku si no hay mapeo."""
+    try:
+        con = sqlite3.connect(BRIDGE_DB)
+        row = con.execute(
+            "SELECT odoo_default_code FROM amazon_sku_mapping WHERE seller_sku=? LIMIT 1",
+            (seller_sku,)
+        ).fetchone()
+        con.close()
+        if row and row[0]:
+            mapped = str(row[0]).strip()
+            if mapped and mapped != seller_sku:
+                print(f"[FBM_PAID] SKU mapped (legacy): {seller_sku} -> {mapped}")
+                return mapped
+    except Exception as e:
+        print(f"[FBM_PAID] WARN sku mapping lookup failed for {seller_sku}: {e}", file=sys.stderr)
+    return seller_sku
+
+def parse_amount(field):
+    """Extrae Amount de un campo Amazon (ItemPrice, ItemTax, ShippingPrice, etc.). Retorna 0.0 si no existe."""
+    if not isinstance(field, dict):
+        return 0.0
+    try:
+        return float(field.get("Amount") or 0)
+    except (ValueError, TypeError):
+        return 0.0
 
 def parse_items(order_dict):
-    """Extrae items de orden Amazon"""
+    """Extrae items de orden Amazon, aplicando amazon_sku_mapping para SKUs legacy.
+
+    unit_price = Sales Proceeds / qty
+    Sales Proceeds = ItemPrice + ItemTax + ShippingPrice + ShippingTax + GiftWrapPrice + GiftWrapTax
+    Esto es el monto total que Amazon cobró al cliente, que es lo que debe entrar a Odoo.
+    """
     items = order_dict.get("OrderItems", [])
     if not isinstance(items, list):
         return []
@@ -82,25 +118,34 @@ def parse_items(order_dict):
         sku = (it.get("SellerSKU") or "").strip()
         if not sku:
             continue
+        sku = map_sku(sku)
         try:
             qty = int(it.get("QuantityOrdered", 0))
         except:
             qty = 0
         if qty <= 0:
             continue
-        price = 0.0
-        item_price = it.get("ItemPrice", {})
-        if isinstance(item_price, dict):
-            try:
-                price = float(item_price.get("Amount", 0))
-            except:
-                price = 0.0
-        out.append({"sku": sku, "qty": qty, "unit_price": price})
+
+        # Sales Proceeds: suma de todos los componentes que Amazon cobró al cliente
+        item_price   = parse_amount(it.get("ItemPrice"))
+        item_tax     = parse_amount(it.get("ItemTax"))
+        ship_price   = parse_amount(it.get("ShippingPrice"))
+        ship_tax     = parse_amount(it.get("ShippingTax"))
+        giftwrap     = parse_amount(it.get("GiftWrapPrice"))
+        giftwrap_tax = parse_amount(it.get("GiftWrapTax"))
+
+        total = item_price + item_tax + ship_price + ship_tax + giftwrap + giftwrap_tax
+        unit_price = round(total / qty, 6) if qty else 0.0
+
+        print(f"[FBM_PAID] item {sku} qty={qty} product={item_price} tax={item_tax} "
+              f"ship={ship_price} ship_tax={ship_tax} → total={total} unit_price={unit_price}")
+
+        out.append({"sku": sku, "qty": qty, "unit_price": unit_price})
     return out
 
 items = parse_items(order)
 if not items:
-    die("no valid items in order")
+    die("no valid items in order", code=1)
 
 print(f"[FBM_PAID] order_id={order_id} ref={CLIENT_ORDER_REF} items={len(items)}")
 
@@ -111,6 +156,35 @@ uid = jcall("common", "authenticate", [DB, USER, PW, {}])
 if not uid:
     die("authentication_failed")
 print(f"[FBM_PAID] authenticated uid={uid}")
+
+# =========================
+# USD → MXN conversion (solo órdenes US)
+# =========================
+def get_usd_to_mxn_rate():
+    """Lee el tipo de cambio USD/MXN desde Odoo (res.currency.rate).
+    Retorna MXN por 1 USD, ej. 17.5. None si no se puede obtener."""
+    try:
+        rates = exec_kw(uid, "res.currency.rate", "search_read",
+            [[["currency_id.name", "=", "USD"]]],
+            {"fields": ["rate", "name"], "order": "name desc", "limit": 1})
+        if rates and rates[0].get("rate"):
+            r = float(rates[0]["rate"])
+            if r > 0:
+                # En Odoo, rate = inverse_company_rate = 1/MXN_por_USD
+                mxn_per_usd = round(1.0 / r, 6)
+                print(f"[FBM_PAID] USD/MXN rate={mxn_per_usd} (fecha={rates[0].get('name','?')})")
+                return mxn_per_usd
+    except Exception as e:
+        print(f"[FBM_PAID] WARN no se pudo leer tipo de cambio de res.currency.rate: {e}", file=sys.stderr)
+    return None
+
+if IS_USD_ORDER:
+    usd_to_mxn = get_usd_to_mxn_rate()
+    if not usd_to_mxn:
+        die("No se pudo obtener tipo de cambio USD/MXN de Odoo para orden en USD", code=2)
+    for item in items:
+        item["unit_price"] = round(item["unit_price"] * usd_to_mxn, 2)
+    print(f"[FBM_PAID] precios convertidos USD→MXN (rate={usd_to_mxn})")
 
 # =========================
 # Check existing SO
@@ -167,7 +241,7 @@ for sku in skus:
 
 missing = [s for s in skus if s not in sku_to_pid]
 if missing:
-    die(f"missing products (sale_ok=true) for SKUs: {missing}")
+    die(f"missing products (sale_ok=true) for SKUs: {missing}", code=1)
 
 print(f"[FBM_PAID] products resolved: {len(sku_to_pid)}")
 
@@ -178,7 +252,7 @@ if not so_id:
     so_id = exec_kw(uid, "sale.order", "create", [{
         "partner_id": partner_id,
         "client_order_ref": CLIENT_ORDER_REF,
-        "note": f"{CHANNEL_LABEL} | ORDER={order_id}" + (f" | {BUYER_NAME}" if BUYER_NAME else ""),
+        "note": f"{CHANNEL_LABEL} | ORDER={order_id} | {BUYER_NAME or 'N/A'}",
     }])
     print(f"[FBM_PAID] SO created id={so_id}")
 

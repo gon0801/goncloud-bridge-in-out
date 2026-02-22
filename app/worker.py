@@ -6,6 +6,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 import urllib.error
+import urllib.parse
 import urllib.request
 import time
 

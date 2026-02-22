@@ -165,11 +165,22 @@ def make_dedupe_key(order: dict, marketplace_id: str) -> str:
 
 
 def already_processed(dedupe_key: str) -> bool:
-    """Verifica si ya se procesó este evento en la tabla correcta del worker."""
+    """Verifica si ya se procesó este evento en la tabla correcta del worker.
+
+    Solo bloquea resultados terminales permanentes:
+    - 'success'  → orden completamente procesada en Odoo, no reintentar
+    - 'skipped'  → feature deshabilitada intencionalmente, no reintentar
+
+    NO bloquea:
+    - 'manual_review' → falló (ej. SKU no en Odoo): se reintenta en cada poll
+      para que el sistema se auto-cure cuando se agregue el producto faltante
+    - 'dead' → agotó reintentos: se reintenta para recuperación automática
+    """
     try:
         with db_conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM amazon_processed_events WHERE dedupe_key=? LIMIT 1",
+                "SELECT 1 FROM amazon_processed_events"
+                " WHERE dedupe_key=? AND result IN ('success','skipped') LIMIT 1",
                 (dedupe_key,)
             ).fetchone()
         return row is not None
@@ -227,8 +238,8 @@ def main():
         print(f"[poll] ERROR connecting Redis: {e}", file=sys.stderr)
         return 1
     
-    # Calculate date range
-    created_after = (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
+    # Calculate date range — usar Z en vez de +00:00 (requerido por SP-API US)
+    created_after = (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime('%Y-%m-%dT%H:%M:%SZ')
     print(f"[poll] Looking for orders since {created_after}")
     
     # Determine marketplaces

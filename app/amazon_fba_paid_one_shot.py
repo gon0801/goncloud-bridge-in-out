@@ -29,6 +29,8 @@ USER = os.getenv("ODOO_USER") or ""
 PW = os.getenv("ODOO_PASS") or os.getenv("ODOO_PASSWORD") or ""
 ORDER_JSON_RAW = os.getenv("ORDER_JSON") or ""
 CLIENT_ORDER_REF = os.getenv("CLIENT_ORDER_REF") or ""
+CHANNEL_LABEL = (os.getenv("CHANNEL_LABEL") or "Amazon FBA").strip()
+BUYER_NAME = (os.getenv("BUYER_NAME") or "").strip()
 
 # DB bridge (para mapeo amazon_sku_mapping)
 BRIDGE_DB = os.getenv("BRIDGE_DB") or "/data/bridge.db"
@@ -205,14 +207,14 @@ else:
 # =========================
 partner = exec_kw(
     uid, "res.partner", "search_read",
-    [[["name", "=", "Amazon FBA"]]],
+    [[["name", "=", CHANNEL_LABEL]]],
     {"fields": ["id"], "limit": 1},
 )
 
 if partner:
     partner_id = partner[0]["id"]
 else:
-    partner_id = exec_kw(uid, "res.partner", "create", [{"name": "Amazon FBA", "customer_rank": 1}])
+    partner_id = exec_kw(uid, "res.partner", "create", [{"name": CHANNEL_LABEL, "customer_rank": 1}])
     print(f"[FBA_PAID] created partner id={partner_id}")
 
 # =========================
@@ -244,7 +246,7 @@ if not so_id:
     so_id = exec_kw(uid, "sale.order", "create", [{
         "partner_id": partner_id,
         "client_order_ref": CLIENT_ORDER_REF,
-        "note": f"Amazon FBA | ORDER={order_id}",
+        "note": f"{CHANNEL_LABEL} | #{order_id}" + (f" | {BUYER_NAME}" if BUYER_NAME else ""),
     }])
     print(f"[FBA_PAID] SO created id={so_id}")
 

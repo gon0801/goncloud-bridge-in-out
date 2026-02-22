@@ -28,6 +28,8 @@ import hashlib
 import threading
 import signal
 import random
+import urllib.request
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
 
@@ -204,6 +206,15 @@ class Database:
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS amazon_sku_mapping (
+                seller_sku TEXT PRIMARY KEY,
+                odoo_default_code TEXT NOT NULL,
+                notes TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
     def _col_exists(self, conn: sqlite3.Connection, table: str, col: str) -> bool:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
         return any(r["name"] == col for r in rows)
@@ -320,6 +331,84 @@ def get_setting(key: str, default: str = "", use_short_ttl: bool = False) -> str
 
 def is_enabled(key: str) -> bool:
     return get_setting(key, "0", use_short_ttl=True) == "1"
+
+
+# =========================
+# SP-API ENRICHMENT
+# =========================
+_SPAPI_BASE = "https://sellingpartnerapi-na.amazon.com"
+_AMAZON_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
+
+def _get_amazon_access_token() -> Optional[str]:
+    """Obtain a short-lived SP-API access token via the stored refresh token."""
+    try:
+        client_id = get_setting("amazon_sp_api_client_id")
+        client_secret = get_setting("amazon_sp_api_client_secret")
+        refresh_token = get_setting("amazon_sp_api_refresh_token")
+        if not all([client_id, client_secret, refresh_token]):
+            return None
+        body = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }).encode()
+        req = urllib.request.Request(_AMAZON_TOKEN_URL, data=body, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read()).get("access_token")
+    except Exception as e:
+        log("SP-API token error", "WARN", {"error": str(e)})
+        return None
+
+
+def enrich_order_with_items(order_id: str) -> Optional[dict]:
+    """Fetch full order details + OrderItems from Amazon SP-API.
+
+    SNS ORDER_CHANGE notifications do not include line items.  The polling
+    path (amazon_orders_poll.py) fetches items before queuing, but the webhook
+    path does not.  This function bridges that gap so the processing tools
+    always receive a complete order dict.
+
+    Returns a dict ready to be merged into job["order_json"], or None on error.
+    """
+    try:
+        token = _get_amazon_access_token()
+        if not token:
+            log("SP-API enrich: no access token", "WARN", {"order_id": order_id})
+            return None
+
+        def _spapi_get(url: str) -> Optional[dict]:
+            req = urllib.request.Request(
+                url, headers={"x-amz-access-token": token}
+            )
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+
+        # Fetch order header (FulfillmentChannel, MarketplaceId, BuyerInfo, …)
+        order_resp = _spapi_get(f"{_SPAPI_BASE}/orders/v0/orders/{order_id}")
+        order_data: dict = {}
+        if isinstance(order_resp, dict):
+            order_data = order_resp.get("payload", {}) or {}
+
+        # Fetch order items
+        items_resp = _spapi_get(
+            f"{_SPAPI_BASE}/orders/v0/orders/{order_id}/orderItems"
+        )
+        if isinstance(items_resp, dict):
+            order_data["OrderItems"] = (
+                items_resp.get("payload", {}).get("OrderItems", [])
+            )
+
+        if order_data:
+            log("SP-API enrich OK", "INFO", {
+                "order_id": order_id,
+                "items": len(order_data.get("OrderItems", [])),
+            })
+            return order_data
+        return None
+    except Exception as e:
+        log("SP-API enrich error", "ERROR", {"order_id": order_id, "error": str(e)})
+        return None
 
 
 # =========================
@@ -451,11 +540,18 @@ def update_heartbeat(dedupe_key: str):
         log("Heartbeat update error", "ERROR", {"dedupe_key": dedupe_key, "error": str(e)})
 
 def is_already_completed(dedupe_key: str) -> bool:
-    """Checks for terminal states only. 'deferred' is NOT terminal — it must be retried."""
+    """Checks for terminal states only. 'deferred' is NOT terminal — it must be retried.
+
+    Solo bloquea 'success' y 'skipped'. Los registros 'manual_review' y 'dead'
+    son retryables: el poll los re-encola automáticamente para que el sistema
+    se auto-cure (ej. cuando se agrega un SKU faltante en Odoo).
+    mark_completed usa ON CONFLICT DO UPDATE, por lo que la re-ejecución
+    simplemente sobreescribe el resultado anterior.
+    """
     try:
         row = db.execute(
             """SELECT 1 FROM amazon_processed_events
-               WHERE dedupe_key=? AND result IN ('success','manual_review','dead')""",
+               WHERE dedupe_key=? AND result IN ('success','skipped')""",
             (dedupe_key,),
         ).fetchone()
         return row is not None
@@ -728,6 +824,7 @@ def run_tool(tool_name: str, env_vars: dict) -> Tuple[int, str, str]:
         "ODOO_DB": Config.ODOO_DB or "",
         "ODOO_USER": Config.ODOO_USER or "",
         "ODOO_PASS": Config.ODOO_PASS or "",
+        "BRIDGE_DB": Config.DB_PATH,
     })
     env.update(env_vars)
 
@@ -806,6 +903,7 @@ def process_fba(order: dict, order_id: str, marketplace: str, action: str, dedup
             "ORDER_JSON": json.dumps(order),
             "CHANNEL_LABEL": channel_label,
             "BUYER_NAME": buyer_name,
+            "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
         })
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
@@ -838,6 +936,7 @@ def process_fbm(order: dict, order_id: str, marketplace: str, action: str, dedup
             "ORDER_JSON": json.dumps(order),
             "CHANNEL_LABEL": channel_label,
             "BUYER_NAME": buyer_name,
+            "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
         })
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
@@ -1001,6 +1100,15 @@ def main():
                     current_job_processing_key = None
                 continue
 
+            # SNS ORDER_CHANGE notifications do not include OrderItems.
+            # The poll path pre-fetches them; the webhook path does not.
+            # Enrich here so tools always receive a complete order dict.
+            if not order.get("OrderItems"):
+                enriched = enrich_order_with_items(order_id)
+                if enriched:
+                    order.update(enriched)
+                    job["order_json"] = order
+
             marketplace = str(order.get("MarketplaceId", "")).strip() or get_setting("amazon_marketplace_id", "A1AM78C64UM0Y8")
             status = str(order.get("OrderStatus", "")).strip()
             action = map_order_status(status)
@@ -1023,8 +1131,16 @@ def main():
                             it["SellerSKU"] = mapped
                             it["sku"] = mapped
                             order["amazon_sku_mapped"] = True
-            except Exception:
-                pass
+                            log("SKU mapped (legacy)", "INFO", {
+                                "order_id": order_id,
+                                "amazon_sku": raw_sku,
+                                "odoo_sku": mapped,
+                            })
+            except Exception as e:
+                log("SKU mapping warning: could not apply amazon_sku_mapping", "WARN", {
+                    "order_id": order_id,
+                    "error": str(e),
+                })
 
             channel_type, channel_label, profile = detect_order_profile(order)
 
