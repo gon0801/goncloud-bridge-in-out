@@ -91,8 +91,22 @@ def map_sku(seller_sku):
         print(f"[FBA_PAID] WARN sku mapping lookup failed for {seller_sku}: {e}", file=sys.stderr)
     return seller_sku
 
+def parse_amount(field):
+    """Extrae Amount de un campo Amazon (ItemPrice, ItemTax, ShippingPrice, etc.). Retorna 0.0 si no existe."""
+    if not isinstance(field, dict):
+        return 0.0
+    try:
+        return float(field.get("Amount") or 0)
+    except (ValueError, TypeError):
+        return 0.0
+
 def parse_items(order_dict):
-    """Extrae items de orden Amazon, aplicando amazon_sku_mapping para SKUs legacy."""
+    """Extrae items de orden Amazon, aplicando amazon_sku_mapping para SKUs legacy.
+
+    unit_price = Sales Proceeds / qty
+    Sales Proceeds = ItemPrice + ItemTax + ShippingPrice + ShippingTax + GiftWrapPrice + GiftWrapTax
+    Esto es el monto total que Amazon cobró al cliente, que es lo que debe entrar a Odoo.
+    """
     items = order_dict.get("OrderItems", [])
     if not isinstance(items, list):
         return []
@@ -110,14 +124,22 @@ def parse_items(order_dict):
             qty = 0
         if qty <= 0:
             continue
-        price = 0.0
-        item_price = it.get("ItemPrice", {})
-        if isinstance(item_price, dict):
-            try:
-                price = float(item_price.get("Amount", 0))
-            except:
-                price = 0.0
-        out.append({"sku": sku, "qty": qty, "unit_price": price})
+
+        # Sales Proceeds: suma de todos los componentes que Amazon cobró al cliente
+        item_price   = parse_amount(it.get("ItemPrice"))
+        item_tax     = parse_amount(it.get("ItemTax"))
+        ship_price   = parse_amount(it.get("ShippingPrice"))
+        ship_tax     = parse_amount(it.get("ShippingTax"))
+        giftwrap     = parse_amount(it.get("GiftWrapPrice"))
+        giftwrap_tax = parse_amount(it.get("GiftWrapTax"))
+
+        total = item_price + item_tax + ship_price + ship_tax + giftwrap + giftwrap_tax
+        unit_price = round(total / qty, 6) if qty else 0.0
+
+        print(f"[FBA_PAID] item {sku} qty={qty} product={item_price} tax={item_tax} "
+              f"ship={ship_price} ship_tax={ship_tax} → total={total} unit_price={unit_price}")
+
+        out.append({"sku": sku, "qty": qty, "unit_price": unit_price})
     return out
 
 items = parse_items(order)
