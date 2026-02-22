@@ -203,6 +203,19 @@ class Database:
             )
         """)
 
+        # Auto-sync: cualquier SKU insertado en sku_mapping queda automáticamente en inbound_allowed_skus
+        try:
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_sku_mapping_to_allowlist
+                AFTER INSERT ON sku_mapping
+                BEGIN
+                    INSERT OR IGNORE INTO inbound_allowed_skus (sku, enabled)
+                    VALUES (NEW.sku, 1);
+                END
+            """)
+        except Exception:
+            pass  # sku_mapping puede no existir aún en este contexto
+
 class Transaction:
     def __init__(self, conn: sqlite3.Connection, writer_lock: threading.Lock):
         self.conn = conn
@@ -687,11 +700,12 @@ def is_full(order: dict, shipment: Optional[dict]) -> Optional[bool]:
     return None
 
 def is_allowed_sku(sku: str) -> bool:
-    """Fail-closed: si no puede verificar, rechaza"""
+    """Fail-closed: si no puede verificar, rechaza.
+    Fallback: si el SKU tiene mapping en sku_mapping, se permite aunque no esté en la allowlist."""
     sku = (sku or "").strip()
     if not sku:
         return False
-    
+
     try:
         # Si no existe tabla de allowlist, permitir todo (modo legacy)
         row = db.execute(
@@ -699,9 +713,17 @@ def is_allowed_sku(sku: str) -> bool:
         ).fetchone()
         if not row:
             return True
-        
+
         row = db.execute(
             "SELECT 1 FROM inbound_allowed_skus WHERE sku=? AND enabled=1",
+            (sku,)
+        ).fetchone()
+        if row:
+            return True
+
+        # Fallback: SKU con mapping activo en sku_mapping siempre se permite
+        row = db.execute(
+            "SELECT 1 FROM sku_mapping WHERE sku=?",
             (sku,)
         ).fetchone()
         return row is not None
