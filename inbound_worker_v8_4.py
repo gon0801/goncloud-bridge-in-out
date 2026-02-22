@@ -450,11 +450,22 @@ def release_lock(dedupe_key: str):
         log(f"Lock release error: {dedupe_key}: {e}", "ERROR")
 
 def is_already_completed(dedupe_key: str) -> bool:
-    """Verifica si ya fue procesado (audit table)"""
+    """Verifica si ya fue procesado exitosamente (audit table).
+
+    Solo bloquea resultados TERMINALES permanentes:
+    - 'success'  → procesado correctamente en Odoo, no reintentar
+    - 'dead'     → agotó MAX_RETRIES, no reintentar automáticamente
+
+    NO bloquea:
+    - 'manual_review' → falló por error de negocio (ej. sell_on_meli=False,
+      SKU no en Odoo). Se puede auto-curar si se corrige el dato en Odoo
+      y MeLi reenvía el webhook o se usa recover_manual_review.py.
+    - 'skipped' → kill-switch estaba OFF; si se reactiva, se reintentará.
+    - 'error'   → error transiente, retryable.
+    """
     try:
         row = db.execute(
-            """SELECT 1 FROM processed_inbound_events 
-               WHERE dedupe_key=? AND result IN ('success', 'manual_review', 'dead')""",
+            "SELECT 1 FROM processed_inbound_events WHERE dedupe_key=? AND result IN ('success', 'dead')",
             (dedupe_key,)
         ).fetchone()
         return row is not None
