@@ -294,28 +294,15 @@ def resolve_site(order: Dict[str, Any]) -> str:
 
 def build_so_note(order: Dict[str, Any], order_id: str, display_id: str, prefix: str = "ML") -> str:
     """
-    Construye la nota para el SO con toda la info relevante.
-    Incluye ambos IDs cuando son diferentes (pack vs order).
+    Construye la nota para el SO.
+    Formato estándar: {prefix} | ORDER={display_id} | {buyer_name}
     """
     buyer = order.get("buyer") or {}
-    buyer_name = (buyer.get("nickname") or "").strip()
-    buyer_id = str(buyer.get("id") or "").strip()
+    buyer_first = (buyer.get("nickname") or buyer.get("first_name") or "").strip()
+    buyer_last = (buyer.get("last_name") or "").strip()
+    buyer_name = (f"{buyer_first} {buyer_last}".strip() if buyer_last else buyer_first) or "N/A"
 
-    note_lines = [f"{prefix}"]
-    
-    # Si display_id != order_id, mostrar ambos para auditoría
-    if display_id != order_id:
-        note_lines.append(f"ML Pack ID: {display_id}")
-        note_lines.append(f"ML Order ID: {order_id}")
-    else:
-        note_lines.append(f"ML Order ID: {order_id}")
-    
-    if buyer_name:
-        note_lines.append(f"Buyer: {buyer_name}")
-    if buyer_id:
-        note_lines.append(f"Buyer ID: {buyer_id}")
-
-    return "\n".join(note_lines)
+    return f"{prefix} | ORDER={display_id} | {buyer_name}"
 
 
 # ============================================================

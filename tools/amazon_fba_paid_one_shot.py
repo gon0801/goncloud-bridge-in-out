@@ -32,6 +32,7 @@ ORDER_JSON_RAW = os.getenv("ORDER_JSON") or ""
 CLIENT_ORDER_REF = os.getenv("CLIENT_ORDER_REF") or ""
 CHANNEL_LABEL = (os.getenv("CHANNEL_LABEL") or "Amazon FBA").strip()
 BUYER_NAME = (os.getenv("BUYER_NAME") or "").strip()
+IS_USD_ORDER = os.getenv("IS_USD_ORDER", "0") == "1"
 
 def die(msg, code=2):
     print(f"[FBA_PAID] ERROR {msg}", file=sys.stderr)
@@ -134,6 +135,35 @@ if not uid:
 print(f"[FBA_PAID] authenticated uid={uid}")
 
 # =========================
+# USD → MXN conversion (solo órdenes US)
+# =========================
+def get_usd_to_mxn_rate():
+    """Lee el tipo de cambio USD/MXN desde Odoo (res.currency.rate).
+    Retorna MXN por 1 USD, ej. 17.5. None si no se puede obtener."""
+    try:
+        rates = exec_kw(uid, "res.currency.rate", "search_read",
+            [[["currency_id.name", "=", "USD"]]],
+            {"fields": ["rate", "name"], "order": "name desc", "limit": 1})
+        if rates and rates[0].get("rate"):
+            r = float(rates[0]["rate"])
+            if r > 0:
+                # En Odoo, rate = inverse_company_rate = 1/MXN_por_USD
+                mxn_per_usd = round(1.0 / r, 6)
+                print(f"[FBA_PAID] USD/MXN rate={mxn_per_usd} (fecha={rates[0].get('name','?')})")
+                return mxn_per_usd
+    except Exception as e:
+        print(f"[FBA_PAID] WARN no se pudo leer tipo de cambio de res.currency.rate: {e}", file=sys.stderr)
+    return None
+
+if IS_USD_ORDER:
+    usd_to_mxn = get_usd_to_mxn_rate()
+    if not usd_to_mxn:
+        die("No se pudo obtener tipo de cambio USD/MXN de Odoo para orden en USD", code=2)
+    for item in items:
+        item["unit_price"] = round(item["unit_price"] * usd_to_mxn, 2)
+    print(f"[FBA_PAID] precios convertidos USD→MXN (rate={usd_to_mxn})")
+
+# =========================
 # Check existing SO
 # =========================
 existing = exec_kw(uid, "sale.order", "search_read",
@@ -199,7 +229,7 @@ if not so_id:
     so_id = exec_kw(uid, "sale.order", "create", [{
         "partner_id": partner_id,
         "client_order_ref": CLIENT_ORDER_REF,
-        "note": f"{CHANNEL_LABEL} | ORDER={order_id}" + (f" | {BUYER_NAME}" if BUYER_NAME else ""),
+        "note": f"{CHANNEL_LABEL} | ORDER={order_id} | {BUYER_NAME or 'N/A'}",
     }])
     print(f"[FBA_PAID] SO created id={so_id}")
 

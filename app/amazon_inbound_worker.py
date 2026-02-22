@@ -903,6 +903,7 @@ def process_fba(order: dict, order_id: str, marketplace: str, action: str, dedup
             "ORDER_JSON": json.dumps(order),
             "CHANNEL_LABEL": channel_label,
             "BUYER_NAME": buyer_name,
+            "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
         })
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
@@ -935,6 +936,7 @@ def process_fbm(order: dict, order_id: str, marketplace: str, action: str, dedup
             "ORDER_JSON": json.dumps(order),
             "CHANNEL_LABEL": channel_label,
             "BUYER_NAME": buyer_name,
+            "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
         })
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
