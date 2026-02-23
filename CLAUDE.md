@@ -419,7 +419,7 @@ sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
 
 ## 11. Estado actual
 
-**Fecha de ultima actualizacion:** 2026-02-23
+**Fecha de ultima actualizacion:** 2026-02-23 (cierre de sesion)
 **Branch activo:** `claude/review-inbound-outbound-G9HeG`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 
@@ -440,11 +440,14 @@ sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
 
 ## 12. Diario de cambios
 
-### 2026-02-23
+### 2026-02-23 (esta sesion)
 - Fix: `amazon_fba_paid_one_shot` usa `display_ref` en lugar de `CLIENT_ORDER_REF`
 - Fix: `amazon_fba_paid_one_shot` convierte USD->MXN y corrige `unit_price`
 - Fix: `customer_reference` limpia prefijos MeLi (MLFBM/MLFULL)
-- Creado `CLAUDE.md` unificado con contexto completo + diario
+- Creado `CLAUDE.md` unificado (fusiona version previa con arquitectura completa,
+  reglas selladas, bugs resueltos y diario). Incluye instruccion de auto-actualizacion.
+- Se explico al usuario el sistema de memoria via CLAUDE.md y se entrego prompt
+  reutilizable para crear CLAUDE.md en cualquier proyecto nuevo.
 
 ### 2026-02-22
 - Fix: `customer_reference` en Odoo limpia prefijo AMZFBM, muestra `orden | comprador`
