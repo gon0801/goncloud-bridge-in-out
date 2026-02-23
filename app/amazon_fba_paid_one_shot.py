@@ -189,9 +189,10 @@ print(f"[FBA_PAID] authenticated uid={uid}")
 # =========================
 # Check existing SO
 # =========================
+display_ref = f"{order_id} | {BUYER_NAME}" if BUYER_NAME else order_id
 existing = exec_kw(
     uid, "sale.order", "search_read",
-    [[["client_order_ref", "=", CLIENT_ORDER_REF]]],
+    [[["client_order_ref", "=", display_ref]]],
     {"fields": ["id", "name", "state"], "limit": 1},
 )
 
@@ -245,7 +246,7 @@ print(f"[FBA_PAID] products resolved: {len(sku_to_pid)}")
 if not so_id:
     so_id = exec_kw(uid, "sale.order", "create", [{
         "partner_id": partner_id,
-        "client_order_ref": CLIENT_ORDER_REF,
+        "client_order_ref": display_ref,
         "note": f"{CHANNEL_LABEL} | #{order_id}" + (f" | {BUYER_NAME}" if BUYER_NAME else ""),
     }])
     print(f"[FBA_PAID] SO created id={so_id}")
