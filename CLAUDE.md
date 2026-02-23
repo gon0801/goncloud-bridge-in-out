@@ -55,12 +55,38 @@ FROM amazon_processed_events
 WHERE dedupe_key LIKE '%ORDER-ID-AQUI%';"
 ```
 
-### Causa A: Orden en status "Pending" en SP-API (la más común)
-**El dashboard de ventas lee de Seller Central (tiempo real). La SP-API tiene delay de 1-4 horas.**
+### Causa A: Orden Flex MX en Pending no entró (BUG CONOCIDO — CORREGIDO)
+**Flex MX = AFN channel + marketplace MX (A1AM78C64UM0Y8). Deben procesarse en Pending para crear SO+picking (escáneo de paquetes).**
 
-El poll ignora órdenes Pending (`status=Pending, skipping`). Con `--days 2` en el cron, la próxima ejecución la capturará cuando SP-API actualice a `Unshipped`.
+El worker YA maneja esto (`if profile == "FLEX_MX" and status == "Pending": action = "paid"`).
+El bug era que el POLL las saltaba antes de llegar al worker.
 
-**No hacer nada** — se resuelve sola en el siguiente poll.
+**Fix aplicado en `amazon_orders_poll.py`**: el poll ya no salta Flex MX Pending.
+
+Si el script desplegado es viejo, aplicar en el servidor:
+```bash
+python3 - << 'EOF'
+import re
+path = "/mnt/data/appdata/bridge/data/amazon_orders_poll.py"
+old = """            # Skip pending orders
+            if status == "Pending":
+                print(f"[poll]   {order_id}: status=Pending, skipping")
+                total_skipped += 1
+                continue"""
+new = """            # Skip pending orders — EXCEPTO Flex MX (AFN + marketplace MX)
+            is_flex_mx = (mp_id == "A1AM78C64UM0Y8" and
+                          order.get("FulfillmentChannel", "").upper() == "AFN")
+            if status == "Pending" and not is_flex_mx:
+                print(f"[poll]   {order_id}: status=Pending, skipping")
+                total_skipped += 1
+                continue
+            if status == "Pending" and is_flex_mx:
+                print(f"[poll]   {order_id}: status=Pending (Flex MX), encolando...")"""
+content = open(path).read()
+open(path, "w").write(content.replace(old, new))
+print("OK")
+EOF
+```
 
 ### Causa B: La orden NUNCA llegó al worker (no está en `amazon_orders_state` ni en `amazon_processed_events`)
 El poll la salteó por Pending y el webhook no llegó. Con `--days 2` el siguiente poll la captura.

@@ -267,11 +267,16 @@ def main():
             order_id = order.get("AmazonOrderId", "unknown")
             status = order.get("OrderStatus", "unknown")
             
-            # Skip pending orders
-            if status == "Pending":
+            # Skip pending orders — EXCEPTO Flex MX (AFN + marketplace MX)
+            # Flex MX necesita SO+picking aunque esté Pending (escáneo de paquetes)
+            is_flex_mx = (mp_id == "A1AM78C64UM0Y8" and
+                          order.get("FulfillmentChannel", "").upper() == "AFN")
+            if status == "Pending" and not is_flex_mx:
                 print(f"[poll]   {order_id}: status=Pending, skipping")
                 total_skipped += 1
                 continue
+            if status == "Pending" and is_flex_mx:
+                print(f"[poll]   {order_id}: status=Pending (Flex MX), encolando...")
             
             # Check dedupe
             dedupe_key = make_dedupe_key(order, mp_id)
