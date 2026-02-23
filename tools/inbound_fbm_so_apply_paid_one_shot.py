@@ -182,9 +182,11 @@ else:
     step("partner_created", partner_id=partner_id, partner_name=PARTNER_NAME)
 
 # 2) Find existing SO by client_order_ref
-so_ids = exec_kw(uid, "sale.order", "search", [[["client_order_ref","=",CLIENT_ORDER_REF]]], {"limit": 2})
+buyer_nick = ((order.get("buyer") or {}).get("nickname") or (order.get("buyer") or {}).get("first_name") or "").strip()
+display_ref = f"{order_id} | {buyer_nick}" if buyer_nick else order_id
+so_ids = exec_kw(uid, "sale.order", "search", [[["client_order_ref","=",display_ref]]], {"limit": 2})
 if len(so_ids) > 1:
-    die(f"multiple SO found for client_order_ref={CLIENT_ORDER_REF}")
+    die(f"multiple SO found for client_order_ref={display_ref}")
 so_id = int(so_ids[0]) if so_ids else 0
 
 # 3) Resolve products for all SKUs (sale_ok=True) + GATE sell_on_meli
@@ -219,7 +221,7 @@ step("products_ok", unique_skus=len(set(skus)), sell_on_meli_ok=True)
 if not so_id:
     so_id = exec_kw(uid, "sale.order", "create", [{
         "partner_id": partner_id,
-        "client_order_ref": CLIENT_ORDER_REF,
+        "client_order_ref": display_ref,
         "note": (os.getenv("SO_NOTE") or f"ML:FBM | STATE=paid | ORDER={order_id}"),
     }])
     step("so_created", so_id=so_id)
