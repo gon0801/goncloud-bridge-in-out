@@ -47,7 +47,8 @@ def exec_kw(uid, model, method, args=None, kwargs=None):
     kwargs = kwargs or {}
     return jcall("object", "execute_kw", [DB, uid, PW, model, method, args, kwargs])
 
-print(f"[FBA_REFUND] ref={CLIENT_ORDER_REF}")
+order_id = CLIENT_ORDER_REF.rsplit(":", 1)[-1]
+print(f"[FBA_REFUND] ref={CLIENT_ORDER_REF} order_id={order_id}")
 
 # =========================
 # Authenticate
@@ -60,7 +61,7 @@ if not uid:
 # Find SO
 # =========================
 sos = exec_kw(uid, "sale.order", "search_read",
-    [[["client_order_ref", "=", CLIENT_ORDER_REF]]],
+    [[["client_order_ref", "like", order_id]]],
     {"fields": ["id", "name", "state"], "limit": 1})
 
 if not sos:
