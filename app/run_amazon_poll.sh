@@ -9,6 +9,6 @@ LOG_PREFIX="[amazon-poll]"
 echo "$LOG_PREFIX Starting Amazon orders poll at $(date -Iseconds)"
 
 # Ejecutar dentro del contenedor
-docker exec bridge-inbound-worker python3 /data/amazon_orders_poll.py --days 1 --marketplace BOTH
+docker exec bridge-inbound-worker python3 /data/amazon_orders_poll.py --days 2 --marketplace BOTH
 
 echo "$LOG_PREFIX Completed at $(date -Iseconds)"
