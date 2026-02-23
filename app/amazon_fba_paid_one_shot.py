@@ -168,7 +168,8 @@ def parse_items(order_dict):
             except Exception:
                 price = 0.0
 
-        out.append({"sku": seller_sku, "qty": qty, "unit_price": price})
+        unit_price = round(price / qty, 6) if qty else 0.0
+        out.append({"sku": seller_sku, "qty": qty, "unit_price": unit_price})
 
     return out
 
@@ -185,6 +186,32 @@ uid = jcall("common", "authenticate", [DB, USER, PW, {}])
 if not uid:
     die("authentication_failed")
 print(f"[FBA_PAID] authenticated uid={uid}")
+
+# =========================
+# USD → MXN conversion (solo órdenes US)
+# =========================
+if IS_USD_ORDER:
+    def get_usd_to_mxn_rate():
+        try:
+            rates = exec_kw(uid, "res.currency.rate", "search_read",
+                [[["currency_id.name", "=", "USD"]]],
+                {"fields": ["rate", "name"], "order": "name desc", "limit": 1})
+            if rates and rates[0].get("rate"):
+                r = float(rates[0]["rate"])
+                if r > 0:
+                    mxn_per_usd = round(1.0 / r, 6)
+                    print(f"[FBA_PAID] USD/MXN rate={mxn_per_usd} (fecha={rates[0].get('name','?')})")
+                    return mxn_per_usd
+        except Exception as e:
+            print(f"[FBA_PAID] WARN no se pudo leer tipo de cambio: {e}", file=sys.stderr)
+        return None
+
+    usd_to_mxn = get_usd_to_mxn_rate()
+    if not usd_to_mxn:
+        die("No se pudo obtener tipo de cambio USD/MXN de Odoo para orden en USD")
+    for item in items:
+        item["unit_price"] = round(item["unit_price"] * usd_to_mxn, 2)
+    print(f"[FBA_PAID] precios convertidos USD→MXN (rate={usd_to_mxn})")
 
 # =========================
 # Check existing SO
