@@ -83,9 +83,11 @@ def step(name, **data):
 
 # ============== HELPERS =================
 
+_order_id_for_search = CLIENT_ORDER_REF.rsplit(":", 1)[-1]
+
 def get_so():
     rows = exec_kw(uid,"sale.order","search_read",
-        [[["client_order_ref","=",CLIENT_ORDER_REF]]],
+        [[["client_order_ref","like",_order_id_for_search]]],
         {"fields":["id","name","state","invoice_ids","picking_ids"],"limit":1}
     )
     if not rows:

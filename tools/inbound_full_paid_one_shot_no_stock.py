@@ -140,9 +140,12 @@ else:
     die('partner_not_found name="MercadoLibre FULL" (create it manually once)', 2)
 
 # 2) Find existing SO by client_order_ref
-so_ids = exec_kw(uid, "sale.order", "search", [[["client_order_ref", "=", CLIENT_ORDER_REF]]], {"limit": 2})
+buyer_nick = ((order.get("buyer") or {}).get("nickname") or (order.get("buyer") or {}).get("first_name") or "").strip()
+display_id = CLIENT_ORDER_REF.rsplit(":", 1)[-1]
+display_ref = f"{display_id} | {buyer_nick}" if buyer_nick else display_id
+so_ids = exec_kw(uid, "sale.order", "search", [[["client_order_ref", "=", display_ref]]], {"limit": 2})
 if len(so_ids) > 1:
-    die(f"multiple SO found for client_order_ref={CLIENT_ORDER_REF}", 2)
+    die(f"multiple SO found for client_order_ref={display_ref}", 2)
 so_id = int(so_ids[0]) if so_ids else 0
 
 # 3) Resolve products (sale_ok=True)
@@ -167,7 +170,7 @@ step("products_ok", unique_skus=len(set(skus)))
 if not so_id:
     so_id = exec_kw(uid, "sale.order", "create", [{
         "partner_id": partner_id,
-        "client_order_ref": CLIENT_ORDER_REF,
+        "client_order_ref": display_ref,
         "note": f"ML:FULL | STATE=paid | ORDER={order_id}",
     }])
     step("so_created", so_id=so_id)
