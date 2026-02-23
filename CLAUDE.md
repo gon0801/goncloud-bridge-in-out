@@ -275,11 +275,19 @@ amazon_inbound_fbm_paid_enabled
 ```
 
 **Scripts que deben estar siempre actualizados en `/data/`:**
-- `amazon_orders_poll.py`
-- `recover_manual_review.py`
-- `diagnose_inbound.py`
-- `amazon_fba_paid_one_shot.py`
-- `amazon_fbm_paid_one_shot.py`
+```bash
+# Copiar TODOS después de cualquier fix en tools/:
+sudo cp /tmp/goncloud-mcp/tools/amazon_fba_paid_one_shot.py       /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-mcp/tools/amazon_fbm_paid_one_shot.py       /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-mcp/tools/inbound_full_paid_one_shot_no_stock.py /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-mcp/tools/inbound_fbm_so_apply_paid_one_shot.py  /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-mcp/tools/amazon_orders_poll.py             /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-mcp/tools/recover_manual_review.py          /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-mcp/tools/diagnose_inbound.py               /mnt/data/appdata/bridge/data/
+```
+
+**IMPORTANTE:** El worker MeLi busca `inbound_full_paid_one_shot_no_stock.py` en `/data/` PRIMERO.
+Si no está en `/data/`, usa el archivo viejo en `/mnt/data/appdata/bridge/tools/` — ignorando el fix.
 
 ---
 
@@ -414,6 +422,8 @@ sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
 | 2026-02-22 | `price_unit` Amazon incompleto | Sales Proceeds completos (ItemPrice+Tax+Shipping) |
 | 2026-02-23 | Amazon FBA: `display_ref` usaba CLIENT_ORDER_REF | Usar `display_ref` del SO directamente |
 | 2026-02-23 | `customer_reference` no limpiaba prefijos MeLi | Limpiar MLFBM/MLFULL igual que AMZFBM |
+| 2026-02-23 | FULL paid worker buscaba script en orden incorrecto: `/mnt/data/.../tools/` antes que `/data/` — ignoraba fixes deploiados | Invertir orden en `inbound_worker.py`: `/data/` primero (igual que FBM y Amazon) |
+| 2026-02-23 | FULL refund path hardcodeado a `/mnt/data/.../tools/` sin fallback | Usar candidates list con `/data/` primero |
 
 ---
 
@@ -440,7 +450,17 @@ sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
 
 ## 12. Diario de cambios
 
-### 2026-02-23 (esta sesion)
+### 2026-02-23 (esta sesion — segunda parte)
+- **ROOT CAUSE del bug recurrente de customer_reference:**
+  `inbound_worker.py` buscaba `inbound_full_paid_one_shot_no_stock.py` con orden incorrecto:
+  `/mnt/data/appdata/bridge/tools/` PRIMERO → ignoraba el fix deploiado en `/data/`.
+  FBM y Amazon ya tenian el orden correcto (`/data/` primero). FULL no.
+- Fix: invertir `tool_candidates` FULL paid → `/data/` primero
+- Fix: FULL refund path hardcodeado → candidates list con `/data/` primero
+- Fix: CLAUDE.md ampliar lista de scripts que deben estar en `/data/`
+  (faltaban `inbound_full_paid_one_shot_no_stock.py` e `inbound_fbm_so_apply_paid_one_shot.py`)
+
+### 2026-02-23 (primera parte)
 - Fix: `amazon_fba_paid_one_shot` usa `display_ref` en lugar de `CLIENT_ORDER_REF`
 - Fix: `amazon_fba_paid_one_shot` convierte USD->MXN y corrige `unit_price`
 - Fix: `customer_reference` limpia prefijos MeLi (MLFBM/MLFULL)

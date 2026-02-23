@@ -417,7 +417,11 @@ def maybe_run_full_refund(order: Dict[str, Any], order_id: str, display_id: str,
         return
 
     client_order_ref = f"MLFULL:{site}:{display_id}"
-    tool = "/mnt/data/appdata/bridge/tools/inbound_full_so_refund_and_cancel.py"
+    _refund_candidates = [
+        "/data/inbound_full_so_refund_and_cancel.py",
+        "/mnt/data/appdata/bridge/tools/inbound_full_so_refund_and_cancel.py",
+    ]
+    tool = next((p for p in _refund_candidates if os.path.exists(p)), _refund_candidates[-1])
 
     try:
         p = subprocess.run(
@@ -489,8 +493,8 @@ def maybe_run_full_paid_no_stock(
     client_order_ref = f"MLFULL:{site}:{display_id}"
 
     tool_candidates = [
-        "/mnt/data/appdata/bridge/tools/inbound_full_paid_one_shot_no_stock.py",
         "/data/inbound_full_paid_one_shot_no_stock.py",
+        "/mnt/data/appdata/bridge/tools/inbound_full_paid_one_shot_no_stock.py",
     ]
     tool = next((p for p in tool_candidates if os.path.exists(p)), None)
 
