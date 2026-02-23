@@ -1,7 +1,25 @@
 # GONCLOUD Bridge — Base de conocimiento para Claude
 
 Este archivo documenta problemas recurrentes, sus causas raíz y los comandos exactos para resolverlos.
-**Leer ANTES de investigar cualquier falla de inbound.**
+
+## REGLA ABSOLUTA ANTES DE INVESTIGAR CUALQUIER FALLA
+
+1. **Leer primero el código del worker relevante** (`amazon_inbound_worker.py`, `inbound_worker.py`) para entender qué lógica especial existe.
+2. **Leer el CLAUDE.md completo** — el problema probablemente ya está documentado aquí.
+3. **Consultar las tablas de DB** con queries directos antes de hacer suposiciones.
+4. **NO adivinar**. Si la información está disponible en el repo o en el DB, úsala primero.
+
+Ejemplo de lo que NO hacer: asumir que un status "Pending" es un lag de Amazon sin verificar primero si existe lógica especial para ese status en el worker (Flex MX procesa Pending intencionalmente).
+
+## Rutas en el servidor de producción (gonserver)
+
+- **DB:** `/mnt/data/appdata/bridge/data/bridge.db`
+- **Scripts desplegados (accesibles como /data/ dentro del contenedor):** `/mnt/data/appdata/bridge/data/`
+- **Repo git del usuario en gonserver:** `/tmp/goncloud-mcp/` (el usuario corre comandos desde ahí)
+- **Contenedor worker:** `bridge-inbound-worker`
+- **Para copiar script del repo al contenedor:** `sudo cp /tmp/goncloud-mcp/tools/SCRIPT.py /mnt/data/appdata/bridge/data/`
+
+---
 
 ---
 
