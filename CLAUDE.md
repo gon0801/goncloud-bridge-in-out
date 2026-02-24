@@ -371,6 +371,36 @@ python3 /mnt/data/appdata/bridge/data/push_fx_to_odoo.py
 # (ver sección "Tipo de cambio USD/MXN" en sección 8)
 ```
 
+### PROBLEMA 7: Flex MX — factura en $0 (pedido 702-9477496-5819444 y similares)
+
+**Causa raíz:** En status `Pending`, Amazon SP-API no devuelve `BuyerName`. La tool
+usaba `client_order_ref = order_id` al crear el SO. En status `Unshipped`, con buyer
+disponible, el lookup buscaba `order_id | buyer` → no encontraba el SO → creaba uno
+nuevo sin picking, o bien creaba la factura con $0.
+
+**Fix deploiado:** `amazon_fbm_paid_one_shot.py` ahora busca con dominio `|` (ambos refs).
+
+**Recovery para ordenes ya afectadas:**
+```bash
+# 1. En Odoo: buscar los SOs de la orden
+#    - Hay probable un SO con picking y precio $0
+#    - Hay probable un SO sin picking y factura $0 (o precio correcto con factura pagada)
+#
+# 2. Opción A — Fix manual en Odoo (recomendado si la factura correcta ya existe):
+#    a) Cancelar y eliminar el SO huérfano ($0, sin factura útil)
+#    b) Si la factura del segundo SO tiene precio correcto y está pagada: listo
+#    c) Si la factura está en $0: cancelar factura, ajustar precio en SO, crear nueva factura
+#
+# 3. Opción B — Reset completo y reprocesar:
+# En Odoo: cancelar y eliminar TODOS los SOs/facturas de la orden
+# En bridge.db: borrar auditoría para que el poll la reprocese
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
+  "DELETE FROM amazon_processed_events WHERE dedupe_key LIKE '%702-9477496-5819444%';"
+# Luego forzar poll (el fix ya está activo):
+sudo docker exec bridge-amazon-inbound-worker python3 /data/amazon_orders_poll.py \
+  --days 7 --marketplace MX
+```
+
 ### PROBLEMA 5: MeLi `no_valid_items` / órdenes en `manual_review`
 
 ```bash
@@ -525,12 +555,13 @@ sudo docker restart bridge-inbound-worker
 | 2026-02-23 | Flex MX: poll salteaba órdenes `Pending` | Poll detecta `is_flex_mx` y no saltea |
 | 2026-02-23 | Poll con `--days 1` dejaba gap `Pending→Unshipped` | Cambiar a `--days 2` |
 | 2026-02-24 | `res.currency.rate` vacío → órdenes Amazon US fallan por conversión USD→MXN | `push_fx_to_odoo.py` escribe el rate en Odoo; cron `sync_fx_rates.py` actualizado para llamarlo |
+| 2026-02-24 | Flex MX: factura se crea en $0 — el job de Unshipped no encontraba el SO del Pending | `amazon_fbm_paid_one_shot.py`: búsqueda por `display_ref OR order_id`; si encontrado sin buyer_name, actualiza `client_order_ref` |
 
 ---
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-24
+**Fecha de última actualización:** 2026-02-24 (sesión 2)
 **Branch activo:** `claude/review-inbound-outbound-G9HeG`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
@@ -553,6 +584,12 @@ sudo docker restart bridge-inbound-worker
 ---
 
 ## 11. Diario de cambios
+
+### 2026-02-24 — sesión 2
+- **FIX:** Flex MX: `amazon_fbm_paid_one_shot.py` buscaba el SO existente SOLO con `client_order_ref = display_ref`.
+- **ROOT CAUSE:** En status `Pending`, Amazon SP-API no devuelve `BuyerName` → `display_ref = order_id` (sin buyer). En status `Unshipped`, sí devuelve buyer → `display_ref = "order_id | buyer"`. Búsqueda exacta fallaba → creaba SO duplicado (sin picking, con factura $0 o con precio correcto pero picking ya creado en el SO de Pending).
+- **FIX:** Búsqueda con dominio `| client_order_ref = display_ref OR client_order_ref = order_id`. Si encontrado por `order_id`-only y ahora hay buyer, actualiza el ref automáticamente.
+- **ORDEN AFECTADA:** 702-9477496-5819444 — requiere fix manual (ver instrucciones abajo).
 
 ### 2026-02-24
 - **FIX:** `res.currency.rate` en Odoo estaba vacío → órdenes Amazon US fallaban al intentar convertir USD→MXN.
