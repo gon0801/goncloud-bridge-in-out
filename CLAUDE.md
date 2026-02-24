@@ -561,7 +561,7 @@ sudo docker restart bridge-inbound-worker
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-24 (sesión 2)
+**Fecha de última actualización:** 2026-02-24 (sesión 3)
 **Branch activo:** `claude/review-inbound-outbound-G9HeG`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
@@ -584,6 +584,12 @@ sudo docker restart bridge-inbound-worker
 ---
 
 ## 11. Diario de cambios
+
+### 2026-02-24 — sesión 3
+- **DOCS:** Sesión de soporte sin cambios de código.
+- **SOPORTE:** `scp gon@gonserver:/tmp/FIX_FLEX_MX_BUYER_NAME.md` fallaba porque el archivo fue creado en el entorno Claude, no en gonserver.
+- **SOLUCIÓN:** Provisto comando `cat > ~/FIX_FLEX_MX_BUYER_NAME.md << 'ENDDOC'...` para crear el archivo directamente en gonserver, luego `scp gon@192.168.0.200:~/FIX_FLEX_MX_BUYER_NAME.md ~/Desktop/` desde Mac.
+- Sin cambios pendientes — sistema estable.
 
 ### 2026-02-24 — sesión 2
 - **FIX:** Flex MX: `amazon_fbm_paid_one_shot.py` buscaba el SO existente SOLO con `client_order_ref = display_ref`.
