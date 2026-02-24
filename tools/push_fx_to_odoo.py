@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """
-push_fx_to_odoo.py — Copia el tipo de cambio USD/MXN de accounting.db a Odoo.
+push_fx_to_odoo.py — Escribe el tipo de cambio USD/MXN en Odoo res.currency.rate.
 
-Uso:
-  python3 push_fx_to_odoo.py             # Última tasa disponible
-  python3 push_fx_to_odoo.py 2026-02-23  # Fecha específica
+DEBE correr dentro del contenedor Docker (donde odoo-odoo-1 resuelve):
+  sudo docker exec bridge-amazon-inbound-worker python3 /data/push_fx_to_odoo.py DATE RATE
+
+Modos de uso:
+  python3 push_fx_to_odoo.py 2026-02-23 17.197   # Valores explícitos (modo normal)
+  python3 push_fx_to_odoo.py                      # Lee de accounting.db (solo si está montado)
 
 En Odoo 17, res.currency.rate.rate = inverse_company_rate = USD por 1 MXN
-(ej. si 1 USD = 17.197 MXN → rate = 1/17.197 = 0.058149)
+(ej. si 1 USD = 17.197 MXN → odoo_rate = 1/17.197 = 0.058149)
 """
+import os
 import sys
 import sqlite3
 import requests
 
-BRIDGE_DB  = "/mnt/data/appdata/bridge/data/bridge.db"
+# Dentro del contenedor: /data/bridge.db  |  En host: /mnt/data/appdata/bridge/data/bridge.db
+_BRIDGE_DB_CANDIDATES = ["/data/bridge.db", "/mnt/data/appdata/bridge/data/bridge.db"]
+BRIDGE_DB = next((p for p in _BRIDGE_DB_CANDIDATES if os.path.exists(p)), _BRIDGE_DB_CANDIDATES[0])
+
 ACCOUNTING_DB = "/mnt/data/appdata/accounting/data/accounting.db"
 
 
@@ -32,7 +39,7 @@ def get_settings():
 
 
 def get_rate_from_accounting(rate_date=None):
-    """Lee el rate (MXN por 1 USD) de accounting.db."""
+    """Lee el rate (MXN por 1 USD) de accounting.db (solo disponible en host)."""
     conn = sqlite3.connect(ACCOUNTING_DB)
     if rate_date:
         row = conn.execute(
@@ -106,7 +113,15 @@ def push_to_odoo(rate_date, mxn_per_usd):
 
 
 if __name__ == "__main__":
-    date_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    rate_date, mxn_per_usd = get_rate_from_accounting(date_arg)
-    print(f"[push_fx] accounting.db → {rate_date}: 1 USD = {mxn_per_usd} MXN")
+    if len(sys.argv) == 3:
+        # Modo normal (desde sync_fx_rates.py vía docker exec):
+        #   push_fx_to_odoo.py DATE RATE
+        rate_date = sys.argv[1]
+        mxn_per_usd = float(sys.argv[2])
+        print(f"[push_fx] args → {rate_date}: 1 USD = {mxn_per_usd} MXN")
+    else:
+        # Modo fallback: lee de accounting.db (solo si está montado en el contenedor)
+        date_arg = sys.argv[1] if len(sys.argv) > 1 else None
+        rate_date, mxn_per_usd = get_rate_from_accounting(date_arg)
+        print(f"[push_fx] accounting.db → {rate_date}: 1 USD = {mxn_per_usd} MXN")
     push_to_odoo(rate_date, mxn_per_usd)
