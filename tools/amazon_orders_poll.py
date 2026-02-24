@@ -7,7 +7,9 @@ Uso: python3 amazon_orders_poll.py [--days N] [--marketplace MX|US|BOTH]
 
 Este script:
 1. Obtiene access token de Amazon
-2. Consulta órdenes de los últimos N días (default: 1)
+2. Consulta órdenes actualizadas en los últimos N días (default: 2)
+   NOTA: usa LastUpdatedAfter (no CreatedAfter) para capturar órdenes creadas
+   hace más de N días que acaban de cambiar de estado (ej. Pending→Shipped).
 3. Para cada orden, obtiene los items
 4. Envía a Redis cola amazon_orders_jobs
 """
@@ -109,15 +111,19 @@ def _sp_api_get(token: str, url: str, params: dict = None, max_retries: int = 4)
     return resp
 
 
-def get_orders(token: str, marketplace_id: str, created_after: str) -> list:
-    """Obtiene órdenes de Amazon con paginación y retry en 429."""
+def get_orders(token: str, marketplace_id: str, last_updated_after: str) -> list:
+    """Obtiene órdenes de Amazon con paginación y retry en 429.
+
+    Usa LastUpdatedAfter para capturar también órdenes antiguas que acaban
+    de cambiar de estado (ej. Pending → Shipped después de varios días).
+    """
     orders = []
     next_token = None
 
     while True:
         params = {
             "MarketplaceIds": marketplace_id,
-            "CreatedAfter": created_after,
+            "LastUpdatedAfter": last_updated_after,
         }
         if next_token:
             params["NextToken"] = next_token
@@ -206,7 +212,7 @@ def push_to_redis(r: redis.Redis, order: dict, dedupe_key: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Poll Amazon orders")
-    parser.add_argument("--days", type=int, default=1, help="Days to look back (default: 1)")
+    parser.add_argument("--days", type=int, default=2, help="Days to look back via LastUpdatedAfter (default: 2)")
     parser.add_argument("--marketplace", choices=["MX", "US", "BOTH"], default="BOTH", help="Marketplace (default: BOTH)")
     parser.add_argument("--dry-run", action="store_true", help="Don't push to Redis, just show")
     args = parser.parse_args()
@@ -239,8 +245,10 @@ def main():
         return 1
     
     # Calculate date range — usar Z en vez de +00:00 (requerido por SP-API US)
-    created_after = (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    print(f"[poll] Looking for orders since {created_after}")
+    # LastUpdatedAfter captura órdenes que cambiaron de estado recientemente,
+    # sin importar cuándo fueron creadas (cubre Pending de varios días atrás).
+    last_updated_after = (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    print(f"[poll] Looking for orders updated since {last_updated_after}")
     
     # Determine marketplaces
     if args.marketplace == "BOTH":
@@ -256,7 +264,7 @@ def main():
         print(f"[poll] Checking {mp_name} ({mp_id})...")
         
         try:
-            orders = get_orders(token, mp_id, created_after)
+            orders = get_orders(token, mp_id, last_updated_after)
             print(f"[poll] Found {len(orders)} orders in {mp_name}")
         except Exception as e:
             print(f"[poll] ERROR fetching {mp_name}: {e}", file=sys.stderr)
