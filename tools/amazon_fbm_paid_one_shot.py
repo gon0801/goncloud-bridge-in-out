@@ -162,7 +162,16 @@ print(f"[FBM_PAID] authenticated uid={uid}")
 # =========================
 def get_usd_to_mxn_rate():
     """Lee el tipo de cambio USD/MXN desde Odoo (res.currency.rate).
-    Retorna MXN por 1 USD, ej. 17.5. None si no se puede obtener."""
+    Retorna MXN por 1 USD, ej. 17.5. None si no se puede obtener.
+
+    En Odoo 17, res.currency.rate.rate = inverse_company_rate = USD por 1 MXN
+    (ej. rate=0.05714 si 1 USD = 17.5 MXN).
+    Por eso mxn_per_usd = 1 / rate.
+
+    SANITY CHECK: si el resultado es < 5 o > 500, el tipo de cambio no está
+    configurado correctamente en Odoo (ej. rate=1.0 por default) → falla con
+    code=1 (manual_review) para evitar registrar precios incorrectos.
+    """
     try:
         rates = exec_kw(uid, "res.currency.rate", "search_read",
             [[["currency_id.name", "=", "USD"]]],
@@ -172,6 +181,12 @@ def get_usd_to_mxn_rate():
             if r > 0:
                 # En Odoo, rate = inverse_company_rate = 1/MXN_por_USD
                 mxn_per_usd = round(1.0 / r, 6)
+                # Sanity check: 1 USD no puede valer menos de 5 MXN ni más de 500
+                if mxn_per_usd < 5.0 or mxn_per_usd > 500.0:
+                    print(f"[FBM_PAID] ERROR tipo de cambio sospechoso: {mxn_per_usd} MXN/USD "
+                          f"(raw rate={r}). Configura el tipo de cambio USD en Odoo correctamente.",
+                          file=sys.stderr)
+                    return None
                 print(f"[FBM_PAID] USD/MXN rate={mxn_per_usd} (fecha={rates[0].get('name','?')})")
                 return mxn_per_usd
     except Exception as e:
@@ -181,7 +196,7 @@ def get_usd_to_mxn_rate():
 if IS_USD_ORDER:
     usd_to_mxn = get_usd_to_mxn_rate()
     if not usd_to_mxn:
-        die("No se pudo obtener tipo de cambio USD/MXN de Odoo para orden en USD", code=2)
+        die("No se pudo obtener tipo de cambio USD/MXN de Odoo. Verifica que el tipo de cambio USD esté configurado en Odoo (Contabilidad → Divisas → USD).", code=1)
     for item in items:
         item["unit_price"] = round(item["unit_price"] * usd_to_mxn, 2)
     print(f"[FBM_PAID] precios convertidos USD→MXN (rate={usd_to_mxn})")
