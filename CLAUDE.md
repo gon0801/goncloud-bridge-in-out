@@ -611,12 +611,13 @@ sudo docker restart bridge-inbound-worker
 | 2026-02-24 | `res.currency.rate` vacío → órdenes Amazon US fallan por conversión USD→MXN | `push_fx_to_odoo.py` escribe el rate en Odoo; cron `sync_fx_rates.py` actualizado para llamarlo |
 | 2026-02-24 | Flex MX: factura se crea en $0 — el job de Unshipped no encontraba el SO del Pending | `amazon_fbm_paid_one_shot.py`: búsqueda por `display_ref OR order_id`; si encontrado sin buyer_name, actualiza `client_order_ref` |
 | 2026-02-25 | `app/amazon_fba_paid_one_shot.py` desincronizada con `tools/`: `IS_USD_ORDER` no definido (NameError), solo usaba `ItemPrice.Amount` (sin Sales Proceeds), factura via wizard (produce $0 para FBA) | Sincronizar `app/` con `tools/` — siempre deployar desde `tools/` a `/data/` |
+| 2026-02-25 | `IS_USD_ORDER` basado en marketplace ID (frágil) — si el flag no llega, 84 USD entra como 84 MXN silenciosamente | Tools leen `order["OrderTotal"]["CurrencyCode"]` como fuente de verdad; env flag es fallback |
 
 ---
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-25
+**Fecha de última actualización:** 2026-02-25 (sesión 2)
 **Branch activo:** `claude/review-inbound-outbound-G9HeG`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
@@ -631,6 +632,7 @@ sudo docker restart bridge-inbound-worker
 - `client_order_ref` limpio: `orden_id | comprador` en todos los canales
 - Worker busca tools en `/data/` primero (fix definitivo del bug recurrente)
 - Tipo de cambio USD/MXN se actualiza diariamente a las 8am vía cron
+- **Detección de moneda por `OrderTotal.CurrencyCode`** (no por marketplace ID — fuente real de verdad)
 
 ### Pendiente
 - Amazon SP-API: verificación de cuenta pendiente (polling se habilita al aprobar)
@@ -639,6 +641,12 @@ sudo docker restart bridge-inbound-worker
 ---
 
 ## 11. Diario de cambios
+
+### 2026-02-25 — sesión 2
+- **FIX:** `IS_USD_ORDER` dependía del marketplace ID (`AMZ_MX_MARKETPLACE`), no de la moneda real del pedido.
+- **ROOT CAUSE:** Si el marketplace llega mal clasificado o el flag no se setea correctamente, la conversión USD→MXN nunca ocurre y el precio entra como si fuera MXN (ej. 84 USD → 84 MXN).
+- **FIX:** `tools/amazon_fba_paid_one_shot.py` y `tools/amazon_fbm_paid_one_shot.py` ahora leen `order["OrderTotal"]["CurrencyCode"]` como fuente de verdad después de parsear el ORDER_JSON. El env `IS_USD_ORDER` se mantiene como fallback para el caso webhook-sin-enrich donde `OrderTotal` puede no estar presente. `app/amazon_fba_paid_one_shot.py` sincronizada.
+- **NUEVO COMPORTAMIENTO:** `[FBA_PAID] order currency=USD IS_USD_ORDER=True` en logs confirma que la moneda se detectó del JSON. Monedas no soportadas (no MXN/USD) causan `manual_review` con mensaje claro.
 
 ### 2026-02-25
 - **INVESTIGACIÓN:** Orden Amazon US 114-6204816-4453067 registrada en Odoo a 84.41 MXN (sin conversión desde USD).

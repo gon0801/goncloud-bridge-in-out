@@ -74,6 +74,15 @@ order_id = str(order.get("AmazonOrderId") or "").strip()
 if not order_id:
     die("ORDER_JSON missing AmazonOrderId", code=1)
 
+# Fuente de verdad: CurrencyCode del pedido (override del env flag)
+# Si OrderTotal no está presente (ej. webhook sin enrich) → usa IS_USD_ORDER del env
+_order_currency = (order.get("OrderTotal") or {}).get("CurrencyCode", "").strip().upper()
+if _order_currency:
+    IS_USD_ORDER = (_order_currency == "USD")
+    print(f"[FBM_PAID] order currency={_order_currency} IS_USD_ORDER={IS_USD_ORDER}")
+    if _order_currency not in ("MXN", "USD"):
+        die(f"Moneda no soportada: {_order_currency}", code=1)
+
 def map_sku(seller_sku):
     """Busca seller_sku en amazon_sku_mapping → odoo_default_code. Retorna seller_sku si no hay mapeo."""
     try:
