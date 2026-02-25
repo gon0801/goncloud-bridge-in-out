@@ -642,6 +642,12 @@ sudo docker restart bridge-inbound-worker
 
 ## 11. Diario de cambios
 
+### 2026-02-25 — sesión 4
+- **DIAGNÓSTICO:** Investigación de identificador `PkM9CcwfD` visto en orden Flex MX `701-4904380-4144244`.
+- **CONCLUSIÓN:** El código NO existe en SP-API. Consultados `GetOrder` y `GetOrderItems`: los únicos IDs disponibles son `AmazonOrderId`, `OrderItemId`, `ASIN`, `SellerSKU`. `PkM9CcwfD` es un identificador interno del sistema logístico de Amazon Flex (app del repartidor), no expuesto por SP-API.
+- **BuyerInfo** también vacía para esa orden — `client_order_ref` queda solo con `order_id`.
+- Sin cambios de código. Sistema estable.
+
 ### 2026-02-25 — sesión 3
 - **DIAGNÓSTICO:** Sesión de soporte sin cambios de código.
 - **DLQ revisada:** 2 entradas `dead` en `amazon_processed_events`:
