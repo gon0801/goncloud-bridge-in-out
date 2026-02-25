@@ -302,16 +302,18 @@ if not existing_lines:
         }])
     print(f"[FBM_PAID] SO lines created: {len(items)}")
 else:
-    # Si las líneas existen con precio $0 y ahora llegan precios reales → actualizar
+    # Si las líneas existen con precio distinto al calculado → actualizar
+    # Esto cubre: $0 (Flex MX Pending), USD sin convertir (órdenes US), etc.
     current_lines = exec_kw(uid, "sale.order.line", "search_read",
         [[["order_id", "=", so_id]]],
         {"fields": ["id", "name", "price_unit"]})
     sku_price = {it["sku"]: it["unit_price"] for it in items if it["unit_price"] > 0}
     for line in current_lines:
-        if line["price_unit"] == 0 and line["name"] in sku_price:
+        line_sku = line.get("name", "")
+        if line_sku in sku_price and abs(line["price_unit"] - sku_price[line_sku]) > 0.01:
             exec_kw(uid, "sale.order.line", "write",
-                [[line["id"]], {"price_unit": sku_price[line["name"]]}])
-            print(f"[FBM_PAID] line price updated: {line['name']} $0 → ${sku_price[line['name']]}")
+                [[line["id"]], {"price_unit": sku_price[line_sku]}])
+            print(f"[FBM_PAID] line price updated: {line_sku} ${line['price_unit']} → ${sku_price[line_sku]}")
 
 # =========================
 # Confirm SO (creates picking automatically)

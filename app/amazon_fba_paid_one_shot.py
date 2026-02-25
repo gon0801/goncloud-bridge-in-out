@@ -288,6 +288,19 @@ if not existing_lines:
             "name": it["sku"],
         }])
     print(f"[FBA_PAID] SO lines created: {len(items)}")
+else:
+    # Si las líneas existen con precio distinto al calculado → actualizar
+    # Esto cubre: USD sin convertir (órdenes US), $0, etc.
+    current_lines = exec_kw(uid, "sale.order.line", "search_read",
+        [[["order_id", "=", so_id]]],
+        {"fields": ["id", "name", "price_unit"]})
+    sku_price = {it["sku"]: it["unit_price"] for it in items if it["unit_price"] > 0}
+    for line in current_lines:
+        line_sku = line.get("name", "")
+        if line_sku in sku_price and abs(line["price_unit"] - sku_price[line_sku]) > 0.01:
+            exec_kw(uid, "sale.order.line", "write",
+                [[line["id"]], {"price_unit": sku_price[line_sku]}])
+            print(f"[FBA_PAID] line price updated: {line_sku} ${line['price_unit']} → ${sku_price[line_sku]}")
 
 # =========================
 # Confirm SO
