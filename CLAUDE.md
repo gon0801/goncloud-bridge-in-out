@@ -617,7 +617,7 @@ sudo docker restart bridge-inbound-worker
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-25 (sesión 2)
+**Fecha de última actualización:** 2026-02-25 (sesión 3)
 **Branch activo:** `claude/review-inbound-outbound-G9HeG`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
@@ -641,6 +641,14 @@ sudo docker restart bridge-inbound-worker
 ---
 
 ## 11. Diario de cambios
+
+### 2026-02-25 — sesión 3
+- **DIAGNÓSTICO:** Sesión de soporte sin cambios de código.
+- **DLQ revisada:** 2 entradas `dead` en `amazon_processed_events`:
+  - `701-5035844-5906656:Canceled` — `max_deferred_exceeded` (5 intentos)
+  - `701-2734217-1461012:Canceled` — `max_deferred_exceeded` (5 intentos)
+- **CONCLUSIÓN:** Benignos — ambas son órdenes Canceled de MX que llegaron sin SO previo en Odoo (se cancelaron antes de ser capturadas como Shipped/Pending). No hay contabilidad que revertir.
+- **CONFIRMACIÓN estado post-PROBLEMA 8:** `114-6204816-4453067` reprocesada a $1,451.60 MXN ✓ · `111-2739896-7592244` procesada a $2,325.89 MXN ✓. Sistema estable.
 
 ### 2026-02-25 — sesión 2
 - **FIX:** `IS_USD_ORDER` dependía del marketplace ID (`AMZ_MX_MARKETPLACE`), no de la moneda real del pedido.
