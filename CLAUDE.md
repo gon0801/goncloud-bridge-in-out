@@ -617,7 +617,7 @@ sudo docker restart bridge-inbound-worker
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-25 (sesión 3)
+**Fecha de última actualización:** 2026-02-27
 **Branch activo:** `claude/review-inbound-outbound-G9HeG`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
@@ -637,10 +637,18 @@ sudo docker restart bridge-inbound-worker
 ### Pendiente
 - Amazon SP-API: verificación de cuenta pendiente (polling se habilita al aprobar)
 - Limpieza periódica de `manual_review` antiguos (script existe, no automatizado)
+- **MeLi OAuth refresh automático no existe** — el access_token expira en ~6h y debe refrescarse manualmente con `POST /oauth/refresh`. Pendiente implementar cron o background task.
 
 ---
 
 ## 11. Diario de cambios
+
+### 2026-02-27
+- **INVESTIGACIÓN:** Revisión de la implementación del OAuth refresh token de MeLi.
+- **HALLAZGO:** No existe ningún mecanismo automático de refresh. El `access_token` expira en ~6h (`expires_in=21600`). El refresh es manual vía `POST /oauth/refresh` (main.py:230).
+- **HALLAZGO:** Los workers (`inbound_worker.py`, `worker.py`) leen el token del archivo en cada llamada pero no detectan 401 ni hacen retry automático.
+- **PENDIENTE:** Implementar refresh automático (cron o background task en FastAPI).
+- Sin cambios de código.
 
 ### 2026-02-25 — sesión 4
 - **DIAGNÓSTICO:** Investigación de identificador `PkM9CcwfD` visto en orden Flex MX `701-4904380-4144244`.
