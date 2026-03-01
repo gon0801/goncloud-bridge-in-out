@@ -271,8 +271,12 @@ Esto causó el bug recurrente de client_order_ref (resuelto 2026-02-23).
 ```bash
 sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_paid_one_shot.py            /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_paid_one_shot.py            /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_refund_and_cancel.py        /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_refund_and_cancel.py        /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_full_paid_one_shot_no_stock.py /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_fbm_so_apply_paid_one_shot.py  /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_full_so_refund_and_cancel.py   /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_fbm_so_refund_and_cancel.py    /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_orders_poll.py                  /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/recover_manual_review.py               /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/diagnose_inbound.py                    /mnt/data/appdata/bridge/data/
@@ -399,6 +403,45 @@ sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
 # Luego forzar poll (el fix ya está activo):
 sudo docker exec bridge-amazon-inbound-worker python3 /data/amazon_orders_poll.py \
   --days 7 --marketplace MX
+```
+
+### PROBLEMA 8: Cancelaciones Amazon llegan como `dead` — SO no cancelado en Odoo
+
+**Síntoma:** Orden cancelada en Amazon, SO sigue en estado `sale` en Odoo.
+DB muestra: `result=dead`, `detail_json={"reason":"max_deferred_exceeded","deferred_count":5}`.
+
+**Causa raíz (resuelta 2026-03-01):** Los tools `amazon_fba_refund_and_cancel.py` y
+`amazon_fbm_refund_and_cancel.py` **nunca se copiaron a `/data/`**. El worker usa la
+versión baked-in del contenedor (imagen vieja), que busca el SO con:
+```python
+[[["client_order_ref", "=", CLIENT_ORDER_REF]]]  # "AMZFBM:mkt:order_id"
+```
+Pero el SO en Odoo tiene `client_order_ref = "order_id"` (formato nuevo sin prefijo).
+→ NO MATCH → RC=2 → deferred 5 veces → dead.
+
+**Verificar:**
+```bash
+# Confirmar que el tool correcto está en /data/:
+sudo docker exec bridge-amazon-inbound-worker grep -n "search_read" /data/amazon_fbm_refund_and_cancel.py
+# Debe mostrar: [[["client_order_ref", "like", order_id]]]  (con "like", NO "=")
+```
+
+**Fix permanente:** Copiar ambos refund tools a `/data/` (ya incluidos en el bloque de deploy arriba).
+
+**Recovery para orden afectada:**
+```bash
+# 1. Copiar tools correctos a /data/
+cd /tmp/goncloud-bridge-in-out && sudo git fetch && sudo git pull
+sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_refund_and_cancel.py /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_refund_and_cancel.py /mnt/data/appdata/bridge/data/
+
+# 2. Borrar el registro dead para permitir reprocesar
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
+  "DELETE FROM amazon_processed_events WHERE dedupe_key LIKE '%ORDER-ID%:Canceled';"
+
+# 3. Forzar poll para que reencole la cancelación
+sudo docker exec bridge-amazon-inbound-worker python3 /data/amazon_orders_poll.py \
+  --days 7 --marketplace BOTH
 ```
 
 ### PROBLEMA 5: MeLi `no_valid_items` / órdenes en `manual_review`
@@ -556,13 +599,14 @@ sudo docker restart bridge-inbound-worker
 | 2026-02-23 | Poll con `--days 1` dejaba gap `Pending→Unshipped` | Cambiar a `--days 2` |
 | 2026-02-24 | `res.currency.rate` vacío → órdenes Amazon US fallan por conversión USD→MXN | `push_fx_to_odoo.py` escribe el rate en Odoo; cron `sync_fx_rates.py` actualizado para llamarlo |
 | 2026-02-24 | Flex MX: factura se crea en $0 — el job de Unshipped no encontraba el SO del Pending | `amazon_fbm_paid_one_shot.py`: búsqueda por `display_ref OR order_id`; si encontrado sin buyer_name, actualiza `client_order_ref` |
+| 2026-03-01 | Cancelaciones Amazon van a `dead` — SO nunca cancelado en Odoo | Refund tools nunca copiados a `/data/`; contenedor usaba versión vieja con `= CLIENT_ORDER_REF` en lugar de `like order_id`. Fix: desplegar `amazon_fba/fbm_refund_and_cancel.py` a `/data/` |
 
 ---
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-24 (sesión 3)
-**Branch activo:** `claude/review-inbound-outbound-G9HeG`
+**Fecha de última actualización:** 2026-03-01
+**Branch activo:** `claude/fix-odoo-order-cancellation-d8Jmk`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
 
@@ -577,13 +621,28 @@ sudo docker restart bridge-inbound-worker
 - Worker busca tools en `/data/` primero (fix definitivo del bug recurrente)
 - Tipo de cambio USD/MXN se actualiza diariamente a las 8am vía cron
 
-### Pendiente
+### Pendiente — DEPLOY REQUERIDO
+- **Copiar refund tools a `/data/`** (ver sección 7 PROBLEMA 8 y bloque de deploy en sección 6)
+  ```bash
+  sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_refund_and_cancel.py /mnt/data/appdata/bridge/data/
+  sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_refund_and_cancel.py /mnt/data/appdata/bridge/data/
+  ```
+- **Recovery orden 702-2278843-9196212:** ver PROBLEMA 8 para comandos
+
+### Pendiente — backlog
 - Amazon SP-API: verificación de cuenta pendiente (polling se habilita al aprobar)
 - Limpieza periódica de `manual_review` antiguos (script existe, no automatizado)
 
 ---
 
 ## 11. Diario de cambios
+
+### 2026-03-01
+- **BUG:** Cancelaciones Amazon terminaban en `dead` con `max_deferred_exceeded` — SO nunca cancelado en Odoo.
+- **ROOT CAUSE:** `amazon_fba_refund_and_cancel.py` y `amazon_fbm_refund_and_cancel.py` nunca fueron copiados a `/data/`. El worker usaba la versión baked-in del contenedor (imagen vieja) que busca el SO con `[[["client_order_ref","=", CLIENT_ORDER_REF]]]` (exact match con prefijo `AMZFBM:mkt:order_id`). El SO en Odoo tiene `client_order_ref = "order_id"` (formato nuevo sin prefijo) → NO MATCH → RC=2 → 5 veces → dead.
+- **FIX:** La versión correcta en el repo ya usa `like order_id` (con extracción del order_id del ref). Solo faltaba desplegarlo.
+- **DOCS:** Agregados ambos refund tools al bloque de deploy en sección 6. Agregado PROBLEMA 8 en sección 7.
+- **DEPLOY REQUERIDO:** Copiar refund tools a `/data/` y recuperar órdenes afectadas (ver PROBLEMA 8 y sección 10).
 
 ### 2026-02-24 — sesión 3
 - **DOCS:** Sesión de soporte sin cambios de código.
