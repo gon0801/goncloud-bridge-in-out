@@ -74,6 +74,15 @@ order_id = str(order.get("AmazonOrderId") or "").strip()
 if not order_id:
     die("ORDER_JSON missing AmazonOrderId", code=1)
 
+# Fuente de verdad: CurrencyCode del pedido (override del env flag)
+# Si OrderTotal no está presente (ej. webhook sin enrich) → usa IS_USD_ORDER del env
+_order_currency = (order.get("OrderTotal") or {}).get("CurrencyCode", "").strip().upper()
+if _order_currency:
+    IS_USD_ORDER = (_order_currency == "USD")
+    print(f"[FBM_PAID] order currency={_order_currency} IS_USD_ORDER={IS_USD_ORDER}")
+    if _order_currency not in ("MXN", "USD"):
+        die(f"Moneda no soportada: {_order_currency}", code=1)
+
 def map_sku(seller_sku):
     """Busca seller_sku en amazon_sku_mapping → odoo_default_code. Retorna seller_sku si no hay mapeo."""
     try:
@@ -302,16 +311,18 @@ if not existing_lines:
         }])
     print(f"[FBM_PAID] SO lines created: {len(items)}")
 else:
-    # Si las líneas existen con precio $0 y ahora llegan precios reales → actualizar
+    # Si las líneas existen con precio distinto al calculado → actualizar
+    # Esto cubre: $0 (Flex MX Pending), USD sin convertir (órdenes US), etc.
     current_lines = exec_kw(uid, "sale.order.line", "search_read",
         [[["order_id", "=", so_id]]],
         {"fields": ["id", "name", "price_unit"]})
     sku_price = {it["sku"]: it["unit_price"] for it in items if it["unit_price"] > 0}
     for line in current_lines:
-        if line["price_unit"] == 0 and line["name"] in sku_price:
+        line_sku = line.get("name", "")
+        if line_sku in sku_price and abs(line["price_unit"] - sku_price[line_sku]) > 0.01:
             exec_kw(uid, "sale.order.line", "write",
-                [[line["id"]], {"price_unit": sku_price[line["name"]]}])
-            print(f"[FBM_PAID] line price updated: {line['name']} $0 → ${sku_price[line['name']]}")
+                [[line["id"]], {"price_unit": sku_price[line_sku]}])
+            print(f"[FBM_PAID] line price updated: {line_sku} ${line['price_unit']} → ${sku_price[line_sku]}")
 
 # =========================
 # Confirm SO (creates picking automatically)
