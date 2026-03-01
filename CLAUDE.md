@@ -401,6 +401,60 @@ sudo docker exec bridge-amazon-inbound-worker python3 /data/amazon_orders_poll.p
   --days 7 --marketplace MX
 ```
 
+### PROBLEMA 8: Amazon US — precios sin convertir a MXN (ej. 84.41 USD queda como 84.41 MXN)
+
+**Causa raíz:** La versión en `/data/amazon_fba_paid_one_shot.py` del servidor es OLD (no tiene `IS_USD_ORDER`) o es la versión de `app/` (que tenía `IS_USD_ORDER` sin definir → NameError).
+
+**Diagnóstico rápido en el servidor:**
+```bash
+# 1. Ver qué versión está en /data/
+sudo grep -n "IS_USD_ORDER" /mnt/data/appdata/bridge/data/amazon_fba_paid_one_shot.py
+# Debe mostrar: IS_USD_ORDER = os.getenv("IS_USD_ORDER", "0") == "1"
+# Si no muestra nada → versión vieja sin conversión
+
+# 2. Ver qué versión está en tools/ del host
+sudo grep -n "IS_USD_ORDER" /mnt/data/appdata/bridge/tools/amazon_fba_paid_one_shot.py
+
+# 3. Verificar qué registró el worker para la orden
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
+  "SELECT dedupe_key, result, detail_json FROM amazon_processed_events
+   WHERE dedupe_key LIKE '%114-6204816-4453067%';"
+
+# 4. Verificar que Odoo tiene rate USD
+sudo docker exec bridge-amazon-inbound-worker python3 -c "
+import requests, sqlite3
+db = sqlite3.connect('/data/bridge.db')
+def gs(k): return (db.execute('SELECT value FROM bridge_settings WHERE key=?',(k,)).fetchone() or [None])[0]
+url,db_,user,pw = gs('odoo_url').rstrip('/'),gs('odoo_db'),gs('odoo_user'),gs('odoo_password')
+def jcall(s,m,a):
+    return requests.post(url+'/jsonrpc',json={'jsonrpc':'2.0','method':'call','params':{'service':s,'method':m,'args':a},'id':1},timeout=30).json().get('result')
+uid = jcall('common','authenticate',[db_,user,pw,{}])
+rates = jcall('object','execute_kw',[db_,uid,pw,'res.currency.rate','search_read',
+    [[['currency_id.name','=','USD']]],{'fields':['rate','name'],'order':'name desc','limit':3}])
+for r in (rates or []): print(r['name'], round(1.0/r['rate'],4), 'MXN/USD')
+"
+```
+
+**Fix (siempre deployar desde tools/, nunca desde app/):**
+```bash
+cd /tmp/goncloud-bridge-in-out && sudo git fetch && sudo git pull
+sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_paid_one_shot.py  /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_paid_one_shot.py  /mnt/data/appdata/bridge/data/
+# Verificar:
+sudo grep "IS_USD_ORDER" /mnt/data/appdata/bridge/data/amazon_fba_paid_one_shot.py
+```
+
+**Recovery para orden 114-6204816-4453067 (precio mal registrado):**
+```bash
+# En Odoo: cancelar y eliminar el SO/factura con precio en USD (84.41 MXN incorrecto)
+# En bridge.db: borrar auditoría para que se reprocese automáticamente
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
+  "DELETE FROM amazon_processed_events WHERE dedupe_key LIKE '%114-6204816-4453067%';"
+# Forzar poll:
+sudo docker exec bridge-amazon-inbound-worker python3 /data/amazon_orders_poll.py \
+  --days 7 --marketplace BOTH
+```
+
 ### PROBLEMA 5: MeLi `no_valid_items` / órdenes en `manual_review`
 
 ```bash
@@ -556,12 +610,14 @@ sudo docker restart bridge-inbound-worker
 | 2026-02-23 | Poll con `--days 1` dejaba gap `Pending→Unshipped` | Cambiar a `--days 2` |
 | 2026-02-24 | `res.currency.rate` vacío → órdenes Amazon US fallan por conversión USD→MXN | `push_fx_to_odoo.py` escribe el rate en Odoo; cron `sync_fx_rates.py` actualizado para llamarlo |
 | 2026-02-24 | Flex MX: factura se crea en $0 — el job de Unshipped no encontraba el SO del Pending | `amazon_fbm_paid_one_shot.py`: búsqueda por `display_ref OR order_id`; si encontrado sin buyer_name, actualiza `client_order_ref` |
+| 2026-02-25 | `app/amazon_fba_paid_one_shot.py` desincronizada con `tools/`: `IS_USD_ORDER` no definido (NameError), solo usaba `ItemPrice.Amount` (sin Sales Proceeds), factura via wizard (produce $0 para FBA) | Sincronizar `app/` con `tools/` — siempre deployar desde `tools/` a `/data/` |
+| 2026-02-25 | `IS_USD_ORDER` basado en marketplace ID (frágil) — si el flag no llega, 84 USD entra como 84 MXN silenciosamente | Tools leen `order["OrderTotal"]["CurrencyCode"]` como fuente de verdad; env flag es fallback |
 
 ---
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-24 (sesión 3)
+**Fecha de última actualización:** 2026-02-27
 **Branch activo:** `claude/review-inbound-outbound-G9HeG`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
@@ -576,14 +632,53 @@ sudo docker restart bridge-inbound-worker
 - `client_order_ref` limpio: `orden_id | comprador` en todos los canales
 - Worker busca tools en `/data/` primero (fix definitivo del bug recurrente)
 - Tipo de cambio USD/MXN se actualiza diariamente a las 8am vía cron
+- **Detección de moneda por `OrderTotal.CurrencyCode`** (no por marketplace ID — fuente real de verdad)
 
 ### Pendiente
 - Amazon SP-API: verificación de cuenta pendiente (polling se habilita al aprobar)
 - Limpieza periódica de `manual_review` antiguos (script existe, no automatizado)
+- **MeLi OAuth refresh automático no existe** — el access_token expira en ~6h y debe refrescarse manualmente con `POST /oauth/refresh`. Pendiente implementar cron o background task.
 
 ---
 
 ## 11. Diario de cambios
+
+### 2026-02-27
+- **INVESTIGACIÓN:** Revisión de la implementación del OAuth refresh token de MeLi.
+- **HALLAZGO:** No existe ningún mecanismo automático de refresh. El `access_token` expira en ~6h (`expires_in=21600`). El refresh es manual vía `POST /oauth/refresh` (main.py:230).
+- **HALLAZGO:** Los workers (`inbound_worker.py`, `worker.py`) leen el token del archivo en cada llamada pero no detectan 401 ni hacen retry automático.
+- **PENDIENTE:** Implementar refresh automático (cron o background task en FastAPI).
+- Sin cambios de código.
+
+### 2026-02-25 — sesión 4
+- **DIAGNÓSTICO:** Investigación de identificador `PkM9CcwfD` visto en orden Flex MX `701-4904380-4144244`.
+- **CONCLUSIÓN:** El código NO existe en SP-API. Consultados `GetOrder` y `GetOrderItems`: los únicos IDs disponibles son `AmazonOrderId`, `OrderItemId`, `ASIN`, `SellerSKU`. `PkM9CcwfD` es un identificador interno del sistema logístico de Amazon Flex (app del repartidor), no expuesto por SP-API.
+- **BuyerInfo** también vacía para esa orden — `client_order_ref` queda solo con `order_id`.
+- Sin cambios de código. Sistema estable.
+
+### 2026-02-25 — sesión 3
+- **DIAGNÓSTICO:** Sesión de soporte sin cambios de código.
+- **DLQ revisada:** 2 entradas `dead` en `amazon_processed_events`:
+  - `701-5035844-5906656:Canceled` — `max_deferred_exceeded` (5 intentos)
+  - `701-2734217-1461012:Canceled` — `max_deferred_exceeded` (5 intentos)
+- **CONCLUSIÓN:** Benignos — ambas son órdenes Canceled de MX que llegaron sin SO previo en Odoo (se cancelaron antes de ser capturadas como Shipped/Pending). No hay contabilidad que revertir.
+- **CONFIRMACIÓN estado post-PROBLEMA 8:** `114-6204816-4453067` reprocesada a $1,451.60 MXN ✓ · `111-2739896-7592244` procesada a $2,325.89 MXN ✓. Sistema estable.
+
+### 2026-02-25 — sesión 2
+- **FIX:** `IS_USD_ORDER` dependía del marketplace ID (`AMZ_MX_MARKETPLACE`), no de la moneda real del pedido.
+- **ROOT CAUSE:** Si el marketplace llega mal clasificado o el flag no se setea correctamente, la conversión USD→MXN nunca ocurre y el precio entra como si fuera MXN (ej. 84 USD → 84 MXN).
+- **FIX:** `tools/amazon_fba_paid_one_shot.py` y `tools/amazon_fbm_paid_one_shot.py` ahora leen `order["OrderTotal"]["CurrencyCode"]` como fuente de verdad después de parsear el ORDER_JSON. El env `IS_USD_ORDER` se mantiene como fallback para el caso webhook-sin-enrich donde `OrderTotal` puede no estar presente. `app/amazon_fba_paid_one_shot.py` sincronizada.
+- **NUEVO COMPORTAMIENTO:** `[FBA_PAID] order currency=USD IS_USD_ORDER=True` en logs confirma que la moneda se detectó del JSON. Monedas no soportadas (no MXN/USD) causan `manual_review` con mensaje claro.
+
+### 2026-02-25
+- **INVESTIGACIÓN:** Orden Amazon US 114-6204816-4453067 registrada en Odoo a 84.41 MXN (sin conversión desde USD).
+- **ROOT CAUSE identificado en repo:** `app/amazon_fba_paid_one_shot.py` tenía 3 bugs vs `tools/`:
+  1. `IS_USD_ORDER` nunca definido → `NameError` en línea 225 para cualquier orden → si esta versión llega a `/data/`, crashea antes de crear el SO (manual_review)
+  2. `parse_items()` solo usaba `ItemPrice.Amount` (ignoraba ItemTax, ShippingPrice, etc.)
+  3. Factura via wizard `sale.advance.payment.inv` → factura $0 para FBA (pickings cancelados, delivered_qty=0)
+- **FIX:** `app/amazon_fba_paid_one_shot.py` sincronizada completamente con `tools/amazon_fba_paid_one_shot.py`
+- **CAUSA PROBABLE EN PRODUCCIÓN:** versión vieja de `tools/` (pre-IS_USD_ORDER) en `/mnt/.../tools/` del servidor, o `/data/` con versión incorrecta. Ver diagnóstico abajo.
+- **DEPLOY REQUERIDO EN SERVER:** ver instrucciones en sección 7 PROBLEMA 8
 
 ### 2026-02-24 — sesión 3
 - **DOCS:** Sesión de soporte sin cambios de código.
