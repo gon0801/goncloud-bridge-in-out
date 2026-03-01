@@ -621,8 +621,8 @@ sudo docker restart bridge-inbound-worker
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-27
-**Branch activo:** `claude/review-inbound-outbound-G9HeG`
+**Fecha de última actualización:** 2026-03-01
+**Branch activo:** `claude/review-inbound-outbound-01RqZvexc6U57mYLoNqEL9ZF`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
 
@@ -650,6 +650,11 @@ sudo docker restart bridge-inbound-worker
 ---
 
 ## 11. Diario de cambios
+
+### 2026-03-01
+- **DOCS:** Creado `MASTER_RUNBOOK.md` — documento canónico maestro de 25 secciones / 1759 líneas. Cubre instalación desde cero, arquitectura, docker-compose completo, schema DB, todos los flujos de negocio, reglas selladas, lógica de cada tool, timers, OAuth MeLi, SP-API, tipo de cambio, SKU mapping, deduplicación, troubleshooting, bugs resueltos y procedimientos de deploy.
+- **INFRA:** Rama anterior `claude/review-inbound-outbound-G9HeG` ya no existe. Nueva rama de trabajo creada desde `main`: `claude/review-inbound-outbound-01RqZvexc6U57mYLoNqEL9ZF`.
+- Sin cambios de código.
 
 ### 2026-02-27
 - **INVESTIGACIÓN:** Revisión de la implementación del OAuth refresh token de MeLi.
