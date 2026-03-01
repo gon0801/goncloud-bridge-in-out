@@ -621,13 +621,9 @@ sudo docker restart bridge-inbound-worker
 - Worker busca tools en `/data/` primero (fix definitivo del bug recurrente)
 - Tipo de cambio USD/MXN se actualiza diariamente a las 8am vía cron
 
-### Pendiente — DEPLOY REQUERIDO
-- **Copiar refund tools a `/data/`** (ver sección 7 PROBLEMA 8 y bloque de deploy en sección 6)
-  ```bash
-  sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_refund_and_cancel.py /mnt/data/appdata/bridge/data/
-  sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_refund_and_cancel.py /mnt/data/appdata/bridge/data/
-  ```
-- **Recovery orden 702-2278843-9196212:** ver PROBLEMA 8 para comandos
+### Funcionando (adicional) ✓
+- Cancelaciones Amazon FBA/FBM: tools correctos en `/data/`, buscan SO con `like order_id`
+- Cancelaciones sin SO (orden cancelada antes de ser pagada): RC=0 idempotente
 
 ### Pendiente — backlog
 - Amazon SP-API: verificación de cuenta pendiente (polling se habilita al aprobar)
@@ -639,10 +635,12 @@ sudo docker restart bridge-inbound-worker
 
 ### 2026-03-01
 - **BUG:** Cancelaciones Amazon terminaban en `dead` con `max_deferred_exceeded` — SO nunca cancelado en Odoo.
-- **ROOT CAUSE:** `amazon_fba_refund_and_cancel.py` y `amazon_fbm_refund_and_cancel.py` nunca fueron copiados a `/data/`. El worker usaba la versión baked-in del contenedor (imagen vieja) que busca el SO con `[[["client_order_ref","=", CLIENT_ORDER_REF]]]` (exact match con prefijo `AMZFBM:mkt:order_id`). El SO en Odoo tiene `client_order_ref = "order_id"` (formato nuevo sin prefijo) → NO MATCH → RC=2 → 5 veces → dead.
-- **FIX:** La versión correcta en el repo ya usa `like order_id` (con extracción del order_id del ref). Solo faltaba desplegarlo.
-- **DOCS:** Agregados ambos refund tools al bloque de deploy en sección 6. Agregado PROBLEMA 8 en sección 7.
-- **DEPLOY REQUERIDO:** Copiar refund tools a `/data/` y recuperar órdenes afectadas (ver PROBLEMA 8 y sección 10).
+- **ROOT CAUSE 1:** `amazon_fba/fbm_refund_and_cancel.py` nunca copiados a `/data/`. Worker usaba versión baked-in del contenedor que buscaba `client_order_ref = "AMZFBM:mkt:id"` (exact match con prefijo). SO en Odoo tiene `"order_id"` (sin prefijo) → NO MATCH → RC=2 → 5 veces → dead.
+- **ROOT CAUSE 2:** Cuando la orden se cancela antes de ser pagada no hay SO en Odoo. Tool retornaba RC=2 ("reintenta") → loop infinito → dead.
+- **FIX 1:** Desplegar los tools correctos a `/data/` (ya usaban `like order_id` en el repo).
+- **FIX 2:** Cambiar RC=2 a RC=0 en "SO not found" de ambos refund tools (idempotente).
+- **RECOVERED:** 4 cancelaciones dead → `success` (702-2278843-9196212, 701-9768761-8453803, 114-1478430-2580255, 114-9835118-5084221).
+- **DOCS:** Refund tools agregados al bloque de deploy. PROBLEMA 8 documentado.
 
 ### 2026-02-24 — sesión 3
 - **DOCS:** Sesión de soporte sin cambios de código.
