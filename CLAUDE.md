@@ -621,7 +621,7 @@ sudo docker restart bridge-inbound-worker
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-03-01
+**Fecha de última actualización:** 2026-03-01 (sesión 2)
 **Branch activo:** `claude/review-inbound-outbound-01RqZvexc6U57mYLoNqEL9ZF`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
@@ -637,6 +637,7 @@ sudo docker restart bridge-inbound-worker
 - Worker busca tools en `/data/` primero (fix definitivo del bug recurrente)
 - Tipo de cambio USD/MXN se actualiza diariamente a las 8am vía cron
 - **Detección de moneda por `OrderTotal.CurrencyCode`** (no por marketplace ID — fuente real de verdad)
+- **Galería de fotos de productos** (`/photos`) — muestra fotos desde Odoo por SKU, lazy-load, búsqueda, modal HD, descarga individual y ZIP
 
 ### Funcionando (adicional) ✓
 - Cancelaciones Amazon FBA/FBM: tools correctos en `/data/`, buscan SO con `like order_id`
@@ -650,6 +651,16 @@ sudo docker restart bridge-inbound-worker
 ---
 
 ## 11. Diario de cambios
+
+### 2026-03-01 — sesión 2
+- **FEAT:** Nueva galería de fotos de productos en `app/photos.html` + 4 endpoints en `main.py`:
+  - `GET /photos` → galería HTML con búsqueda, lazy-load, modal HD
+  - `GET /api/photos/products` → JSON con todos los productos activos (SKU, nombre, stock)
+  - `GET /api/product-image/{sku}` → sirve imagen JPEG desde Odoo (caché 10 min; `?full=1` para alta res)
+  - `GET /api/photos/export.zip` → ZIP con `image_128` de todos los productos
+- **COMPORTAMIENTO:** Lista de productos: sin caché (fresca en cada carga). Imágenes: caché 10 min en memoria. Productos nuevos en Odoo aparecen de inmediato al recargar. Fotos actualizadas en máx. 10 min (o `docker restart bridge-api`).
+- **API PÚBLICA:** Los endpoints `/api/product-image/{sku}` y `/api/photos/products` son usables desde cualquier app externa sin autenticación.
+- Sin cambios en workers ni flujos de negocio.
 
 ### 2026-03-01
 - **DOCS:** Creado `MASTER_RUNBOOK.md` — documento canónico maestro de 25 secciones / 1759 líneas. Cubre instalación desde cero, arquitectura, docker-compose completo, schema DB, todos los flujos de negocio, reglas selladas, lógica de cada tool, timers, OAuth MeLi, SP-API, tipo de cambio, SKU mapping, deduplicación, troubleshooting, bugs resueltos y procedimientos de deploy.
