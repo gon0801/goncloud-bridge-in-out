@@ -271,8 +271,12 @@ Esto causó el bug recurrente de client_order_ref (resuelto 2026-02-23).
 ```bash
 sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_paid_one_shot.py            /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_paid_one_shot.py            /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_refund_and_cancel.py        /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_refund_and_cancel.py        /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_full_paid_one_shot_no_stock.py /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_fbm_so_apply_paid_one_shot.py  /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_full_so_refund_and_cancel.py   /mnt/data/appdata/bridge/data/
+sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_fbm_so_refund_and_cancel.py    /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_orders_poll.py                  /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/recover_manual_review.py               /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/diagnose_inbound.py                    /mnt/data/appdata/bridge/data/
@@ -634,7 +638,11 @@ sudo docker restart bridge-inbound-worker
 - Tipo de cambio USD/MXN se actualiza diariamente a las 8am vía cron
 - **Detección de moneda por `OrderTotal.CurrencyCode`** (no por marketplace ID — fuente real de verdad)
 
-### Pendiente
+### Funcionando (adicional) ✓
+- Cancelaciones Amazon FBA/FBM: tools correctos en `/data/`, buscan SO con `like order_id`
+- Cancelaciones sin SO (orden cancelada antes de ser pagada): RC=0 idempotente
+
+### Pendiente — backlog
 - Amazon SP-API: verificación de cuenta pendiente (polling se habilita al aprobar)
 - Limpieza periódica de `manual_review` antiguos (script existe, no automatizado)
 - **MeLi OAuth refresh automático no existe** — el access_token expira en ~6h y debe refrescarse manualmente con `POST /oauth/refresh`. Pendiente implementar cron o background task.

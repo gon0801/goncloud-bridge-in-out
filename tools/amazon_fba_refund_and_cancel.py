@@ -65,8 +65,8 @@ sos = exec_kw(uid, "sale.order", "search_read",
     {"fields": ["id", "name", "state"], "limit": 1})
 
 if not sos:
-    print(f"[FBA_REFUND] SO not found, nothing to cancel")
-    sys.exit(2)  # RC=2 means SO doesn't exist yet
+    print(f"[FBA_REFUND] SO not found, nothing to cancel — idempotent success")
+    sys.exit(0)  # RC=0: no SO to cancel (order may have been cancelled before paid processing)
 
 so = sos[0]
 print(f"[FBA_REFUND] found SO: {so['name']} state={so['state']}")
