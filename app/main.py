@@ -12,10 +12,13 @@ from typing import List, Optional
 import redis
 import requests
 from fastapi import FastAPI, Request, Header
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
+
+# Caché en memoria para imágenes de productos Odoo (TTL 10 min)
+_odoo_image_cache: dict = {}  # {"{sku}:{size}": (bytes, timestamp)}
 REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
 
 ENABLE_MISSING_ZERO_CHANNELS = {
@@ -1410,3 +1413,111 @@ async def setup_activate(request: Request):
     except Exception as e:
         conn.close()
         return {"ok": False, "error": str(e)}
+
+
+# =========================================================
+# GALERÍA DE FOTOS — productos Odoo por SKU
+# =========================================================
+
+def _odoo_xmlrpc():
+    """Devuelve (uid, models) conectado a Odoo vía XML-RPC."""
+    import xmlrpc.client
+    url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
+    db  = os.getenv("ODOO_DB", "EHV")
+    user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
+    pwd  = os.getenv("ODOO_PASSWORD", "bloqnum1")
+    common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
+    uid = common.authenticate(db, user, pwd, {})
+    models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
+    return db, uid, pwd, models
+
+
+@app.get("/photos", response_class=HTMLResponse)
+async def product_gallery():
+    html = open("/app/photos.html").read()
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/photos/products")
+async def get_gallery_products():
+    """Todos los productos activos con SKU (sin filtro por canal)."""
+    try:
+        db, uid, pwd, models = _odoo_xmlrpc()
+        prods = models.execute_kw(db, uid, pwd, "product.product", "search_read",
+            [[("active", "=", True), ("default_code", "!=", False)]],
+            {"fields": ["default_code", "display_name", "qty_available"],
+             "order": "default_code asc"})
+        return {
+            "ok": True,
+            "products": [
+                {"sku": p["default_code"],
+                 "name": p.get("display_name") or "",
+                 "qty": p.get("qty_available", 0)}
+                for p in prods
+            ]
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/product-image/{sku}")
+async def get_product_image(sku: str, full: int = 0):
+    """Sirve la imagen de un producto desde Odoo. full=1 para alta resolución."""
+    import base64
+    from fastapi import HTTPException
+
+    cache_key = f"{sku}:{'full' if full else 'thumb'}"
+    cached = _odoo_image_cache.get(cache_key)
+    if cached and time.time() - cached[1] < 600:
+        return Response(content=cached[0], media_type="image/jpeg")
+
+    try:
+        field = "image_1920" if full else "image_128"
+        db, uid, pwd, models = _odoo_xmlrpc()
+        prods = models.execute_kw(db, uid, pwd, "product.product", "search_read",
+            [[("default_code", "=", sku), ("active", "=", True)]],
+            {"fields": [field], "limit": 1})
+
+        if not prods or not prods[0].get(field):
+            raise HTTPException(status_code=404, detail="Sin imagen")
+
+        img_bytes = base64.b64decode(prods[0][field])
+        _odoo_image_cache[cache_key] = (img_bytes, time.time())
+        return Response(content=img_bytes, media_type="image/jpeg")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/photos/export.zip")
+async def export_photos_zip():
+    """Descarga todas las fotos de productos (image_128) como un archivo ZIP."""
+    import base64, zipfile, io
+    from fastapi.responses import StreamingResponse
+
+    try:
+        db, uid, pwd, models = _odoo_xmlrpc()
+        prods = models.execute_kw(db, uid, pwd, "product.product", "search_read",
+            [[("active", "=", True), ("default_code", "!=", False)]],
+            {"fields": ["default_code", "image_128"], "order": "default_code asc"})
+
+        buf = io.BytesIO()
+        count = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in prods:
+                img_b64 = p.get("image_128")
+                if not img_b64:
+                    continue
+                img_bytes = base64.b64decode(img_b64)
+                zf.writestr(f"{p['default_code']}.jpg", img_bytes)
+                count += 1
+
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename=odoo_fotos_{count}productos.zip"}
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
