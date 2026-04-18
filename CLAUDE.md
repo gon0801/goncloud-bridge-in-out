@@ -41,10 +41,7 @@
    - Hoy `inbound_full_paid_one_shot_no_stock.py` y `amazon_fba_paid_one_shot.py` no tocan stock
    - Agregar mapping canal→almacén en `bridge_settings`
    - Depende del pendiente 1
-4. **MeLi OAuth refresh automático**
-   - Hoy el access_token expira en ~6h y debe refrescarse manual con `POST /oauth/refresh`
-   - Implementar cron o background task en FastAPI
-5. **Limpieza periódica de `manual_review` antiguos**
+4. **Limpieza periódica de `manual_review` antiguos**
    - Script existe, falta automatizar
 
 ---
@@ -678,6 +675,7 @@ sudo docker restart bridge-inbound-worker
 ### Funcionando (adicional) ✓
 - Cancelaciones Amazon FBA/FBM: tools correctos en `/data/`, buscan SO con `like order_id`
 - Cancelaciones sin SO (orden cancelada antes de ser pagada): RC=0 idempotente
+- **MeLi OAuth auto-refresh** vía cron del host `/etc/cron.d/goncloud_meli_refresh` (cada 6h). Script: `tools/meli_refresh_tokens.sh` (versionado en el repo + copia en `/mnt/data/appdata/bridge/tools/`). Log: `/mnt/data/appdata/bridge/data/meli_token_refresh.log`. Hace backup antes de sobrescribir y rota el refresh_token con cada refresh (MeLi lo requiere).
 
 ### Pendiente — backlog
 Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de verdad única.
@@ -685,6 +683,13 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 ---
 
 ## 11. Diario de cambios
+
+### 2026-04-18 — sesión 2
+- **HALLAZGO:** MeLi OAuth refresh **SÍ es automático**. Encontrado cron en `/etc/cron.d/goncloud_meli_refresh` ejecutando `/mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh` cada 6h (`5 */6 * * *`). Log muestra 29 refreshes `OK` consecutivos en últimos 7 días. Documentación previa ("no existe auto-refresh") estaba desactualizada.
+- **FIX:** Versionado el script `meli_refresh_tokens.sh` en `tools/` del repo. Antes vivía solo en el servidor (si gonserver se rebuildeaba se perdía).
+- **OBSERVACIÓN:** Hay un segundo cron en el user crontab (cada 4h) apuntando a `/mnt/data/appdata/accounting/scripts/refresh_meli_token.py` cuyo log `/var/log/meli_token_refresh.log` no existe → cron muerto, no aplica al bridge (vive en proyecto `accounting`).
+- **BACKLOG:** Eliminado pendiente #4 "MeLi OAuth refresh automático" — ya resuelto en producción.
+- Sin cambios de código del bridge.
 
 ### 2026-04-18
 - **AVISO AMAZON:** Recibido email de Amazon Selling Partner API Services Team notificando deprecación de 6 operaciones del Orders API v0 con removal date **2027-03-27**. Hay que migrar a Orders API **v2026-01-01**.

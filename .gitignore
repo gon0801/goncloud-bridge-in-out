@@ -13,6 +13,8 @@
 **/*tokens*
 **/*password*
 **/*credentials*
+# Excepción: scripts que REFRESCAN tokens (no contienen tokens en sí)
+!tools/meli_refresh_tokens.sh
 
 # Databases
 *.db
