@@ -141,6 +141,10 @@ MercadoLibre y Amazon con Odoo 17 ERP.
 - `meli-sync.timer` — outbound MeLi cada 5 min
 - `amazon-poll.timer` — `amazon_orders_poll.py --days 2 --marketplace BOTH` cada 5 min
 
+**Cron del host (user crontab):**
+- `0 */4 * * *` — `backfill_meli_mappings.py` — descubre listings nuevos/post-split de MeLi y actualiza `sku_mapping`. Log: `/mnt/data/appdata/bridge/data/backfill.log`. Corre cada 4h.
+- `5 */6 * * *` (en `/etc/cron.d/goncloud_meli_refresh`) — `meli_refresh_tokens.sh` — refresca el access_token de MeLi.
+
 ---
 
 ## 4. Flujos de negocio
@@ -737,6 +741,12 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 ---
 
 ## 11. Diario de cambios
+
+### 2026-04-18 — sesión 5 (cron automation del backfill)
+- **CRON AGREGADO:** `0 */4 * * * docker exec bridge-api python3 /data/backfill_meli_mappings.py >> /mnt/data/appdata/bridge/data/backfill.log 2>&1`
+- Con esto, cualquier split/nuevo listing de MeLi se detecta en máximo 4h y los mappings se actualizan solos. El sync de stock del worker outbound hace el resto.
+- **Validado:** corrida inicial detectó 8 mappings nuevos correctos (post-fix del PR #20). Total 321 mappings en `sku_mapping`. Aparecieron SKUs multi-listing adicionales: `NH-ITA-CEN-DOR` (3 listings), familias `NH-CAR-AZU-*-DOR` (2 c/u) y `SET-CAR-AZU-*-DOR` (2 c/u).
+- Documentación de crons del host añadida a sección 3.
 
 ### 2026-04-18 — sesión 4 (fix backfill: leer SELLER_SKU attribute)
 - **BUG DESCUBIERTO post-deploy:** `backfill_meli_mappings.py` leía `seller_custom_field` (campo legacy deprecated de MeLi). En listings post-split, MeLi copia el SKU del padre a `seller_custom_field` de todos los hijos, mientras que el SKU real de cada variante vive en `attributes[id=SELLER_SKU]`.
