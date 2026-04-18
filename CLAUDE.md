@@ -1,14 +1,51 @@
 # CLAUDE.md — GONCLOUD Bridge (Inbound/Outbound)
 
-> **INSTRUCCIÓN PARA CLAUDE:** Al finalizar cualquier sesión donde se hicieron cambios
-> relevantes, actualiza la sección "Diario de cambios" y el "Estado actual" de este
-> archivo, luego haz commit + push. Así la próxima sesión arranca con contexto completo.
+> **INSTRUCCIÓN PARA CLAUDE — AL INICIAR SESIÓN:**
+> Revisa la sección **"Pendientes activos"** (justo abajo) y recuérdaselos al usuario
+> en el primer mensaje de la sesión. Mantén la lista viva:
+> - Cuando se termine un pendiente → **elimínalo** de la lista
+> - Cuando surja uno nuevo → **agrégalo** a la lista
+>
+> **INSTRUCCIÓN PARA CLAUDE — AL FINALIZAR SESIÓN:**
+> Si hubo cambios relevantes, actualiza "Diario de cambios" + "Estado actual" +
+> "Pendientes activos", luego haz commit + push. Así la próxima sesión arranca con
+> contexto completo.
 >
 > **REGLA ABSOLUTA ANTES DE INVESTIGAR CUALQUIER FALLA:**
 > 1. Leer el worker relevante (`amazon_inbound_worker.py`, `inbound_worker.py`) para entender lógica especial
 > 2. Leer este CLAUDE.md completo — el problema probablemente ya está documentado
 > 3. Consultar las tablas de DB con queries directos antes de hacer suposiciones
 > 4. **NO adivinar.** Si la info está en el repo o en la DB, úsala primero.
+
+---
+
+## Pendientes activos
+
+> Esta lista es la fuente de verdad de qué falta por hacer. Revísala al inicio de cada sesión.
+
+### En curso ahora mismo
+1. **Setup almacenes Odoo FULL/FBA**
+   - [x] Crear los 4 warehouses (EHV-MX, Meli-Full, FBA-MX, FBA-US)
+   - [ ] Confirmar **Resupply From = EHV-MX** en Meli-Full y FBA-MX
+   - [ ] Desmarcar **Buy to Resupply** y **Manufacture to Resupply** en los 3 almacenes nuevos
+   - [ ] Confirmar que los 3 almacenes nuevos estén en **1 step** (incoming y outgoing)
+   - [ ] Decidir estrategia phantom BOM (recomendación: migrar a "Manufacture this product" los SKUs que se enviarán a FULL/FBA)
+   - [ ] Primera transferencia de prueba EHV/Stock → FBAMX/Stock con un SKU piloto
+
+### Backlog del bridge
+2. **Migrar Amazon SP-API Orders v0 → v2026-01-01** (deadline 2027-03-27)
+   - Archivos: `tools/amazon_orders_poll.py`, `app/amazon_inbound_worker.py`, `app/debug_flex_order.py`
+   - Endpoints afectados: `getOrders`, `getOrder`, `getOrderItems`
+   - Margen: completar antes de enero 2027
+3. **Modificar tools inbound FBA/FULL para generar picking desde almacén del canal**
+   - Hoy `inbound_full_paid_one_shot_no_stock.py` y `amazon_fba_paid_one_shot.py` no tocan stock
+   - Agregar mapping canal→almacén en `bridge_settings`
+   - Depende del pendiente 1
+4. **MeLi OAuth refresh automático**
+   - Hoy el access_token expira en ~6h y debe refrescarse manual con `POST /oauth/refresh`
+   - Implementar cron o background task en FastAPI
+5. **Limpieza periódica de `manual_review` antiguos**
+   - Script existe, falta automatizar
 
 ---
 
@@ -621,8 +658,8 @@ sudo docker restart bridge-inbound-worker
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-02-27
-**Branch activo:** `claude/review-inbound-outbound-G9HeG`
+**Fecha de última actualización:** 2026-04-18
+**Branch activo:** `main`
 **Worker MeLi:** v8.4 "Payload-Persistent"
 **Worker Amazon:** v2.7 "Polish Pack"
 
@@ -643,13 +680,19 @@ sudo docker restart bridge-inbound-worker
 - Cancelaciones sin SO (orden cancelada antes de ser pagada): RC=0 idempotente
 
 ### Pendiente — backlog
-- Amazon SP-API: verificación de cuenta pendiente (polling se habilita al aprobar)
-- Limpieza periódica de `manual_review` antiguos (script existe, no automatizado)
-- **MeLi OAuth refresh automático no existe** — el access_token expira en ~6h y debe refrescarse manualmente con `POST /oauth/refresh`. Pendiente implementar cron o background task.
+Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de verdad única.
 
 ---
 
 ## 11. Diario de cambios
+
+### 2026-04-18
+- **AVISO AMAZON:** Recibido email de Amazon Selling Partner API Services Team notificando deprecación de 6 operaciones del Orders API v0 con removal date **2027-03-27**. Hay que migrar a Orders API **v2026-01-01**.
+- **HALLAZGO:** El bridge usa 3 de las 6 operaciones deprecadas — `getOrders`, `getOrder`, `getOrderItems` — en `tools/amazon_orders_poll.py`, `app/amazon_inbound_worker.py` y `app/debug_flex_order.py`. No usamos `getOrderBuyerInfo`, `getOrderAddress`, ni `getOrderItemsBuyerInfo`.
+- **CORRECCIÓN:** "Amazon SP-API: verificación de cuenta pendiente" en backlog estaba desactualizado. SP-API está activo en producción desde hace semanas (evidencia: órdenes procesadas 114-6204816-4453067, 702-9477496-5819444, 701-4904380-4144244, 701-4611535-8534600, etc.).
+- **BACKLOG:** Agregada la migración v0→v2026-01-01 como tarea con deadline.
+- **CONTEXTO ODOO:** El usuario está configurando almacenes por canal en Odoo (EHV-MX, Meli-Full, FBA-MX, FBA-US) para que las ventas FULL/FBA descuenten del almacén correcto. Hoy las tools FBA/FULL paid NO generan picking. Tarea agregada al backlog.
+- Sin cambios de código.
 
 ### 2026-02-27
 - **INVESTIGACIÓN:** Revisión de la implementación del OAuth refresh token de MeLi.
