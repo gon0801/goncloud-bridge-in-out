@@ -105,15 +105,47 @@ def list_seller_items_scan(seller_id: str, token: str, status_filter: str) -> li
 
 
 def get_item_details(item_id: str, token: str) -> dict | None:
+    # IMPORTANTE: incluir `attributes` (lista) ademas de `seller_custom_field` (legacy).
+    # MeLi moderno guarda el SKU en attributes[id=SELLER_SKU], no en seller_custom_field
+    # (que esta deprecated). Leer solo seller_custom_field produce mappings incorrectos
+    # tras separacion de variantes — cada listing post-split puede tener SKU distinto
+    # en attributes[SELLER_SKU] pero el mismo (o ninguno) en seller_custom_field.
     url = (
         f"https://api.mercadolibre.com/items/{item_id}"
-        "?attributes=id,seller_custom_field,variations,status"
+        "?attributes=id,seller_custom_field,attributes,variations,status"
     )
     try:
         return ml_get_json(url, token)
     except Exception as e:
         log(f"WARN get_item_failed id={item_id} err={e}")
         return None
+
+
+def extract_item_sku(item_data: dict) -> str:
+    """Lee SKU con precedencia: attributes[SELLER_SKU] (fuente actual) -> seller_custom_field (legacy)."""
+    for a in item_data.get("attributes") or []:
+        if a.get("id") == "SELLER_SKU":
+            val = str(a.get("value_name") or "").strip()
+            if val:
+                return val
+    return str(item_data.get("seller_custom_field") or "").strip()
+
+
+def extract_variation_sku(variation: dict, fallback: str = "") -> str:
+    """Lee SKU de una variacion con precedencia:
+    1) attribute_combinations[SELLER_SKU]
+    2) variation.seller_custom_field (legacy)
+    3) fallback (SKU del listing padre)
+    """
+    for a in variation.get("attribute_combinations") or []:
+        if a.get("id") == "SELLER_SKU":
+            val = str(a.get("value_name") or "").strip()
+            if val:
+                return val
+    legacy = str(variation.get("seller_custom_field") or "").strip()
+    if legacy:
+        return legacy
+    return fallback
 
 
 def main() -> int:
@@ -153,19 +185,13 @@ def main() -> int:
             if not d:
                 continue
 
-            sku = (d.get("seller_custom_field") or "").strip()
+            sku = extract_item_sku(d)
             variations = d.get("variations") or []
 
             if variations:
                 # listing con variaciones internas (aun con una sola)
                 for v in variations:
-                    vsku = ""
-                    for attr in v.get("attribute_combinations") or []:
-                        if attr.get("id") == "SELLER_SKU":
-                            vsku = str(attr.get("value_name") or "").strip()
-                            break
-                    if not vsku:
-                        vsku = sku  # fallback al SKU del listing
+                    vsku = extract_variation_sku(v, fallback=sku)
                     if not vsku:
                         continue
                     rows_to_upsert.append(
