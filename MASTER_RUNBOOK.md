@@ -1100,17 +1100,39 @@ sudo systemctl start meli-sync.service
 
 ### Refresh del access_token
 - `access_token` expira en **~6 horas** (`expires_in=21600`)
-- `refresh_token` dura **6 meses**
-- Refresh manual:
+- `refresh_token` dura **6 meses** y se **rota en cada refresh** (MeLi lo requiere)
+- Refresh manual (fallback):
   ```bash
   curl -X POST https://meli.goncloud.cc/oauth/refresh
   ```
 - Si retorna `{"error":"no_refresh_token"}` → el archivo de tokens está corrupto
   o vacío → hacer OAuth completo desde `/oauth/start`
 
-### Estado del auto-refresh
-⚠️ **No existe mecanismo automático de refresh.** Los workers no detectan 401
-ni hacen retry automático. Pendiente implementar cron o background task.
+### Auto-refresh (ACTIVO ✓)
+Corre cada 6 horas (`5 */6 * * *` UTC → 00:05, 06:05, 12:05, 18:05) vía cron del host:
+
+- **Cron file:** `/etc/cron.d/goncloud_meli_refresh`
+- **Script:** `/mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh` (versionado en `tools/meli_refresh_tokens.sh` del repo)
+- **Log:** `/mnt/data/appdata/bridge/data/meli_token_refresh.log`
+- **Env:** `/mnt/data/appdata/bridge/.env.meli` (exporta `MELI_CLIENT_ID`, `MELI_CLIENT_SECRET`)
+
+El script:
+1. Valida `.env.meli` y `.meli_tokens.json` legibles
+2. Llama `POST api.mercadolibre.com/oauth/token` con `grant_type=refresh_token`
+3. Hace backup del archivo de tokens anterior (`.meli_tokens.json.BK.{ts}`)
+4. Sobrescribe `/data/.meli_tokens.json` con el nuevo access + refresh token
+5. `chmod 600`, `chown gon:gon`
+6. Loguea `OK access_prefix=... refresh_prefix=... backup=...`
+
+**Verificar estado:**
+```bash
+tail -20 /mnt/data/appdata/bridge/data/meli_token_refresh.log
+# Deben verse entradas "OK" cada 6h
+```
+
+**Notas:**
+- Los workers NO detectan 401 ni hacen retry. El refresh proactivo cada 6h es suficiente porque el token dura 6h, pero si por algún motivo el cron falla dos veces seguidas las peticiones empezarán a fallar con 401.
+- Si necesitas margen extra, se puede bajar el cron a cada 5h (`0 */5 * * *`) sin problema.
 
 ### Verificar tokens actuales
 ```bash
