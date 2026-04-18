@@ -613,13 +613,26 @@ Debe llamar a `push_fx_to_odoo.py` al final del `sync_fx()`. Ver sección 7 PROB
 ### Deploy desde repo
 
 ```bash
-cd /tmp/goncloud-bridge-in-out && sudo git fetch && sudo git pull
+# Paso 0: clonar si no existe (Linux borra /tmp en reinicios)
+if [ ! -d /tmp/goncloud-bridge-in-out ]; then
+  sudo git clone https://github.com/gon0801/goncloud-bridge-in-out.git /tmp/goncloud-bridge-in-out
+else
+  cd /tmp/goncloud-bridge-in-out && sudo git fetch && sudo git pull
+fi
+
+# Paso 1: copiar tools al runtime (/data/)
 sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fba_paid_one_shot.py            /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/amazon_fbm_paid_one_shot.py            /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_full_paid_one_shot_no_stock.py /mnt/data/appdata/bridge/data/
 sudo cp /tmp/goncloud-bridge-in-out/tools/inbound_fbm_so_apply_paid_one_shot.py  /mnt/data/appdata/bridge/data/
-sudo cp /tmp/goncloud-bridge-in-out/app/inbound_worker.py                        /mnt/data/appdata/bridge/app/
+
+# Paso 2 (solo si cambió el worker): copiar a app/ y restart
+sudo cp /tmp/goncloud-bridge-in-out/app/inbound_worker.py /mnt/data/appdata/bridge/app/
 sudo docker restart bridge-inbound-worker
+
+# Paso 3 (solo si cambió meli_refresh_tokens.sh): copiar al path del cron
+sudo cp /tmp/goncloud-bridge-in-out/tools/meli_refresh_tokens.sh /mnt/data/appdata/bridge/tools/
+sudo chmod +x /mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh
 ```
 
 ---
