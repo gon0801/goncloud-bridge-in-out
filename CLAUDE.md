@@ -43,6 +43,10 @@
    - Depende del pendiente 1
 4. **Limpieza periódica de `manual_review` antiguos**
    - Script existe, falta automatizar
+5. **Asignar SKU a listings MeLi huérfanos** (cuando aparezcan)
+   - En MeLi vendedor: editar listing → asignar `SKU del vendedor` (`seller_custom_field`)
+   - Correr `tools/backfill_meli_mappings.py` para registrar en bridge
+   - Caso actual: `MLM2787930515` y `MLM2787902225` sin SKU
 
 ---
 
@@ -493,6 +497,42 @@ sudo docker exec bridge-amazon-inbound-worker python3 /data/amazon_orders_poll.p
   --days 7 --marketplace BOTH
 ```
 
+### PROBLEMA 9: MeLi outbound — 1 SKU en N listings (split de variantes)
+
+**Síntoma:** Stock de MeLi diverge del de Odoo. Un SKU tiene múltiples listings (MLM IDs distintos) en el seller, pero `sku_mapping` solo contiene uno.
+
+**Diagnóstico:**
+```bash
+# Ver mappings del SKU problemático
+sudo sqlite3 /mnt/data/appdata/bridge/data/bridge.db \
+  "SELECT channel, sku, remote_item_id, remote_variation_id, last_seen_at
+   FROM sku_mapping WHERE channel='meli' AND sku='SKU-A-REVISAR';"
+
+# Comparar con stock real Odoo vs suma de stocks en MeLi
+# (ver script sync_split_variants_stock.py para modo automatizado)
+```
+
+**Fix:**
+
+Si el schema tiene PK vieja `(channel, sku)`, migrar primero:
+```bash
+sudo docker exec bridge-api python3 /data/migrate_sku_mapping_1n.py
+```
+
+Después, descubrir todos los listings activos del seller:
+```bash
+sudo docker exec bridge-api python3 /data/backfill_meli_mappings.py
+```
+
+Fix manual de un SKU específico (emergencia):
+```bash
+sudo docker exec bridge-api python3 /data/sync_split_variants_stock.py \
+  --sku NH-CAR-AZU-CEN-DOR \
+  --listings MLM5164542984,MLM5164542986,MLM5164542988,MLM5164542990,MLM5164542992,MLM5164542994
+```
+
+Después de cualquiera de los anteriores, forzar re-sync outbound encolando stock_jobs o esperando al siguiente tick del `meli-sync.timer`.
+
 ### PROBLEMA 5: MeLi `no_valid_items` / órdenes en `manual_review`
 
 ```bash
@@ -663,6 +703,7 @@ sudo chmod +x /mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh
 | 2026-02-24 | Flex MX: factura se crea en $0 — el job de Unshipped no encontraba el SO del Pending | `amazon_fbm_paid_one_shot.py`: búsqueda por `display_ref OR order_id`; si encontrado sin buyer_name, actualiza `client_order_ref` |
 | 2026-02-25 | `app/amazon_fba_paid_one_shot.py` desincronizada con `tools/`: `IS_USD_ORDER` no definido (NameError), solo usaba `ItemPrice.Amount` (sin Sales Proceeds), factura via wizard (produce $0 para FBA) | Sincronizar `app/` con `tools/` — siempre deployar desde `tools/` a `/data/` |
 | 2026-02-25 | `IS_USD_ORDER` basado en marketplace ID (frágil) — si el flag no llega, 84 USD entra como 84 MXN silenciosamente | Tools leen `order["OrderTotal"]["CurrencyCode"]` como fuente de verdad; env flag es fallback |
+| 2026-04-18 | `sku_mapping` con PK `(channel, sku)` solo permitía 1 listing por SKU. Tras "separación de variantes" de MeLi, 1 SKU queda en N listings y solo 1 recibía sync de stock → oversell potencial. Caso encontrado: SKU `NH-CAR-AZU-CEN-DOR` con stock Odoo=190, suma de 6 listings MeLi=289. | Schema migrado a PK `(channel, remote_item_id, remote_variation_id)` + worker con `fetchall()` + loop PUT. Script backfill para descubrir listings post-split. |
 
 ---
 
@@ -696,6 +737,18 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 ---
 
 ## 11. Diario de cambios
+
+### 2026-04-18 — sesión 3 (fix outbound split variants)
+- **BUG CRÍTICO encontrado:** MeLi "separa variantes" en listings independientes (feature reciente). El schema `sku_mapping` tenía PK `(channel, sku)` → solo permitía 1 listing por SKU → los otros N listings quedaban sin sync de stock.
+- **Caso real:** SKU `NH-CAR-AZU-CEN-DOR`, mapping apuntaba a `MLM2163404350` (listing pre-split, 2026-02-10), pero en MeLi hoy hay 6 listings activos (`MLM5164542984..94`) con ese mismo SKU. Suma de stock MeLi=289 vs Odoo=190 → oversell potencial de 99 unidades.
+- **FIX:**
+  - Migración de schema: PK → `(channel, remote_item_id, remote_variation_id)` + índice `(channel, sku)` para lookup rápido — `tools/migrate_sku_mapping_1n.py` (idempotente, con backup).
+  - Worker outbound ([app/worker.py](app/worker.py)): `fetchone()` → `fetchall()` + loop PUT con log por listing.
+  - Backfill global ([tools/backfill_meli_mappings.py](tools/backfill_meli_mappings.py)): escanea todos los listings activos del seller y pobla mappings para todos los SKUs split.
+  - Script urgente Fase 1 ([tools/sync_split_variants_stock.py](tools/sync_split_variants_stock.py)): para aplicar manualmente a un SKU específico.
+  - CREATE TABLE sku_mapping agregado a [app/main.py:init_db](app/main.py) (antes solo existía en la DB, no en código).
+- **Listings huérfanos identificados:** `MLM2787930515`, `MLM2787902225` sin SKU — requiere asignación manual en MeLi (agregado al backlog).
+- Sin impacto en inbound (el SKU resuelve correctamente desde el webhook).
 
 ### 2026-04-18 — sesión 2
 - **HALLAZGO:** MeLi OAuth refresh **SÍ es automático**. Encontrado cron en `/etc/cron.d/goncloud_meli_refresh` ejecutando `/mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh` cada 6h (`5 */6 * * *`). Log muestra 29 refreshes `OK` consecutivos en últimos 7 días. Documentación previa ("no existe auto-refresh") estaba desactualizada.
