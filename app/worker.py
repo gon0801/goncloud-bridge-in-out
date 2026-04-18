@@ -259,51 +259,57 @@ def meli_api_json(url: str, tok: str, method="GET", body=None):
 
 
 def meli_set_qty_from_mapping(sku: str, qty: int) -> str:
-    # lookup mapping
+    # Lookup TODOS los listings mapeados a este SKU.
+    # (Un mismo SKU puede estar en N listings tras separacion de variantes en MeLi).
     with closing(db_conn()) as conn:
         sql_init_conn(conn)
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT remote_item_id, remote_variation_id FROM sku_mapping WHERE channel='meli' AND sku=?",
             (str(sku),),
-        ).fetchone()
+        ).fetchall()
 
-    if not row:
+    if not rows:
         return f"meli_skip_no_mapping sku={sku}"
 
-    item_id, var_id = row[0], row[1]
     tok = meli_get_token()
     qty_int = int(qty)
+    results: list[str] = []
+    ok_count = 0
+    err_count = 0
 
-    # PUT variation
-    if var_id:
-        url = f"https://api.mercadolibre.com/items/{item_id}/variations/{var_id}"
-        code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
-        qty_put_echo = None
-        if isinstance(resp_put, list) and resp_put:
-            qty_put_echo = resp_put[0].get("available_quantity")
-        elif isinstance(resp_put, dict):
-            qty_put_echo = resp_put.get("available_quantity")
+    for item_id, var_id in rows:
+        try:
+            if var_id:
+                url = f"https://api.mercadolibre.com/items/{item_id}/variations/{var_id}"
+                code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
+                qty_put_echo = None
+                if isinstance(resp_put, list) and resp_put:
+                    qty_put_echo = resp_put[0].get("available_quantity")
+                elif isinstance(resp_put, dict):
+                    qty_put_echo = resp_put.get("available_quantity")
+                code_get, resp_get = meli_api_json(url, tok, method="GET")
+                qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
+                results.append(
+                    f"var[{item_id}:{var_id}] put={code_put} get={code_get} "
+                    f"echo={qty_put_echo} real={qty_real}"
+                )
+            else:
+                url = f"https://api.mercadolibre.com/items/{item_id}"
+                code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
+                qty_put_echo = resp_put.get("available_quantity") if isinstance(resp_put, dict) else None
+                code_get, resp_get = meli_api_json(url, tok, method="GET")
+                qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
+                results.append(
+                    f"item[{item_id}] put={code_put} get={code_get} "
+                    f"echo={qty_put_echo} real={qty_real}"
+                )
+            ok_count += 1
+        except Exception as e:
+            err_count += 1
+            results.append(f"FAIL[{item_id}:{var_id or '-'}] {type(e).__name__}: {str(e)[:120]}")
 
-        code_get, resp_get = meli_api_json(url, tok, method="GET")
-        qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
-
-        return (
-            f"meli_put_variation http_put={code_put} http_get={code_get} "
-            f"item={item_id} var={var_id} qty_requested={qty_int} "
-            f"qty_put_echo={qty_put_echo} qty_real_final={qty_real}"
-        )
-
-    # PUT item (sin variaciones)
-    url = f"https://api.mercadolibre.com/items/{item_id}"
-    code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
-    qty_put_echo = resp_put.get("available_quantity") if isinstance(resp_put, dict) else None
-    code_get, resp_get = meli_api_json(url, tok, method="GET")
-    qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
-
-    return (
-        f"meli_put_item http_put={code_put} http_get={code_get} "
-        f"item={item_id} qty_requested={qty_int} qty_put_echo={qty_put_echo} qty_real_final={qty_real}"
-    )
+    summary = f"meli_multi_put sku={sku} listings={len(rows)} ok={ok_count} err={err_count} qty={qty_int}"
+    return summary + " | " + " | ".join(results)
 
 
 # =========================

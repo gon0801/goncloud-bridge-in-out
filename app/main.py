@@ -139,6 +139,28 @@ def init_db() -> None:
             """
         )
 
+        # Mapping SKU -> listing remoto.
+        # PK por (channel, remote_item_id, remote_variation_id) para soportar 1 SKU -> N listings
+        # (caso MeLi post "separacion de variantes": un mismo SKU vive en multiples listings).
+        # La migracion desde el schema viejo (PK = channel,sku) se hace con
+        # tools/migrate_sku_mapping_1n.py - este CREATE solo aplica en deploys nuevos.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sku_mapping (
+              channel TEXT NOT NULL,
+              sku TEXT NOT NULL,
+              remote_item_id TEXT NOT NULL,
+              remote_variation_id TEXT NOT NULL DEFAULT '',
+              site TEXT DEFAULT '',
+              last_seen_at TEXT,
+              PRIMARY KEY (channel, remote_item_id, remote_variation_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sku_mapping_sku ON sku_mapping(channel, sku)"
+        )
+
         conn.commit()
     finally:
         conn.close()

@@ -67,3 +67,4 @@ amz_order_*.json
 .meli_tokens*
 .meli_last_code*
 *.BAD*
+.claude/
