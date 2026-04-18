@@ -738,6 +738,15 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 
 ## 11. Diario de cambios
 
+### 2026-04-18 — sesión 4 (fix backfill: leer SELLER_SKU attribute)
+- **BUG DESCUBIERTO post-deploy:** `backfill_meli_mappings.py` leía `seller_custom_field` (campo legacy deprecated de MeLi). En listings post-split, MeLi copia el SKU del padre a `seller_custom_field` de todos los hijos, mientras que el SKU real de cada variante vive en `attributes[id=SELLER_SKU]`.
+- **Consecuencia real:** durante la sesión 3, el backfill asumió que los 6 listings post-split del producto Arras Matrimoniales tenían el mismo SKU (`NH-CAR-AZU-CEN-DOR`) cuando en realidad cada uno tiene un SKU distinto: CEN-DOR (qty 190), VBU-DOR (89), COR-DOR (36), SET-SAN-DOR (60), SET-VCO-DOR (18), SET-PEZ-DOR (46). Al ejecutar el push de stock, todos quedaron en 190 → oversell temporal de ~700 unidades. Revertido inmediatamente con SKUs correctos (MLM echo confirmado en los 6 listings).
+- **FIX:**
+  - `tools/backfill_meli_mappings.py`: función `extract_item_sku()` y `extract_variation_sku()` con precedencia `attributes[SELLER_SKU]` → `seller_custom_field` → fallback. Query incluye `attributes` en el response.
+  - `app/main.py` (`/api/meli/refresh-listings`): mismo fallback en el auto-discover para listings sin variaciones.
+- **LECCIÓN:** MeLi tiene 2 campos para SKU — `seller_custom_field` (legacy, puede estar desfasado) y `attributes[SELLER_SKU]` (actual, fuente de verdad). Siempre leer primero el de atributos.
+- Sin impacto actualmente: los SKUs reales ya fueron corregidos manualmente durante la sesión. El backfill arreglado evita que vuelva a pasar.
+
 ### 2026-04-18 — sesión 3 (fix outbound split variants)
 - **BUG CRÍTICO encontrado:** MeLi "separa variantes" en listings independientes (feature reciente). El schema `sku_mapping` tenía PK `(channel, sku)` → solo permitía 1 listing por SKU → los otros N listings quedaban sin sync de stock.
 - **Caso real:** SKU `NH-CAR-AZU-CEN-DOR`, mapping apuntaba a `MLM2163404350` (listing pre-split, 2026-02-10), pero en MeLi hoy hay 6 listings activos (`MLM5164542984..94`) con ese mismo SKU. Suma de stock MeLi=289 vs Odoo=190 → oversell potencial de 99 unidades.

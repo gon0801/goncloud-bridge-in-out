@@ -1293,8 +1293,8 @@ async def setup_auto_map(request: Request):
                     
                     for var in item.get("variations", [{}]) or [{}]:
                         var_id = var.get("id", "")
-                        
-                        # Get SKU from variation attributes
+
+                        # Get SKU from variation attributes (attributes[SELLER_SKU] is MeLi's current field)
                         sku = ""
                         if var_id:
                             var_resp = requests.get(
@@ -1306,9 +1306,16 @@ async def setup_auto_map(request: Request):
                                 if attr.get("id") == "SELLER_SKU":
                                     sku = attr.get("value_name", "")
                                     break
-                        
+
                         if not sku:
-                            # Try item-level seller_custom_field
+                            # Fallback 1: attributes[SELLER_SKU] a nivel del listing (campo actual)
+                            for attr in item.get("attributes", []) or []:
+                                if attr.get("id") == "SELLER_SKU":
+                                    sku = attr.get("value_name", "") or ""
+                                    break
+
+                        if not sku:
+                            # Fallback 2: seller_custom_field (campo legacy, ultima opcion)
                             sku = item.get("seller_custom_field") or ""
                         
                         if sku and sku in odoo_skus:
