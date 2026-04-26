@@ -21,32 +21,9 @@
 
 ## Pendientes activos
 
-> Esta lista es la fuente de verdad de qué falta por hacer. Revísala al inicio de cada sesión.
+**Fuente de verdad única:** [PENDIENTES.md](PENDIENTES.md) (archivo dedicado en la raíz del repo, con barra de progreso y checkboxes).
 
-### En curso ahora mismo
-1. **Setup almacenes Odoo FULL/FBA**
-   - [x] Crear los 4 warehouses (EHV-MX, Meli-Full, FBA-MX, FBA-US)
-   - [ ] Confirmar **Resupply From = EHV-MX** en Meli-Full y FBA-MX
-   - [ ] Desmarcar **Buy to Resupply** y **Manufacture to Resupply** en los 3 almacenes nuevos
-   - [ ] Confirmar que los 3 almacenes nuevos estén en **1 step** (incoming y outgoing)
-   - [ ] Decidir estrategia phantom BOM (recomendación: migrar a "Manufacture this product" los SKUs que se enviarán a FULL/FBA)
-   - [ ] Primera transferencia de prueba EHV/Stock → FBAMX/Stock con un SKU piloto
-
-### Backlog del bridge
-2. **Migrar Amazon SP-API Orders v0 → v2026-01-01** (deadline 2027-03-27)
-   - Archivos: `tools/amazon_orders_poll.py`, `app/amazon_inbound_worker.py`, `app/debug_flex_order.py`
-   - Endpoints afectados: `getOrders`, `getOrder`, `getOrderItems`
-   - Margen: completar antes de enero 2027
-3. **Modificar tools inbound FBA/FULL para generar picking desde almacén del canal**
-   - Hoy `inbound_full_paid_one_shot_no_stock.py` y `amazon_fba_paid_one_shot.py` no tocan stock
-   - Agregar mapping canal→almacén en `bridge_settings`
-   - Depende del pendiente 1
-4. **Limpieza periódica de `manual_review` antiguos**
-   - Script existe, falta automatizar
-5. **Asignar SKU a listings MeLi huérfanos** (cuando aparezcan)
-   - En MeLi vendedor: editar listing → asignar `SKU del vendedor` (`seller_custom_field`)
-   - Correr `tools/backfill_meli_mappings.py` para registrar en bridge
-   - Caso actual: `MLM2787930515` y `MLM2787902225` sin SKU
+Al iniciar sesión Claude debe leer ese archivo y recordar los pendientes al usuario. Al cerrar sesión: actualizar checkboxes + progreso + commit + push + PR + merge.
 
 ---
 
