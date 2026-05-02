@@ -117,6 +117,7 @@ MercadoLibre y Amazon con Odoo 17 ERP.
 **Timers del host (systemd):**
 - `meli-sync.timer` — outbound MeLi cada 5 min
 - `amazon-poll.timer` — `amazon_orders_poll.py --days 2 --marketplace BOTH` cada 5 min
+- `amazon-prices-sync.timer` — `amazon_prices_sync.py` (precios + FBA inventory MX/US) cada 6h (00:35, 06:35, 12:35, 18:35 UTC)
 
 **Cron del host (user crontab):**
 - `0 */4 * * *` — `backfill_meli_mappings.py` — descubre listings nuevos/post-split de MeLi y actualiza `sku_mapping`. Log: `/mnt/data/appdata/bridge/data/backfill.log`. Corre cada 4h.
@@ -696,7 +697,7 @@ sudo chmod +x /mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh
 **Worker Amazon:** v2.7 "Polish Pack"
 **Servidor:** `goncloud` (Hetzner Ubuntu 24.04) — reemplazó a `gonserver` que cayó 2026-05-01.
 **Containers activos del bridge:** `bridge-redis`, `bridge-api`, `bridge-worker`, `bridge-inbound-worker`, `bridge-amazon-inbound-worker` (los últimos 2 agregados al compose el 2026-05-02 — antes corrían fuera del compose).
-**Systemd timers:** `meli-sync` c/10min (stock outbound), `amazon-sync` c/10min (stock outbound), `amazon-poll` c/5min (orders polling — creado 2026-05-02).
+**Systemd timers:** `meli-sync` c/10min (stock outbound), `amazon-sync` c/10min (stock outbound), `amazon-poll` c/5min (orders polling — creado 2026-05-02), `amazon-prices-sync` c/6h (precios + FBA inventory — creado 2026-05-02).
 
 ### Funcionando ✓
 - MeLi inbound: FULL paid/cancel/refund, FBM paid/cancel/refund
