@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SKU Mapper - GONCLOUD</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23a855f4'/%3E%3Cstop offset='100%25' stop-color='%2306b6d4'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='512' height='512' rx='100' fill='url(%23g)'/%3E%3Ccircle cx='256' cy='256' r='50' fill='white'/%3E%3Ccircle cx='256' cy='120' r='28' fill='white'/%3E%3Ccircle cx='374' cy='188' r='28' fill='white'/%3E%3Ccircle cx='374' cy='324' r='28' fill='white'/%3E%3Ccircle cx='256' cy='392' r='28' fill='white'/%3E%3Ccircle cx='138' cy='284' r='28' fill='white'/%3E%3Cline x1='256' y1='206' x2='256' y2='148' stroke='white' stroke-width='16' stroke-linecap='round'/%3E%3Cline x1='300' y1='230' x2='348' y2='200' stroke='white' stroke-width='16' stroke-linecap='round'/%3E%3Cline x1='300' y1='282' x2='348' y2='312' stroke='white' stroke-width='16' stroke-linecap='round'/%3E%3Cline x1='256' y1='306' x2='256' y2='364' stroke='white' stroke-width='16' stroke-linecap='round'/%3E%3Cline x1='212' y1='276' x2='164' y2='284' stroke='white' stroke-width='16' stroke-linecap='round'/%3E%3C/svg%3E">
   <style>
     :root{
       --bg:#0b1220;
@@ -63,6 +64,19 @@
       padding:16px;
     }
     .card h3{ margin:0 0 12px; font-size:14px; color:var(--muted); }
+    .list-header{ display:flex; justify-content:space-between; align-items:center; margin:0 0 12px; flex-wrap:wrap; gap:8px; }
+    .list-header h3{ margin:0; }
+    .unmapped-count{
+      font-size:11px;
+      padding:3px 8px;
+      border-radius:10px;
+      background:var(--orange);
+      color:#000;
+      font-weight:700;
+    }
+    .unmapped-count.zero{ background:var(--ok); }
+    .toggle-row{ display:flex; align-items:center; gap:8px; margin-bottom:10px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none; }
+    .toggle-row input{ cursor:pointer; margin:0; }
     
     /* Lists */
     .list{ max-height:400px; overflow-y:auto; }
@@ -138,11 +152,14 @@
     /* Selected display */
     .selected-box{
       background:var(--bg);
-      padding:12px;
+      padding:10px;
       border-radius:8px;
-      margin-bottom:12px;
+      border:1px solid var(--border);
+      margin-bottom:0;
       font-family:monospace;
       min-height:40px;
+      display:flex;
+      align-items:center;
     }
     .selected-box.empty{ color:var(--muted); font-family:inherit; }
   </style>
@@ -160,13 +177,21 @@
     <div id="panel-amazon" class="panel active">
       <div class="grid">
         <div class="card">
-          <h3>📦 SKUs en Odoo (sell_on_amazon_fbm)</h3>
+          <div class="list-header">
+            <h3>📦 SKUs en Odoo (sell_on_amazon_fbm)</h3>
+            <span class="unmapped-count" id="amz-odoo-count">Sin mapear: 0</span>
+          </div>
           <input type="text" id="amz-odoo-search" placeholder="Buscar SKU..." oninput="filterList('amz-odoo')">
+          <label class="toggle-row"><input type="checkbox" id="amz-odoo-unmapped" onchange="filterList('amz-odoo')"> Solo no mapeados</label>
           <div class="list" id="amz-odoo-list"></div>
         </div>
         <div class="card">
-          <h3>🛒 SKUs en Amazon</h3>
+          <div class="list-header">
+            <h3>🛒 SKUs en Amazon</h3>
+            <span class="unmapped-count" id="amz-amazon-count">Sin mapear: 0</span>
+          </div>
           <input type="text" id="amz-amazon-search" placeholder="Buscar SKU..." oninput="filterList('amz-amazon')">
+          <label class="toggle-row"><input type="checkbox" id="amz-amazon-unmapped" onchange="filterList('amz-amazon')"> Solo no mapeados</label>
           <div class="list" id="amz-amazon-list"></div>
         </div>
       </div>
@@ -175,22 +200,21 @@
         <h3>➕ Crear Mapeo</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;">
           <div>
-            <label style="font-size:12px;color:var(--muted);">Odoo SKU</label>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px;">Odoo SKU</label>
             <div class="selected-box empty" id="amz-sel-odoo">(selecciona de la lista)</div>
           </div>
           <div>
-            <label style="font-size:12px;color:var(--muted);">Amazon SKU</label>
-            <div class="selected-box empty" id="amz-sel-amazon">(selecciona de la lista)</div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px;">Amazon SKU</label>
+            <input type="text" id="amz-manual-sku" placeholder="Selecciona de la lista o escribe el SKU" oninput="onAmzManualInput(this.value)" style="margin-bottom:0;">
           </div>
           <button class="btn primary" onclick="saveMapping('amazon')" id="amz-save-btn" disabled>Guardar</button>
         </div>
-        <div id="amz-status"></div>
+        <div id="amz-status" style="margin-top:10px;"></div>
       </div>
       
       <div class="card mappings">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <h3 style="margin:0;">📋 Mapeos Existentes</h3>
-          <button class="btn" onclick="refreshAmazonInventory()">🔄 Refrescar inventario</button>
           <button class="btn primary" onclick="autoMapAmazon()">🔄 Auto-mapear coincidentes</button>
         </div>
         <input type="text" id="amz-map-search" placeholder="Buscar mapeo..." oninput="filterMappings('amazon')">
@@ -205,13 +229,21 @@
     <div id="panel-meli" class="panel">
       <div class="grid">
         <div class="card">
-          <h3>📦 SKUs en Odoo (sell_on_meli)</h3>
+          <div class="list-header">
+            <h3>📦 SKUs en Odoo (sell_on_meli)</h3>
+            <span class="unmapped-count" id="meli-odoo-count">Sin mapear: 0</span>
+          </div>
           <input type="text" id="meli-odoo-search" placeholder="Buscar SKU..." oninput="filterList('meli-odoo')">
+          <label class="toggle-row"><input type="checkbox" id="meli-odoo-unmapped" onchange="filterList('meli-odoo')"> Solo no mapeados</label>
           <div class="list" id="meli-odoo-list"></div>
         </div>
         <div class="card">
-          <h3>🛒 Listings en MercadoLibre</h3>
+          <div class="list-header">
+            <h3>🛒 Listings en MercadoLibre</h3>
+            <span class="unmapped-count" id="meli-meli-count">Sin mapear: 0</span>
+          </div>
           <input type="text" id="meli-meli-search" placeholder="Buscar..." oninput="filterMeliListings()">
+          <label class="toggle-row"><input type="checkbox" id="meli-meli-unmapped" onchange="filterMeliListings()"> Solo no mapeados</label>
           <div class="list" id="meli-meli-list"></div>
         </div>
       </div>
@@ -283,6 +315,8 @@
     if (mapData.ok) {
       state.amazon.mappings = mapData.mappings;
       renderAmazonMappings();
+      renderList('amz-odoo', state.amazon.odooSkus, 'amazon', 'odoo');
+      renderList('amz-amazon', state.amazon.amazonSkus, 'amazon', 'amazon');
     }
   }
   
@@ -308,16 +342,23 @@
     if (mapData.ok) {
       state.meli.mappings = mapData.mappings;
       renderMeliMappings();
+      renderList('meli-odoo', state.meli.odooSkus, 'meli', 'odoo');
+      renderMeliListings();
     }
   }
   
   function renderMeliListings() {
     const search = document.getElementById('meli-meli-search')?.value?.toLowerCase() || '';
-    const filtered = (state.meli.listings || []).filter(l => 
-      l.item_id.toLowerCase().includes(search) || 
-      l.title.toLowerCase().includes(search) ||
-      (l.sku && l.sku.toLowerCase().includes(search)) ||
-      (l.var_name && l.var_name.toLowerCase().includes(search))
+    const onlyUnmapped = document.getElementById('meli-meli-unmapped')?.checked || false;
+    const all = state.meli.listings || [];
+    const unmappedTotal = all.filter(l => !isMeliListingMapped(l.item_id, l.variation_id)).length;
+    updateUnmappedCount('meli-meli-count', unmappedTotal);
+    const filtered = all.filter(l =>
+      (l.item_id.toLowerCase().includes(search) ||
+       l.title.toLowerCase().includes(search) ||
+       (l.sku && l.sku.toLowerCase().includes(search)) ||
+       (l.var_name && l.var_name.toLowerCase().includes(search))) &&
+      (!onlyUnmapped || !isMeliListingMapped(l.item_id, l.variation_id))
     );
     const page = state.meli.listingPage || 1;
     const pageSize = 50;
@@ -367,11 +408,38 @@
     updateMeliSaveBtn();
   }
   
+  function isAmzOdooMapped(sku) {
+    return (state.amazon.mappings || []).some(m => m.odoo_sku === sku);
+  }
+  function isAmzAmazonMapped(sku) {
+    return (state.amazon.mappings || []).some(m => m.amazon_sku === sku);
+  }
+  function isMeliOdooMapped(sku) {
+    return (state.meli.mappings || []).some(m => m.sku === sku);
+  }
+  function isMeliListingMapped(itemId, varId) {
+    const v = varId || '';
+    return (state.meli.mappings || []).some(m => m.remote_item_id === itemId && (m.remote_variation_id || '') === v);
+  }
+  function updateUnmappedCount(countId, n) {
+    const el = document.getElementById(countId);
+    if (!el) return;
+    el.textContent = `Sin mapear: ${n}`;
+    el.classList.toggle('zero', n === 0);
+  }
+
   function renderList(id, items, channel, type) {
     const search = document.getElementById(`${id}-search`)?.value?.toLowerCase() || '';
-    const filtered = items.filter(i => 
-      i.sku.toLowerCase().includes(search) || 
-      (i.name && i.name.toLowerCase().includes(search))
+    const onlyUnmapped = document.getElementById(`${id}-unmapped`)?.checked || false;
+    let isMapped;
+    if (channel === 'amazon' && type === 'odoo') isMapped = (i) => isAmzOdooMapped(i.sku);
+    else if (channel === 'amazon' && type === 'amazon') isMapped = (i) => isAmzAmazonMapped(i.sku);
+    else isMapped = (i) => isMeliOdooMapped(i.sku);
+    const unmappedTotal = items.filter(i => !isMapped(i)).length;
+    updateUnmappedCount(`${id}-count`, unmappedTotal);
+    const filtered = items.filter(i =>
+      (i.sku.toLowerCase().includes(search) || (i.name && i.name.toLowerCase().includes(search))) &&
+      (!onlyUnmapped || !isMapped(i))
     );
     const pageKey = type === 'odoo' ? 'odooPage' : 'amazonPage';
     const page = state[channel][pageKey] || 1;
@@ -437,6 +505,12 @@
     }
   }
   
+  function onAmzManualInput(val) {
+    const sku = val.trim();
+    state.amazon.selAmazon = sku || null;
+    document.getElementById('amz-save-btn').disabled = !(state.amazon.selOdoo && state.amazon.selAmazon);
+  }
+
   function selectItem(channel, type, sku) {
     if (channel === 'amazon') {
       if (type === 'odoo') {
@@ -445,8 +519,7 @@
         document.getElementById('amz-sel-odoo').classList.remove('empty');
       } else {
         state.amazon.selAmazon = sku;
-        document.getElementById('amz-sel-amazon').textContent = sku;
-        document.getElementById('amz-sel-amazon').classList.remove('empty');
+        document.getElementById('amz-manual-sku').value = sku;
       }
       document.getElementById('amz-save-btn').disabled = !(state.amazon.selOdoo && state.amazon.selAmazon);
     } else {
@@ -558,26 +631,6 @@
     setTimeout(() => el.textContent = '', 3000);
   }
   
-  async function refreshAmazonInventory() {
-    const btn = event.target;
-    btn.disabled = true;
-    btn.textContent = "Actualizando...";
-    try {
-      const resp = await fetch("/api/amazon/refresh-inventory", { method: "POST" });
-      const data = await resp.json();
-      if (data.ok) {
-        alert(`Inventario actualizado: ${data.count} SKUs`);
-        loadAmazonData();
-      } else {
-        alert("Error: " + data.error);
-      }
-    } catch(e) {
-      alert("Error de conexión");
-    }
-    btn.disabled = false;
-    btn.textContent = "🔄 Refrescar inventario";
-  }
-
   async function autoMapAmazon() {
     if (!confirm('¿Mapear automáticamente todos los SKUs que coincidan entre Odoo y Amazon?')) return;
     const odooSkus = new Set(state.amazon.odooSkus.map(s => s.sku));
