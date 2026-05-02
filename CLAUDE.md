@@ -690,10 +690,13 @@ sudo chmod +x /mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-04-18
+**Fecha de última actualización:** 2026-05-02 (recuperación post-migración)
 **Branch activo:** `main`
-**Worker MeLi:** v8.4 "Payload-Persistent"
+**Worker MeLi:** v8.4 "Payload-Persistent" (en `app/inbound_worker.py`, copiado de `inbound_worker_v8_4.py`)
 **Worker Amazon:** v2.7 "Polish Pack"
+**Servidor:** `goncloud` (Hetzner Ubuntu 24.04) — reemplazó a `gonserver` que cayó 2026-05-01.
+**Containers activos del bridge:** `bridge-redis`, `bridge-api`, `bridge-worker`, `bridge-inbound-worker`, `bridge-amazon-inbound-worker` (los últimos 2 agregados al compose el 2026-05-02 — antes corrían fuera del compose).
+**Systemd timers:** `meli-sync` c/10min (stock outbound), `amazon-sync` c/10min (stock outbound), `amazon-poll` c/5min (orders polling — creado 2026-05-02).
 
 ### Funcionando ✓
 - MeLi inbound: FULL paid/cancel/refund, FBM paid/cancel/refund
@@ -718,6 +721,21 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 ---
 
 ## 11. Diario de cambios
+
+### 2026-05-02 — recuperación del bridge tras migración gonserver→goncloud
+- **Contexto:** El 2026-05-01/02 se migró el VPS de `gonserver` (caído) a `goncloud` (Hetzner Ubuntu 24.04). En la migración solo se trajo `bridge-worker` (stock) — los 2 inbound workers se levantaban en gonserver fuera del compose y nunca estuvieron versionados ahí. Resultado: webhooks MeLi entraban a `ml_orders_jobs` sin ser consumidos; Amazon ni siquiera se polleaba. **Última orden a Odoo: `S01321` 2026-05-01 02:48:27 UTC.**
+- **Diagnóstico:** `ml_orders_processing` con 3,278 jobs stale del worker viejo (`worker=1@f813e734393b`, `started_at` hasta 2026-04-30T23:26:17 UTC). `amazon_orders_jobs` no existía. `inbound_metrics` confirmaba última actividad 2026-04-30 23h.
+- **Fixes aplicados:**
+  - `cp inbound_worker_v8_4.py app/inbound_worker.py` (raíz tenía v8.4 Payload-Persistent; `app/` tenía v3.2 Feb-12 desactualizada). Backup en `app/inbound_worker.py.bak.pre-v84.20260502`.
+  - Agregado al `docker-compose.yml`: services `bridge-inbound-worker` (consume `ml_orders_jobs`) y `bridge-amazon-inbound-worker` (consume `amazon_orders_jobs`), ambos con `build: ./app` y networks `goncloud-net + odoo_odoo_net`. Backup compose en `docker-compose.yml.bak.pre-inbound-workers.20260502T1715Z`.
+  - **`requirements.txt`:** agregado `httpx==0.27.0` — `amazon_orders_poll.py` lo importa pero faltaba (causó `ModuleNotFoundError` en primer run del poll).
+  - **`run_amazon_poll.sh`:** corregido typo `bridge-inbound-worker` → `bridge-amazon-inbound-worker`.
+  - **Systemd nuevos:** `/etc/systemd/system/amazon-poll.{service,timer}` (cada 5 min, llama `app/run_amazon_poll.sh`). Enabled + started.
+  - `DEL ml_orders_processing` (3,286 stale entries — solo metadata observabilidad, no son jobs procesables; el worker hace RPUSH al iniciar pero no LREM al completar, crece sin tope, safe DEL periódico).
+  - Sweep manual `amazon_orders_poll.py --days 7 --marketplace BOTH` para recuperar ventana de outage: 53 órdenes encontradas, 1 nueva pushed (52 ya procesadas por dedupe).
+- **Verificación:** 7 órdenes nuevas en Odoo en 30 min post-fix (`S01322`–`S01328`, mezcla MeLi FBM + Amazon EASY_MX + FBM_US + FLEX_MX). Restart counts en 0.
+- **Lección:** El `MASTER_RUNBOOK.md` sección 12 tiene la receta correcta de los 5 services; el compose vivo NO la reflejaba. Después de migrar, validar el compose vs runbook, no asumir que está completo.
+- **Bonus fix (`accounting/app/dashboard.py`):** `float(fx_row.get('rate', 20.5))` → `float(fx_row.get('rate') or 20.5)` en líneas 540, 678, 975, 1218. El `default=20.5` no aplica si la key existe con valor None — causaba `TypeError: float() argument must be a string or a real number, not 'NoneType'`. Reportado en `goncloud-dashboard.service` logs.
 
 ### 2026-04-18 — sesión 5 (cron automation del backfill)
 - **CRON AGREGADO:** `0 */4 * * * docker exec bridge-api python3 /data/backfill_meli_mappings.py >> /mnt/data/appdata/bridge/data/backfill.log 2>&1`
