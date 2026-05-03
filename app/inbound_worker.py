@@ -52,6 +52,12 @@ class Config:
     ODOO_USER: Optional[str] = None
     ODOO_PASS: Optional[str] = None
 
+# Estados MeLi que disparan el flujo "paid" (process_fbm/process_full).
+# Sin "confirmed" en process_full, una orden FULL pre-aprobación quedaba con
+# lock activo y mark_completed nunca se llamaba → reaper loop infinito.
+PAID_STATES = ("paid", "approved", "confirmed")
+CANCELLED_STATES = ("cancelled", "refunded")
+
 # =========================
 # DATABASE — SQLite con WAL, optimizado para concurrencia
 # =========================
@@ -486,16 +492,21 @@ def is_already_completed(dedupe_key: str) -> bool:
         log(f"Completion check error: {dedupe_key}: {e}", "ERROR")
         return False  # Conservador: si no podemos verificar, asumimos no completado
 
-def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_ms: Optional[int] = None):
+def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_ms: Optional[int] = None, lock_key: Optional[str] = None):
     """
     Marca job como completado en audit table.
     Libera lock y limpia payload (opcional).
+
+    `lock_key` separa el key del audit (que puede ser action-aware, ej `ml:123:cancelled`)
+    del key del lock (que serializa por order_id, ej `ml:123`). Si None, se usa dedupe_key
+    para ambos (back-compat con reaper paths donde no hay action determinada todavía).
     """
+    effective_lock_key = lock_key if lock_key is not None else dedupe_key
     try:
         with db.transaction():
             # Insertar en audit
             db.execute("""
-                INSERT INTO processed_inbound_events 
+                INSERT INTO processed_inbound_events
                     (dedupe_key, processed_at, result, detail_json, worker_id, processing_time_ms)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(dedupe_key) DO UPDATE SET
@@ -512,11 +523,11 @@ def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_m
                 Config.WORKER_ID,
                 processing_time_ms
             ))
-            
+
             # Liberar lock
             db.execute(
                 "DELETE FROM inbound_processing_locks WHERE dedupe_key=?",
-                (dedupe_key,)
+                (effective_lock_key,)
             )
             
             # Opcional: limpiar payload inmediatamente (ahorro de espacio)
@@ -828,29 +839,33 @@ def run_tool(tool_name: str, env_vars: dict) -> Tuple[int, str, str]:
     except Exception as e:
         return -3, "", str(e)
 
-def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str):
-    """Procesa orden Fulfillment"""
+def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str, lock_key: str):
+    """Procesa orden Fulfillment.
+
+    `dedupe_key` es action-aware (`ml:{id}:paid` / `ml:{id}:cancelled`) — usado para audit/idempotency.
+    `lock_key` es el initial key (`ml:{id}`) — se libera al finalizar para soltar la serialización.
+    """
     ref = f"MLFULL:{site}:{visible_ref}"
     start_time = time.time()
-    
+
     # Estados terminales negativos
-    if state in ("cancelled", "refunded"):
+    if state in CANCELLED_STATES:
         if not is_enabled("meli_inbound_full_refunds_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"})
+            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key)
             return
-        
+
         rc, out, err = run_tool("inbound_full_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
-        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time)
+        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
         return
-    
+
     # Estados positivos
-    if state in ("paid", "approved"):
+    if state in PAID_STATES:
         if not is_enabled("meli_inbound_full_paid_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"})
+            mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"}, lock_key=lock_key)
             return
-        
+
         buyer = order.get("buyer") or {}
         buyer_name = (buyer.get("nickname") or buyer.get("first_name") or "").strip()
         buyer_last = (buyer.get("last_name") or "").strip()
@@ -866,34 +881,38 @@ def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: 
         })
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
-        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time)
+        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
+        return
 
-def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str):
-    """Procesa orden FBM (Fulfillment by Merchant)"""
+    # Estado desconocido — marcar review en lugar de dejar el lock activo (M2 backstop).
+    mark_completed(dedupe_key, "manual_review", {"reason": "unsupported_state", "state": state}, lock_key=lock_key)
+
+def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str, lock_key: str):
+    """Procesa orden FBM (Fulfillment by Merchant)."""
     ref = f"MLFBM:{site}:{visible_ref}"
     start_time = time.time()
-    
-    if state in ("cancelled", "refunded"):
+
+    if state in CANCELLED_STATES:
         if not is_enabled("meli_inbound_fbm_refunds_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"})
+            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key)
             return
-        
+
         rc, out, err = run_tool("inbound_fbm_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
-        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time)
+        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
         return
-    
-    if state in ("paid", "approved", "confirmed"):
+
+    if state in PAID_STATES:
         if not is_enabled("meli_inbound_fbm_paid_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"})
+            mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"}, lock_key=lock_key)
             return
-        
+
         items = parse_items(order)
         if not items:
-            mark_completed(dedupe_key, "manual_review", {"reason": "no_valid_items"})
+            mark_completed(dedupe_key, "manual_review", {"reason": "no_valid_items"}, lock_key=lock_key)
             return
-        
+
         buyer = order.get("buyer") or {}
         buyer_name = (buyer.get("nickname") or buyer.get("first_name") or "").strip()
         buyer_last = (buyer.get("last_name") or "").strip()
@@ -907,12 +926,16 @@ def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: s
             "SITE_ID": site,
             "SO_NOTE": so_note,
         })
-        
+
         processing_time = int((time.time() - start_time) * 1000)
         if rc == 0:
-            mark_completed(dedupe_key, "success", {"ref": ref, "items": len(items)}, processing_time)
+            mark_completed(dedupe_key, "success", {"ref": ref, "items": len(items)}, processing_time, lock_key=lock_key)
         else:
-            mark_completed(dedupe_key, "manual_review", {"ref": ref, "rc": rc, "error": err[:500]}, processing_time)
+            mark_completed(dedupe_key, "manual_review", {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
+        return
+
+    # Estado desconocido — marcar review en lugar de dejar el lock activo (M2 backstop).
+    mark_completed(dedupe_key, "manual_review", {"reason": "unsupported_state", "state": state}, lock_key=lock_key)
 
 # =========================
 # MAIN LOOP — FIFO correcto, heartbeat, graceful degradation
@@ -975,6 +998,7 @@ def main():
         
         item = None
         dedupe_key = None
+        lock_key = None
         processing_start = None
         
         try:
@@ -1015,12 +1039,12 @@ def main():
             
             # 1. Persistir payload ANTES de cualquier operación — Fix v8.4
             payload_hash = persist_payload(dedupe_key, job)
-            
-            # 2. Verificar si ya completado (idempotencia)
-            if is_already_completed(dedupe_key):
-                log(f"Dedupe: already completed", "DEBUG", {"dedupe_key": dedupe_key})
-                continue
-            
+
+            # 2. (M5) Idempotency check movido post-fetch: el dedupe_key real es action-aware
+            #    (`ml:{order_id}:{action}`), pero `action` solo se conoce tras leer el state
+            #    de la orden. El check aquí silenciaría cancellations posteriores a un paid
+            #    success. Mantenemos el lock por order_id para serializar concurrencia.
+
             # 3. Adquirir lock
             if not acquire_lock(dedupe_key, payload_hash):
                 # Lock ocupado por otro worker activo
@@ -1033,7 +1057,11 @@ def main():
                 })
                 time.sleep(min(job["_retry_delay"], 10))  # Backoff creciente, max 10s
                 continue
-            
+
+            # M5: tracker del initial lock_key. Si dedupe_key se reasigna a action-aware
+            # más adelante, exception handler aún sabe qué lock liberar.
+            lock_key = dedupe_key
+
             # Tenemos el lock — agregar a processing list para observabilidad
             redis_client.lpush(Config.PROCESSING, json.dumps({
                 "dedupe_key": dedupe_key,
@@ -1101,7 +1129,24 @@ def main():
             # --- Visible reference for ops: prefer pack_id, fallback to order_id ---
             visible_ref = pack_id if pack_id else order_id
             log(f"Visible ref computed | order_id={order_id} | pack_id={pack_id} | visible_ref={visible_ref}")
-            
+
+            # M5: action-aware idempotency.
+            # Pre-fix: dedupe_key=`ml:{order_id}` → "cancelled" tras "paid success" era silenciado.
+            # Lock sigue por order_id (lock_key, ya seteado tras acquire_lock); audit usa action_key (`...:{action}`).
+            if state in CANCELLED_STATES:
+                action = "cancelled"
+            elif state in PAID_STATES:
+                action = "paid"
+            else:
+                action = state or "unknown"
+            dedupe_key = f"{lock_key}:{action}"
+
+            if is_already_completed(dedupe_key):
+                log(f"Dedupe action: already completed", "DEBUG", {"dedupe_key": dedupe_key})
+                release_lock(lock_key)
+                redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
+                continue
+
             # Guardar estado
             db.execute("""
                 INSERT INTO inbound_orders_state (order_id, site, last_state, last_seen_at, pack_id, logistic_type)
@@ -1112,12 +1157,12 @@ def main():
                     pack_id=COALESCE(excluded.pack_id, pack_id),
                     logistic_type=COALESCE(excluded.logistic_type, logistic_type)
             """, (
-                order_id, site, state, 
-                datetime.now(timezone.utc).isoformat(), 
+                order_id, site, state,
+                datetime.now(timezone.utc).isoformat(),
                 pack_id,
                 order.get("logistic_type")
             ))
-            
+
             # Detectar tipo logístico
             shipment = None
             if order.get("shipping", {}).get("id"):
@@ -1125,26 +1170,26 @@ def main():
                     shipment = ml_get(f"/shipments/{order['shipping']['id']}", retries=1)
                 except Exception as e:
                     log(f"Shipment fetch warning", "WARN", {"error": str(e)})
-            
+
             full = is_full(order, shipment)
-            
+
             if full is None:
                 mark_completed(dedupe_key, "manual_review", {
                     "order_id": order_id,
                     "reason": "unknown_logistic_type",
                     "logistic_type": order.get("logistic_type")
-                })
-                redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": dedupe_key}))
+                }, lock_key=lock_key)
+                redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
                 continue
-            
+
             # Ejecutar lógica de negocio
             if full:
-                process_full(order, order_id, site, state, dedupe_key, visible_ref)
+                process_full(order, order_id, site, state, dedupe_key, visible_ref, lock_key)
             else:
-                process_fbm(order, order_id, site, state, dedupe_key, visible_ref)
+                process_fbm(order, order_id, site, state, dedupe_key, visible_ref, lock_key)
 
             # Limpiar de processing list
-            redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": dedupe_key}))
+            redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
             
         except Exception as e:
             log(f"Unhandled exception", "CRITICAL", {
@@ -1157,12 +1202,15 @@ def main():
                 try:
                     job = json.loads(item_data) if item else {}
                     retry_count = job.get("_retry_count", 0)
-                    
+                    # lock_key puede ser None si la excepción ocurrió antes del acquire_lock.
+                    # En ese caso fallback a dedupe_key (que sigue siendo el initial).
+                    effective_lock = lock_key if lock_key is not None else dedupe_key
+
                     if retry_count >= Config.MAX_RETRIES:
                         mark_completed(dedupe_key, "dead", {
                             "reason": "unhandled_exception",
                             "error": str(e)
-                        })
+                        }, lock_key=effective_lock)
                         redis_client.lpush(Config.DEAD_LETTER, json.dumps({
                             "job": job,
                             "error": str(e),
@@ -1171,10 +1219,10 @@ def main():
                         redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
                     else:
                         job["_retry_count"] = retry_count + 1
-                        release_lock(dedupe_key)
+                        release_lock(effective_lock)
                         redis_client.rpush(Config.QUEUE, json.dumps(job))
-                    
-                    redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": dedupe_key}))
+
+                    redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": effective_lock}))
                 except:
                     pass
             

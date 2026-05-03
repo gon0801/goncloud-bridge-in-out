@@ -166,61 +166,67 @@ if not uid:
 print(f"[FBA_PAID] authenticated uid={uid}")
 
 # =========================
-# USD → MXN conversion (solo órdenes US)
+# USD currency lookup (solo órdenes US)
 # =========================
-def get_usd_to_mxn_rate():
-    """Lee el tipo de cambio USD/MXN desde Odoo (res.currency.rate).
-    Retorna MXN por 1 USD, ej. 17.5. None si no se puede obtener.
-
-    En Odoo 17, res.currency.rate.rate = inverse_company_rate = USD por 1 MXN
-    (ej. rate=0.05714 si 1 USD = 17.5 MXN).
-    Por eso mxn_per_usd = 1 / rate.
-
-    SANITY CHECK: si el resultado es < 5 o > 500, el tipo de cambio no está
-    configurado correctamente en Odoo (ej. rate=1.0 por default) → falla con
-    code=1 (manual_review) para evitar registrar precios incorrectos.
-    """
-    try:
-        rates = exec_kw(uid, "res.currency.rate", "search_read",
-            [[["currency_id.name", "=", "USD"]]],
-            {"fields": ["rate", "name"], "order": "name desc", "limit": 1})
-        if rates and rates[0].get("rate"):
-            r = float(rates[0]["rate"])
-            if r > 0:
-                # En Odoo, rate = inverse_company_rate = 1/MXN_por_USD
-                mxn_per_usd = round(1.0 / r, 6)
-                # Sanity check: 1 USD no puede valer menos de 5 MXN ni más de 500
-                if mxn_per_usd < 5.0 or mxn_per_usd > 500.0:
-                    print(f"[FBA_PAID] ERROR tipo de cambio sospechoso: {mxn_per_usd} MXN/USD "
-                          f"(raw rate={r}). Configura el tipo de cambio USD en Odoo correctamente.",
-                          file=sys.stderr)
-                    return None
-                print(f"[FBA_PAID] USD/MXN rate={mxn_per_usd} (fecha={rates[0].get('name','?')})")
-                return mxn_per_usd
-    except Exception as e:
-        print(f"[FBA_PAID] WARN no se pudo leer tipo de cambio de res.currency.rate: {e}", file=sys.stderr)
-    return None
-
+# Antes (pre-fix Bug #5): get_usd_to_mxn_rate() leía res.currency.rate y convertía
+# unit_price * rate inline. Eso fijaba el precio en MXN al momento de creación,
+# perdiendo trazabilidad del USD original; y si la rate de Odoo estaba desactualizada
+# (ej. cron currency_rate_update roto entre Feb-25 y May-3 2026 por EUR inactiva),
+# las facturas quedaban subvaluadas silenciosamente.
+#
+# Post-fix: pasamos `currency_id=USD` al SO. Odoo aplica la rate del día desde
+# res.currency.rate automáticamente y mantiene el SO en USD nativo. Si la rate
+# vuelve a estar desactualizada, Odoo usa la última disponible (mismo behavior
+# que el código viejo) — el guardrail real es el cron OCA monitoreado, no este script.
+USD_CURRENCY_ID = None
 if IS_USD_ORDER:
-    usd_to_mxn = get_usd_to_mxn_rate()
-    if not usd_to_mxn:
-        die("No se pudo obtener tipo de cambio USD/MXN de Odoo. Verifica que el tipo de cambio USD esté configurado en Odoo (Contabilidad → Divisas → USD).", code=1)
-    for item in items:
-        item["unit_price"] = round(item["unit_price"] * usd_to_mxn, 2)
-    print(f"[FBA_PAID] precios convertidos USD→MXN (rate={usd_to_mxn})")
+    _usd = exec_kw(uid, "res.currency", "search_read",
+        [[["name", "=", "USD"], ["active", "=", True]]],
+        {"fields": ["id"], "limit": 1})
+    if not _usd:
+        die("USD currency no encontrada (o inactiva) en Odoo. Activar en Settings → Currencies.", code=1)
+    USD_CURRENCY_ID = _usd[0]["id"]
+    print(f"[FBA_PAID] orden USD — usando currency_id={USD_CURRENCY_ID} nativo (Odoo aplicará FX automático)")
 
 # =========================
 # Check existing SO
 # =========================
 display_ref = f"{order_id} | {BUYER_NAME}" if BUYER_NAME else order_id
+
+# Search by `client_order_ref =like '<order_id>%'` to handle both shapes:
+#   - "order_id" (Pending/SNS pre-enrich: no buyer info yet)
+#   - "order_id | BUYER_NAME" (Unshipped/Shipped: buyer enriched)
+# Without this, a pre-enrich SO with ref=order_id is missed when the second
+# poll arrives with buyer name → duplicate SO + invoice + payment created.
+# limit=2 + die-multi catches pre-existing duplicates explicitly.
 existing = exec_kw(uid, "sale.order", "search_read",
-    [[["client_order_ref", "=", display_ref]]],
-    {"fields": ["id", "name", "state"], "limit": 1})
+    [[["client_order_ref", "=like", f"{order_id}%"]]],
+    {"fields": ["id", "name", "state", "client_order_ref", "currency_id"], "limit": 2})
+
+if len(existing) > 1:
+    die(f"multiple SOs match order_id={order_id}: {[s['name'] for s in existing]}", code=1)
 
 if existing:
     so = existing[0]
     so_id = so["id"]
     print(f"[FBA_PAID] SO exists: {so['name']} state={so['state']}")
+
+    # Bug #5 safety: detectar mismatch de currency entre orden Amazon (IS_USD_ORDER)
+    # y el SO ya creado. Sucede principalmente con SOs creados ANTES del fix que
+    # convertían USD→MXN inline. Reprocesarlos cambiaría price_unit (USD nativo)
+    # sin cambiar currency del SO → factura en MXN con números USD = total ridículo.
+    # die explícito → operador resuelve manual (cancela SO viejo, deja que se recree).
+    so_currency = so.get("currency_id") or [None, None]
+    so_currency_name = so_currency[1] if isinstance(so_currency, list) and len(so_currency) > 1 else None
+    if IS_USD_ORDER and so_currency_name != "USD":
+        die(f"SO existente {so['name']} está en {so_currency_name}, pero orden Amazon es USD. "
+            f"Probable SO pre-fix Bug #5. Cancelar SO manualmente y reintentar.", code=1)
+    if (not IS_USD_ORDER) and so_currency_name not in (None, "MXN"):
+        die(f"SO existente {so['name']} está en {so_currency_name}, pero orden Amazon es MXN.", code=1)
+
+    if so.get("client_order_ref") == order_id and BUYER_NAME and display_ref != order_id:
+        exec_kw(uid, "sale.order", "write", [[so_id], {"client_order_ref": display_ref}])
+        print(f"[FBA_PAID] client_order_ref updated: {order_id} → {display_ref}")
 else:
     so_id = None
 
@@ -273,11 +279,14 @@ print(f"[FBA_PAID] products resolved: {len(sku_to_pid)}")
 # Create SO if needed
 # =========================
 if not so_id:
-    so_id = exec_kw(uid, "sale.order", "create", [{
+    so_payload = {
         "partner_id": partner_id,
         "client_order_ref": display_ref,
         "note": f"{CHANNEL_LABEL} | ORDER={order_id} | {BUYER_NAME or 'N/A'}",
-    }])
+    }
+    if USD_CURRENCY_ID:
+        so_payload["currency_id"] = USD_CURRENCY_ID
+    so_id = exec_kw(uid, "sale.order", "create", [so_payload])
     print(f"[FBA_PAID] SO created id={so_id}")
 
 # =========================

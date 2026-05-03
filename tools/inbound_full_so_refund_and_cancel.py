@@ -87,11 +87,13 @@ _order_id_for_search = CLIENT_ORDER_REF.rsplit(":", 1)[-1]
 
 def get_so():
     rows = exec_kw(uid,"sale.order","search_read",
-        [[["client_order_ref","like",_order_id_for_search]]],
-        {"fields":["id","name","state","invoice_ids","picking_ids"],"limit":1}
+        [[["client_order_ref","=like",f"{_order_id_for_search}%"]]],
+        {"fields":["id","name","state","invoice_ids","picking_ids"],"limit":2}
     )
     if not rows:
         die("so_not_found")
+    if len(rows) > 1:
+        die(f"so_multiple_match: {[r['name'] for r in rows]}")
     return rows[0]
 
 def get_posted_invoice(so):

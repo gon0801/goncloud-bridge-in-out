@@ -61,12 +61,15 @@ if not uid:
 # Find SO
 # =========================
 sos = exec_kw(uid, "sale.order", "search_read",
-    [[["client_order_ref", "like", order_id]]],
-    {"fields": ["id", "name", "state"], "limit": 1})
+    [[["client_order_ref", "=like", f"{order_id}%"]]],
+    {"fields": ["id", "name", "state"], "limit": 2})
 
 if not sos:
     print(f"[FBM_REFUND] SO not found, nothing to cancel — idempotent success")
     sys.exit(0)  # RC=0: no SO to cancel (order may have been cancelled before paid processing)
+
+if len(sos) > 1:
+    die(f"multiple SOs match order_id={order_id}: {[s['name'] for s in sos]}", code=1)
 
 so = sos[0]
 print(f"[FBM_REFUND] found SO: {so['name']} state={so['state']}")

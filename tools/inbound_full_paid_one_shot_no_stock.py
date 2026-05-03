@@ -214,17 +214,44 @@ else:
         }])
     step("so_lines_created", lines=len(items))
 
-# 6) FORCE "confirmed" contable SIN logística: state="sale" (NO pickings)
+# 6) Confirmar SO contablemente y cancelar pickings (FULL: MeLi maneja logística)
+#
+# Antes (M7 bug): write{"state": "sale"} bypaseaba action_confirm, saltando
+# workflow hooks de Odoo (mail tracking, computed fields, automated actions,
+# secuencias de quote→sale, hooks de meli_oerp). Eso dejaba el SO en un estado
+# "sale" pero sin los side-effects que el resto del addon espera.
+#
+# Post-fix: replicamos el patrón de amazon_fba_paid_one_shot.py (SO no-stock):
+#   1. action_confirm — flujo público, dispara todos los hooks.
+#   2. action_cancel sobre los pickings generados — FULL no maneja stock en Odoo
+#      porque MercadoLibre Fulfillment ya tiene la mercadería físicamente.
 so = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","client_order_ref","picking_ids","invoice_ids","invoice_status","amount_total"]])[0]
-if so.get("picking_ids"):
-    die("FULL must be NO pickings. Found pickings on SO -> stop.", 2)
 
-if so["state"] != "sale":
-    exec_kw(uid, "sale.order", "write", [[so_id], {"state": "sale"}])
+if so["state"] in ("draft", "sent"):
+    exec_kw(uid, "sale.order", "action_confirm", [[so_id]])
     so = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","client_order_ref","picking_ids","invoice_ids","invoice_status","amount_total"]])[0]
-    step("so_forced_sale_no_stock", so_name=so["name"], state=so["state"])
+    step("so_confirmed", so_name=so["name"], state=so["state"])
 else:
-    step("so_already_sale", so_name=so["name"])
+    step("so_already_confirmed", so_name=so["name"], state=so["state"])
+
+# Cancelar pickings generados por action_confirm (FULL = no stock en Odoo).
+# Si action_cancel falla por algún picking, registramos pero seguimos —
+# el guard final chequea state final del SO/invoice; un picking residual
+# no bloquea el accounting pero queda visible para limpieza manual.
+pickings = exec_kw(uid, "stock.picking", "search_read",
+    [[["origin", "=", so["name"]], ["state", "not in", ["done", "cancel"]]]],
+    {"fields": ["id", "name", "state"]})
+
+cancelled_ids = []
+for pick in pickings:
+    try:
+        exec_kw(uid, "stock.picking", "action_cancel", [[pick["id"]]])
+        cancelled_ids.append(pick["id"])
+    except Exception as e:
+        step("picking_cancel_failed", picking_id=pick["id"], picking_name=pick["name"], error=str(e)[:200])
+
+if cancelled_ids:
+    step("pickings_cancelled", count=len(cancelled_ids), ids=cancelled_ids)
 
 # 7) Invoice: si ya existe posted por origin/ref -> usar; si no -> wizard 100%
 inv_ids = exec_kw(uid, "account.move", "search", [[
