@@ -301,6 +301,43 @@ def _get_setting(key: str, default: str = "0") -> str:
         return default
 
 
+import hmac as _hmac
+
+# AP-11 — SubscribeURL allowlist. SNS publica SOLO en sns.<region>.amazonaws.com.
+# Bloqueamos cualquier intento de redirigir GET hacia otro host (SSRF interno).
+_SNS_HOST_RE = re.compile(r"^https://sns\.[a-z0-9-]+\.amazonaws\.com/", re.IGNORECASE)
+
+
+def _is_valid_sns_subscribe_url(url: str) -> bool:
+    return bool(_SNS_HOST_RE.match(url or ""))
+
+
+def _check_webhook_secret(
+    expected: str,
+    header_secret: Optional[str],
+    query_secret: Optional[str],
+    path_secret: Optional[str],
+) -> bool:
+    """AP-6: comparación con hmac.compare_digest para evitar timing oracle.
+
+    Acepta el secret por header (preferido), querystring o path (compat con
+    suscripciones MeLi/SNS vivas). El día que se rote el secret y se actualicen
+    las URLs en los paneles upstream, el path/query support puede retirarse (AP-5).
+    """
+    if not expected:
+        return False
+    expected_b = expected.encode("utf-8")
+    for candidate in (header_secret, query_secret, path_secret):
+        if not candidate:
+            continue
+        try:
+            if _hmac.compare_digest(candidate.encode("utf-8"), expected_b):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 @app.post("/webhooks/meli/orders/{secret}")
 @app.post("/webhooks/meli/orders")
 async def meli_orders_webhook(
@@ -331,7 +368,10 @@ async def meli_orders_webhook(
             status_code=200,
         )
 
-    # Secret validation (HEADER o QUERYSTRING)
+    # Secret validation. Aceptamos HEADER (preferido), QUERYSTRING o PATH por
+    # compatibilidad con suscripciones MeLi vivas registradas con el path-secret.
+    # Comparamos con hmac.compare_digest para evitar timing oracle (AP-6).
+    # NO loggeamos el secret-path/query — riesgo de leak en logs nginx/cloudflare (AP-5).
     expected = _get_setting("meli_webhook_secret", "")
     qsecret = request.query_params.get("secret")
     psecret = secret
@@ -342,7 +382,7 @@ async def meli_orders_webhook(
             status_code=500,
         )
 
-    if (x_goncloud_secret or "") != expected and (qsecret or "") != expected and (psecret or "") != expected:
+    if not _check_webhook_secret(expected, x_goncloud_secret, qsecret, psecret):
         return JSONResponse(
             {"ok": False, "error": "unauthorized"},
             status_code=401,
@@ -646,7 +686,7 @@ async def amazon_orders_webhook(
     psecret = secret
     if not expected:
         return JSONResponse({"ok": False, "error": "secret_not_configured"}, status_code=500)
-    if (x_goncloud_secret or "") != expected and (qsecret or "") != expected and (psecret or "") != expected:
+    if not _check_webhook_secret(expected, x_goncloud_secret, qsecret, psecret):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     raw = await request.body()
     raw_text = raw.decode("utf-8", errors="replace")
@@ -659,10 +699,23 @@ async def amazon_orders_webhook(
     msg_type = request.headers.get("x-amz-sns-message-type", "")
     if msg_type == "SubscriptionConfirmation":
         subscribe_url = data.get("SubscribeURL")
-        if subscribe_url:
-            import httpx
+        if not subscribe_url or not _is_valid_sns_subscribe_url(subscribe_url):
+            # AP-11: SSRF guard. SNS SubscribeURL DEBE ser https://sns.<region>.amazonaws.com/...
+            logger.warning("Rejected SNS SubscribeURL (failed allowlist regex)")
+            return JSONResponse(
+                {"ok": False, "error": "invalid_subscribe_url"},
+                status_code=400,
+            )
+        import httpx
+        try:
             httpx.get(subscribe_url, timeout=10)
-            return {"ok": True, "confirmed": True}
+        except Exception as e:
+            logger.error(f"SNS SubscribeURL GET failed: {e}")
+            return JSONResponse(
+                {"ok": False, "error": "subscribe_get_failed"},
+                status_code=502,
+            )
+        return {"ok": True, "confirmed": True}
     order_id = ""
     event_type = "notification"
     message: dict = {}

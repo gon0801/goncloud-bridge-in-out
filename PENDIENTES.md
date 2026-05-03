@@ -58,6 +58,17 @@ Task 5 (Huérfanos):   [░░░] 0/3
 - [ ] `MLM2787902225` — asignar `seller_custom_field` real en MeLi vendedor
 - [ ] Correr `backfill_meli_mappings.py` (o esperar al cron automático de 4h)
 
+### 6. AP-5 follow-up — eliminar path-secret en webhooks
+
+C4 (commit `_check_webhook_secret`) ya hace `hmac.compare_digest` y deja de validar contra path/query como dependencia, pero **sigue aceptando** `/webhooks/{meli,amazon}/orders/{secret}` por compatibilidad con suscripciones vivas. uvicorn loggea la URL completa en access log → el secret queda visible en `docker logs bridge-api`.
+
+Plan de migración (cuando se decida ventana):
+- [ ] Generar nuevos `meli_webhook_secret` y `amazon_webhook_secret` en `bridge_settings`.
+- [ ] Actualizar URL en panel MeLi (notifications) a `/webhooks/meli/orders` con header `X-Goncloud-Secret`.
+- [ ] Re-suscribir SNS Amazon Notifications con header `X-Goncloud-Secret` (Amazon SNS soporta extra headers en HTTP subscriptions).
+- [ ] Borrar las rutas con `{secret}` en `app/main.py` y dejar solo header.
+- [ ] Rotar logs nginx/cloudflare/uvicorn que tengan path-secret histórico.
+
 ---
 
 ## ✅ Cerrados recientemente
