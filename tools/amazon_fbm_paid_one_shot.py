@@ -321,13 +321,16 @@ else:
             print(f"[FBM_PAID] line price updated: {line_sku} ${line['price_unit']} → ${sku_price[line_sku]}")
 
 # =========================
-# Confirm SO (creates picking automatically)
+# Confirm SO (creates picking automatically)  Bug #6: try/except — SO en draft retry seguro
 # =========================
 so = exec_kw(uid, "sale.order", "read", [[so_id], ["id", "name", "state", "picking_ids"]])[0]
 if so["state"] in ("draft", "sent"):
-    exec_kw(uid, "sale.order", "action_confirm", [[so_id]])
-    so = exec_kw(uid, "sale.order", "read", [[so_id], ["id", "name", "state", "picking_ids"]])[0]
-    print(f"[FBM_PAID] SO confirmed: {so['name']} state={so['state']} pickings={len(so.get('picking_ids', []))}")
+    try:
+        exec_kw(uid, "sale.order", "action_confirm", [[so_id]])
+        so = exec_kw(uid, "sale.order", "read", [[so_id], ["id", "name", "state", "picking_ids"]])[0]
+        print(f"[FBM_PAID] SO confirmed: {so['name']} state={so['state']} pickings={len(so.get('picking_ids', []))}")
+    except Exception as e:
+        die(f"SO confirm failed (state=draft, safe to retry): {e}", code=1)
 
 # =========================
 # Check picking exists (do NOT validate)
@@ -362,7 +365,7 @@ else:
     so_lines = exec_kw(uid, "sale.order.line", "search_read",
         [[["order_id", "=", so_id]]],
         {"fields": ["id", "product_id", "product_uom_qty", "price_unit", "name"]})
-    
+
     invoice_lines = []
     for line in so_lines:
         invoice_lines.append((0, 0, {
@@ -372,42 +375,63 @@ else:
             "name": line["name"],
             "sale_line_ids": [(6, 0, [line["id"]])],  # Vínculo crítico
         }))
-    
+
     from datetime import datetime
-    inv_id = exec_kw(uid, "account.move", "create", [{
-        "move_type": "out_invoice",
-        "partner_id": partner_id,
-        "invoice_origin": so["name"],
-        "invoice_date": datetime.now().strftime("%Y-%m-%d"),
-        "invoice_line_ids": invoice_lines,
-    }])
-    
-    invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "name"]])[0]
-    print(f"[FBM_PAID] invoice created: {invoice['name']}")
-    
-    if invoice["state"] == "draft":
-        exec_kw(uid, "account.move", "action_post", [[inv_id]])
-        invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "payment_state", "name"]])[0]
-        print(f"[FBM_PAID] invoice posted: {invoice['name']}")
+    # Bug #6: create+post envueltos en try/except con compensation.
+    # Si create OK pero post falla → unlink draft (no consume secuencia).
+    inv_id = None
+    try:
+        inv_id = exec_kw(uid, "account.move", "create", [{
+            "move_type": "out_invoice",
+            "partner_id": partner_id,
+            "invoice_origin": so["name"],
+            "invoice_date": datetime.now().strftime("%Y-%m-%d"),
+            "invoice_line_ids": invoice_lines,
+        }])
+        invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "name"]])[0]
+        print(f"[FBM_PAID] invoice created: {invoice['name']}")
+
+        if invoice["state"] == "draft":
+            exec_kw(uid, "account.move", "action_post", [[inv_id]])
+            invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "payment_state", "name"]])[0]
+            print(f"[FBM_PAID] invoice posted: {invoice['name']}")
+    except Exception as e:
+        if inv_id:
+            try:
+                _check = exec_kw(uid, "account.move", "read", [[inv_id], ["state"]])[0]
+                if _check["state"] == "draft":
+                    exec_kw(uid, "account.move", "unlink", [[inv_id]])
+                    print(f"[FBM_PAID] compensation: draft invoice {inv_id} unlinked", file=sys.stderr)
+                else:
+                    print(f"[FBM_PAID] WARN compensation skipped: invoice {inv_id} state={_check['state']} (manual review)", file=sys.stderr)
+            except Exception as ce:
+                print(f"[FBM_PAID] WARN compensation failed for invoice {inv_id}: {ce}", file=sys.stderr)
+        die(f"invoice create+post failed: {e}", code=1)
 
 # =========================
 # Pay Invoice
 # =========================
 if invoice and invoice.get("payment_state") != "paid":
-    invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "state", "payment_state", "amount_residual"]])[0]
-    
+    invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "state", "payment_state", "amount_residual", "name"]])[0]
+
     if invoice["payment_state"] != "paid" and invoice["state"] == "posted":
         journals = exec_kw(uid, "account.journal", "search_read",
             [[["type", "=", "bank"]]],
             {"fields": ["id", "name"], "limit": 1})
-        
+
         if journals:
-            ctx = {"active_model": "account.move", "active_ids": [invoice["id"]], "active_id": invoice["id"]}
-            pay_wiz = exec_kw(uid, "account.payment.register", "create",
-                [{"journal_id": journals[0]["id"]}], {"context": ctx})
-            exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], {"context": ctx})
-            
-            invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "payment_state"]])[0]
-            print(f"[FBM_PAID] invoice paid: payment_state={invoice['payment_state']}")
+            # Bug #6: payment register sin try/except dejaba la invoice posted huérfana
+            # cuando algo fallaba. Ahora morimos limpio: invoice queda posted
+            # (no la cancelamos = no rompemos secuencia) y operador la paga manual.
+            try:
+                ctx = {"active_model": "account.move", "active_ids": [invoice["id"]], "active_id": invoice["id"]}
+                pay_wiz = exec_kw(uid, "account.payment.register", "create",
+                    [{"journal_id": journals[0]["id"]}], {"context": ctx})
+                exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], {"context": ctx})
+
+                invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "payment_state"]])[0]
+                print(f"[FBM_PAID] invoice paid: payment_state={invoice['payment_state']}")
+            except Exception as e:
+                die(f"payment register failed (invoice {invoice['name']} POSTED, register payment manualmente en Odoo): {e}", code=1)
 
 print(f"[FBM_PAID] OK_DONE ref={CLIENT_ORDER_REF}")

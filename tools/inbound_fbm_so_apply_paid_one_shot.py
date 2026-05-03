@@ -281,9 +281,13 @@ so = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","picking_
 step("so_read", so_name=so["name"], state=so["state"])
 
 if so["state"] in ("draft","sent"):
-    exec_kw(uid, "sale.order", "action_confirm", [[so_id]])
-    so = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","picking_ids","invoice_ids","amount_total"]])[0]
-    step("so_confirmed", so_name=so["name"], state=so["state"])
+    # Bug #6: try/except — SO en draft retry seguro, no hay state que rollback.
+    try:
+        exec_kw(uid, "sale.order", "action_confirm", [[so_id]])
+        so = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","picking_ids","invoice_ids","amount_total"]])[0]
+        step("so_confirmed", so_name=so["name"], state=so["state"])
+    except Exception as e:
+        die(f"SO confirm failed (state=draft, safe to retry): {e}")
 elif so["state"] == "sale":
     step("so_already_sale")
 else:
@@ -306,40 +310,58 @@ if posted:
     step("invoice_found_posted", invoice_id=invoice["id"], invoice_name=invoice["name"], payment_state=invoice["payment_state"])
 else:
     # 9) Create invoice via wizard - use 'delivered' to create regular invoice
+    # Bug #6: wizard_create + wizard_execute + post envueltos en try/except.
+    # Compensation: si creó draft pero post falló → unlink draft (no consume secuencia).
     ctx = {"active_model": "sale.order", "active_ids": [so_id], "active_id": so_id}
+    inv_id = None
+    try:
+        wiz_id = exec_kw(uid, "sale.advance.payment.inv", "create", [{
+            "advance_payment_method": "delivered",
+        }], context=ctx)
+        step("invoice_wizard_created", wiz_id=wiz_id, method="delivered")
 
-    wiz_id = exec_kw(uid, "sale.advance.payment.inv", "create", [{
-        "advance_payment_method": "delivered",
-    }], context=ctx)
-    step("invoice_wizard_created", wiz_id=wiz_id, method="delivered")
+        exec_kw(uid, "sale.advance.payment.inv", "create_invoices", [[wiz_id]], context=ctx)
+        step("invoice_wizard_executed")
 
-    exec_kw(uid, "sale.advance.payment.inv", "create_invoices", [[wiz_id]], context=ctx)
-    step("invoice_wizard_executed")
+        # Find the created invoice
+        inv_ids = exec_kw(
+            uid, "account.move", "search",
+            [[["invoice_origin", "=", so["name"]], ["move_type", "=", "out_invoice"], ["state", "=", "draft"]]],
+            {"order": "id desc", "limit": 1},
+        ) or []
 
-    # Find the created invoice
-    inv_ids = exec_kw(
-        uid, "account.move", "search",
-        [[["invoice_origin", "=", so["name"]], ["move_type", "=", "out_invoice"], ["state", "=", "draft"]]],
-        {"order": "id desc", "limit": 1},
-    ) or []
+        if not inv_ids:
+            die(f"invoice_create_failed: no draft invoice found for origin={so['name']}")
 
-    if not inv_ids:
-        die(f"invoice_create_failed: no draft invoice found for origin={so['name']}")
+        inv_id = int(inv_ids[0])
+        invoice = exec_kw(
+            uid, "account.move", "read",
+            [[inv_id], ["id", "state", "payment_state", "name", "amount_total", "ref", "invoice_origin", "invoice_line_ids"]],
+        )[0]
+        step("invoice_created", invoice_id=invoice["id"], invoice_name=invoice["name"], state=invoice["state"], line_count=len(invoice.get("invoice_line_ids") or []))
 
-    inv_id = int(inv_ids[0])
-    invoice = exec_kw(
-        uid, "account.move", "read",
-        [[inv_id], ["id", "state", "payment_state", "name", "amount_total", "ref", "invoice_origin", "invoice_line_ids"]],
-    )[0]
-    step("invoice_created", invoice_id=invoice["id"], invoice_name=invoice["name"], state=invoice["state"], line_count=len(invoice.get("invoice_line_ids") or []))
+        if not invoice.get("invoice_line_ids"):
+            die(f"invoice_has_no_lines invoice_id={inv_id} origin={so['name']}")
 
-    if not invoice.get("invoice_line_ids"):
-        die(f"invoice_has_no_lines invoice_id={inv_id} origin={so['name']}")
-
-    if invoice["state"] == "draft":
-        exec_kw(uid, "account.move", "action_post", [[inv_id]])
-        invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "payment_state", "name", "amount_total", "ref", "invoice_origin", "amount_residual"]])[0]
-        step("invoice_posted", invoice_id=inv_id, state=invoice["state"])
+        if invoice["state"] == "draft":
+            exec_kw(uid, "account.move", "action_post", [[inv_id]])
+            invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "payment_state", "name", "amount_total", "ref", "invoice_origin", "amount_residual"]])[0]
+            step("invoice_posted", invoice_id=inv_id, state=invoice["state"])
+    except SystemExit:
+        # die() levanta SystemExit — no hacer compensation (die() es decisión del propio bloque).
+        raise
+    except Exception as e:
+        if inv_id:
+            try:
+                _check = exec_kw(uid, "account.move", "read", [[inv_id], ["state"]])[0]
+                if _check["state"] == "draft":
+                    exec_kw(uid, "account.move", "unlink", [[inv_id]])
+                    step("compensation_invoice_unlinked", invoice_id=inv_id)
+                else:
+                    step("compensation_skipped", invoice_id=inv_id, state=_check["state"])
+            except Exception as ce:
+                step("compensation_failed", invoice_id=inv_id, error=str(ce)[:200])
+        die(f"invoice create+post failed: {e}")
 
 # 10) Pay invoice if not paid
 invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id","state","payment_state","name","amount_total","amount_residual"]])[0]
@@ -352,15 +374,21 @@ else:
     bank_journal_id = int(j[0]["id"])
     step("bank_journal", bank_journal_id=bank_journal_id, journal_name=j[0]["name"])
 
-    ctx = {"active_model":"account.move", "active_ids":[invoice["id"]], "active_id": invoice["id"]}
-    pay_wiz = exec_kw(uid, "account.payment.register", "create", [{
-        "journal_id": bank_journal_id,
-    }], context=ctx)
-    step("payment_wizard_created", wiz_id=pay_wiz)
+    # Bug #6: payment register sin try/except dejaba la invoice posted huérfana
+    # cuando el wizard fallaba. Ahora morimos limpio: invoice queda posted (es válida,
+    # no la cancelamos = no rompemos secuencia) y operador la paga manual desde Odoo UI.
+    try:
+        ctx = {"active_model":"account.move", "active_ids":[invoice["id"]], "active_id": invoice["id"]}
+        pay_wiz = exec_kw(uid, "account.payment.register", "create", [{
+            "journal_id": bank_journal_id,
+        }], context=ctx)
+        step("payment_wizard_created", wiz_id=pay_wiz)
 
-    exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], context=ctx)
-    invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id","payment_state","amount_residual","state"]])[0]
-    step("invoice_paid", payment_state=invoice["payment_state"], residual=str(invoice["amount_residual"]))
+        exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], context=ctx)
+        invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id","payment_state","amount_residual","state"]])[0]
+        step("invoice_paid", payment_state=invoice["payment_state"], residual=str(invoice["amount_residual"]))
+    except Exception as e:
+        die(f"payment register failed (invoice {invoice['name']} POSTED, register payment manualmente en Odoo): {e}")
 
 # 11) Final summary
 final = {
