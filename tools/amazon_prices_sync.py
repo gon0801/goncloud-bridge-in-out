@@ -16,6 +16,7 @@ import logging
 import os
 import sqlite3
 import time
+from typing import Optional
 
 import requests
 
@@ -89,7 +90,28 @@ def init_table(db):
 
 
 # ── LWA Auth ──────────────────────────────────────────────────────────────────
+import time as _time
+
+# Bug #8 fix: cache de token con auto-refresh. SP-API report wait puede
+# tomar 1h+ acumulado entre marketplaces; el token original (~1h TTL)
+# expira y los GETs finales recibían 401 silenciosos. Refresh cuando
+# faltan <300s para expirar.
+_TOKEN_CACHE = {"token": None, "expires_at": 0.0, "key": None}
+_LWA_TTL_SECONDS = 3600  # SP-API LWA token TTL real
+_LWA_REFRESH_MARGIN = 300  # refresh cuando faltan <5min
+
+
 def get_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
+    """Cached wrapper: solo hace POST a LWA si el token está por expirar."""
+    now = _time.time()
+    cache_key = (client_id, refresh_token[-8:])
+    if (
+        _TOKEN_CACHE["token"]
+        and _TOKEN_CACHE["key"] == cache_key
+        and (_TOKEN_CACHE["expires_at"] - now) > _LWA_REFRESH_MARGIN
+    ):
+        return _TOKEN_CACHE["token"]
+
     resp = requests.post(LWA_URL, data={
         "grant_type":    "refresh_token",
         "refresh_token": refresh_token,
@@ -97,8 +119,13 @@ def get_access_token(client_id: str, client_secret: str, refresh_token: str) -> 
         "client_secret": client_secret,
     }, timeout=15)
     resp.raise_for_status()
-    token = resp.json()["access_token"]
-    log.info("LWA access token obtenido")
+    data = resp.json()
+    token = data["access_token"]
+    expires_in = int(data.get("expires_in") or _LWA_TTL_SECONDS)
+    _TOKEN_CACHE["token"] = token
+    _TOKEN_CACHE["expires_at"] = now + expires_in
+    _TOKEN_CACHE["key"] = cache_key
+    log.info(f"LWA access token obtenido/refrescado (TTL={expires_in}s)")
     return token
 
 
@@ -122,13 +149,20 @@ def request_report(token: str, marketplace_id: str) -> str:
     return report_id
 
 
-def wait_for_report(token: str, report_id: str, timeout_sec: int = 900) -> str:
-    """Polling hasta que el reporte esté DONE. Retorna reportDocumentId."""
-    headers = {"x-amz-access-token": token}
+def wait_for_report(token: str, report_id: str, timeout_sec: int = 900,
+                    creds: Optional[dict] = None) -> str:
+    """Polling hasta que el reporte esté DONE. Retorna reportDocumentId.
+
+    Bug #8 fix: si pasan `creds`, en cada iteración refrescamos el token
+    via cache (`get_access_token`) para tolerar polls largos donde el
+    token original (~1h) podría expirar. Sin `creds` mantiene legacy.
+    """
     url = f"{SP_API}/reports/2021-06-30/reports/{report_id}"
     start = time.time()
     while time.time() - start < timeout_sec:
-        resp = requests.get(url, headers=headers, timeout=15)
+        if creds:
+            token = get_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
+        resp = requests.get(url, headers={"x-amz-access-token": token}, timeout=15)
         resp.raise_for_status()
         data   = resp.json()
         status = data.get("processingStatus", "")
@@ -273,12 +307,20 @@ def parse_and_save_fba(tsv: str, db, marketplace_id: str, marketplace_name: str)
     log.info(f"[{marketplace_name} FBA] {count} items guardados, {skipped} sin SKU ignorados")
 
 
-def sync_fba_inventory(token: str, db, marketplace_id: str, marketplace_name: str):
-    """Pipeline completo FBA: request → poll → download → parse → upsert."""
+def sync_fba_inventory(token: str, db, marketplace_id: str, marketplace_name: str,
+                       creds: Optional[dict] = None):
+    """Pipeline completo FBA: request → poll → download → parse → upsert.
+
+    Bug #8: si pasan `creds`, los polls largos refrescan el token via cache.
+    """
+    def _tok():
+        if creds:
+            return get_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
+        return token
     try:
-        report_id   = request_fba_inventory_report(token, marketplace_id)
-        document_id = wait_for_report(token, report_id)
-        tsv         = download_report(token, document_id)
+        report_id   = request_fba_inventory_report(_tok(), marketplace_id)
+        document_id = wait_for_report(_tok(), report_id, creds=creds)
+        tsv         = download_report(_tok(), document_id)
         parse_and_save_fba(tsv, db, marketplace_id, marketplace_name)
     except Exception as e:
         log.error(f"FBA sync error {marketplace_name}: {e}")
@@ -308,21 +350,25 @@ def main():
         db.close()
         return
 
-    token = get_access_token(client_id, client_secret, refresh_token)
+    # Bug #8: get_access_token() es ahora cached con auto-refresh; pasarlo
+    # antes de cada step + pasar creds a wait_for_report/sync_fba_inventory
+    # para refrescar internamente durante polls largos.
+    creds = {"client_id": client_id, "client_secret": client_secret, "refresh_token": refresh_token}
+    _tok = lambda: get_access_token(client_id, client_secret, refresh_token)
 
     for marketplace_id, marketplace_name in MARKETPLACES:
         log.info(f"── Procesando {marketplace_name} ({marketplace_id}) — merchant listings ──")
         try:
-            report_id   = request_report(token, marketplace_id)
-            document_id = wait_for_report(token, report_id)
-            tsv         = download_report(token, document_id)
+            report_id   = request_report(_tok(), marketplace_id)
+            document_id = wait_for_report(_tok(), report_id, creds=creds)
+            tsv         = download_report(_tok(), document_id)
             parse_and_save(tsv, db, marketplace_id, marketplace_name)
         except Exception as e:
             log.error(f"Error merchant {marketplace_name}: {e}")
 
         # FBA inventory — reporte separado, stock real de Amazon warehouses
         log.info(f"── Procesando {marketplace_name} ({marketplace_id}) — FBA inventory ──")
-        sync_fba_inventory(token, db, marketplace_id, marketplace_name)
+        sync_fba_inventory(_tok(), db, marketplace_id, marketplace_name, creds=creds)
 
     db.close()
     log.info("Sync de precios + FBA inventory Amazon completado")
