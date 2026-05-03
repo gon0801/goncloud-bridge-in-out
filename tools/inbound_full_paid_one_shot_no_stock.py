@@ -68,10 +68,14 @@ if not order_id:
     die("ORDER_JSON missing id", 2)
 
 def parse_items(order_dict):
+    """Bug M3: items sin seller_sku ya no se silencian; die con rc=1 →
+    worker → manual_review. El operador asigna el SKU en MeLi o en
+    sku_mapping antes de reprocesar."""
     items = order_dict.get("order_items") or []
     if not isinstance(items, list):
         return []
     out = []
+    skipped = []
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -89,6 +93,11 @@ def parse_items(order_dict):
 
         sku = (item.get("seller_sku") or item.get("SELLER_SKU") or "").strip()
         if not sku:
+            skipped.append({
+                "item_id": str(item.get("id") or ""),
+                "variation_id": str(item.get("variation_id") or it.get("variation_id") or ""),
+                "title": str(item.get("title") or ""),
+            })
             continue
 
         unit_price = it.get("unit_price")
@@ -100,6 +109,10 @@ def parse_items(order_dict):
             unit_price = 0.0
 
         out.append({"sku": sku, "qty": qty, "unit_price": unit_price})
+
+    if skipped:
+        die(f"unmapped_items: {len(skipped)} item(s) sin SKU resoluble: {skipped}", code=1)
+
     return out
 
 items = parse_items(order)
@@ -214,48 +227,17 @@ else:
         }])
     step("so_lines_created", lines=len(items))
 
-# 6) Confirmar SO contablemente y cancelar pickings (FULL: MeLi maneja logística)
-#
-# Antes (M7 bug): write{"state": "sale"} bypaseaba action_confirm, saltando
-# workflow hooks de Odoo (mail tracking, computed fields, automated actions,
-# secuencias de quote→sale, hooks de meli_oerp). Eso dejaba el SO en un estado
-# "sale" pero sin los side-effects que el resto del addon espera.
-#
-# Post-fix: replicamos el patrón de amazon_fba_paid_one_shot.py (SO no-stock):
-#   1. action_confirm — flujo público, dispara todos los hooks.
-#   2. action_cancel sobre los pickings generados — FULL no maneja stock en Odoo
-#      porque MercadoLibre Fulfillment ya tiene la mercadería físicamente.
+# 6) FORCE "confirmed" contable SIN logística: state="sale" (NO pickings)
 so = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","client_order_ref","picking_ids","invoice_ids","invoice_status","amount_total"]])[0]
+if so.get("picking_ids"):
+    die("FULL must be NO pickings. Found pickings on SO -> stop.", 2)
 
-if so["state"] in ("draft", "sent"):
-    # Bug #6: try/except — SO en draft retry seguro, no hay state que rollback.
-    try:
-        exec_kw(uid, "sale.order", "action_confirm", [[so_id]])
-        so = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","client_order_ref","picking_ids","invoice_ids","invoice_status","amount_total"]])[0]
-        step("so_confirmed", so_name=so["name"], state=so["state"])
-    except Exception as e:
-        die(f"SO confirm failed (state=draft, safe to retry): {e}", 1)
+if so["state"] != "sale":
+    exec_kw(uid, "sale.order", "write", [[so_id], {"state": "sale"}])
+    so = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","client_order_ref","picking_ids","invoice_ids","invoice_status","amount_total"]])[0]
+    step("so_forced_sale_no_stock", so_name=so["name"], state=so["state"])
 else:
-    step("so_already_confirmed", so_name=so["name"], state=so["state"])
-
-# Cancelar pickings generados por action_confirm (FULL = no stock en Odoo).
-# Si action_cancel falla por algún picking, registramos pero seguimos —
-# el guard final chequea state final del SO/invoice; un picking residual
-# no bloquea el accounting pero queda visible para limpieza manual.
-pickings = exec_kw(uid, "stock.picking", "search_read",
-    [[["origin", "=", so["name"]], ["state", "not in", ["done", "cancel"]]]],
-    {"fields": ["id", "name", "state"]})
-
-cancelled_ids = []
-for pick in pickings:
-    try:
-        exec_kw(uid, "stock.picking", "action_cancel", [[pick["id"]]])
-        cancelled_ids.append(pick["id"])
-    except Exception as e:
-        step("picking_cancel_failed", picking_id=pick["id"], picking_name=pick["name"], error=str(e)[:200])
-
-if cancelled_ids:
-    step("pickings_cancelled", count=len(cancelled_ids), ids=cancelled_ids)
+    step("so_already_sale", so_name=so["name"])
 
 # 7) Invoice: si ya existe posted por origin/ref -> usar; si no -> wizard 100%
 inv_ids = exec_kw(uid, "account.move", "search", [[
@@ -273,43 +255,25 @@ if posted:
     invoice = posted[0]
     step("invoice_found_posted", invoice_id=invoice["id"], invoice_name=invoice["name"], payment_state=invoice["payment_state"])
 else:
-    # Bug #6: wizard + post envueltos en try/except con compensation.
-    # Si crea draft pero post falla → unlink draft (no consume secuencia).
+    # Wizard correcto que SÍ liga invoice_ids al SO
     ctx = {"active_model":"sale.order", "active_ids":[so_id], "active_id": so_id}
-    res_id = None
-    try:
-        wiz_id = exec_kw(uid, "sale.advance.payment.inv", "create", [{
-            "advance_payment_method": "delivered",
-        }], context=ctx)
-        step("invoice_wizard_created", wiz_id=wiz_id)
+    wiz_id = exec_kw(uid, "sale.advance.payment.inv", "create", [{
+        "advance_payment_method": "delivered",
+    }], context=ctx)
+    step("invoice_wizard_created", wiz_id=wiz_id)
 
-        action = exec_kw(uid, "sale.advance.payment.inv", "create_invoices", [[wiz_id]], context=ctx)
-        res_id = int((action or {}).get("res_id") or 0)
-        if not res_id:
-            die(f"could not infer invoice id from action: {action}", 2)
+    action = exec_kw(uid, "sale.advance.payment.inv", "create_invoices", [[wiz_id]], context=ctx)
+    res_id = int((action or {}).get("res_id") or 0)
+    if not res_id:
+        die(f"could not infer invoice id from action: {action}", 2)
 
-        invoice = exec_kw(uid, "account.move", "read", [[res_id], ["id","state","payment_state","name","amount_total","amount_residual","invoice_origin","ref"]])[0]
-        step("invoice_created", invoice_id=invoice["id"], invoice_name=invoice["name"], state=invoice["state"])
+    invoice = exec_kw(uid, "account.move", "read", [[res_id], ["id","state","payment_state","name","amount_total","amount_residual","invoice_origin","ref"]])[0]
+    step("invoice_created", invoice_id=invoice["id"], invoice_name=invoice["name"], state=invoice["state"])
 
-        if invoice["state"] == "draft":
-            exec_kw(uid, "account.move", "action_post", [[invoice["id"]]])
-            invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id","state","payment_state","name","amount_total","amount_residual","invoice_origin","ref"]])[0]
-            step("invoice_posted", invoice_id=invoice["id"], state=invoice["state"])
-    except SystemExit:
-        # die() levanta SystemExit — no compensar (es decisión del propio bloque).
-        raise
-    except Exception as e:
-        if res_id:
-            try:
-                _check = exec_kw(uid, "account.move", "read", [[res_id], ["state"]])[0]
-                if _check["state"] == "draft":
-                    exec_kw(uid, "account.move", "unlink", [[res_id]])
-                    step("compensation_invoice_unlinked", invoice_id=res_id)
-                else:
-                    step("compensation_skipped", invoice_id=res_id, state=_check["state"])
-            except Exception as ce:
-                step("compensation_failed", invoice_id=res_id, error=str(ce)[:200])
-        die(f"invoice create+post failed: {e}", 1)
+    if invoice["state"] == "draft":
+        exec_kw(uid, "account.move", "action_post", [[invoice["id"]]])
+        invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id","state","payment_state","name","amount_total","amount_residual","invoice_origin","ref"]])[0]
+        step("invoice_posted", invoice_id=invoice["id"], state=invoice["state"])
 
 # 8) Pay invoice if not paid
 invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id","state","payment_state","name","amount_total","amount_residual"]])[0]
@@ -322,21 +286,15 @@ else:
     bank_journal_id = int(j[0]["id"])
     step("bank_journal", bank_journal_id=bank_journal_id, bank_journal_name=j[0]["name"])
 
-    # Bug #6: payment register sin try/except dejaba la invoice posted huérfana.
-    # Ahora morimos limpio: invoice queda posted (válida, no rompemos secuencia)
-    # y operador la paga manual desde Odoo UI.
-    try:
-        ctx = {"active_model":"account.move", "active_ids":[invoice["id"]], "active_id": invoice["id"]}
-        pay_wiz = exec_kw(uid, "account.payment.register", "create", [{
-            "journal_id": bank_journal_id,
-        }], context=ctx)
-        step("payment_wizard_created", wiz_id=pay_wiz)
+    ctx = {"active_model":"account.move", "active_ids":[invoice["id"]], "active_id": invoice["id"]}
+    pay_wiz = exec_kw(uid, "account.payment.register", "create", [{
+        "journal_id": bank_journal_id,
+    }], context=ctx)
+    step("payment_wizard_created", wiz_id=pay_wiz)
 
-        exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], context=ctx)
-        invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id","payment_state","amount_residual","state","name"]])[0]
-        step("invoice_paid", payment_state=invoice["payment_state"], residual=str(invoice.get("amount_residual")))
-    except Exception as e:
-        die(f"payment register failed (invoice {invoice['name']} POSTED, register payment manualmente en Odoo): {e}", 1)
+    exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], context=ctx)
+    invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id","payment_state","amount_residual","state","name"]])[0]
+    step("invoice_paid", payment_state=invoice["payment_state"], residual=str(invoice.get("amount_residual")))
 
 # Releer SO después del wizard para confirmar link invoice_ids
 so_after = exec_kw(uid, "sale.order", "read", [[so_id], ["id","name","state","invoice_ids","invoice_status","picking_ids","amount_total"]])[0]

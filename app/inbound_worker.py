@@ -1094,8 +1094,14 @@ def main():
                 except Exception as e:
                     error_msg = str(e)
                     retry_count = job.get("_retry_count", 0)
-                    
-                    if retry_count >= Config.MAX_RETRIES or "token_expired" in error_msg:
+
+                    # Bug M4 fix: NO mandar a dead inmediato cuando
+                    # token_expired. El cron de refresh corre cada 6h, mientras
+                    # MAX_RETRIES con backoff = ~14s no le da tiempo. Tratarlo
+                    # como transitorio: el reaper requeue + tiempo natural deja
+                    # que el refresh complete. Solo dead cuando se rebasan los
+                    # MAX_RETRIES, igual que cualquier otra falla.
+                    if retry_count >= Config.MAX_RETRIES:
                         mark_completed(dedupe_key, "dead", {
                             "reason": "ml_fetch_failed",
                             "error": error_msg,
@@ -1108,10 +1114,15 @@ def main():
                         }))
                         redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
                     else:
-                        # Reintentar con backoff
+                        # Reintentar con backoff.
+                        # Bug M1 fix: rpush ANTES de release_lock. Si el proceso
+                        # muere entre las dos llamadas (OOM/SIGKILL/panic),
+                        # antes el lock quedaba liberado y el job perdido. Con
+                        # este orden: si el rpush falla o crash, el lock sigue
+                        # activo y el reaper lo recupera al detectar lock stale.
                         job["_retry_count"] = retry_count + 1
-                        release_lock(dedupe_key)
                         redis_client.rpush(Config.QUEUE, json.dumps(job))
+                        release_lock(dedupe_key)
                         log(f"ML fetch failed: retry scheduled", "WARN", {
                             "dedupe_key": dedupe_key,
                             "retry": job["_retry_count"],
@@ -1218,9 +1229,11 @@ def main():
                         }))
                         redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
                     else:
+                        # Bug M1 fix: rpush ANTES de release_lock (ver comment
+                        # en el path de retry de fetch arriba).
                         job["_retry_count"] = retry_count + 1
-                        release_lock(effective_lock)
                         redis_client.rpush(Config.QUEUE, json.dumps(job))
+                        release_lock(effective_lock)
 
                     redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": effective_lock}))
                 except:
