@@ -167,27 +167,48 @@ if not uid:
 print(f"[FBM_PAID] authenticated uid={uid}")
 
 # =========================
-# USD currency lookup (solo órdenes US)
+# USD → MXN conversion (solo órdenes US)
 # =========================
-# Antes (pre-fix Bug #5): get_usd_to_mxn_rate() leía res.currency.rate y convertía
-# unit_price * rate inline. Eso fijaba el precio en MXN al momento de creación,
-# perdiendo trazabilidad del USD original; y si la rate de Odoo estaba desactualizada
-# (ej. cron currency_rate_update roto entre Feb-25 y May-3 2026 por EUR inactiva),
-# las facturas quedaban subvaluadas silenciosamente.
-#
-# Post-fix: pasamos `currency_id=USD` al SO. Odoo aplica la rate del día desde
-# res.currency.rate automáticamente y mantiene el SO en USD nativo. Si la rate
-# vuelve a estar desactualizada, Odoo usa la última disponible (mismo behavior
-# que el código viejo) — el guardrail real es el cron OCA monitoreado, no este script.
-USD_CURRENCY_ID = None
+def get_usd_to_mxn_rate():
+    """Lee el tipo de cambio USD/MXN desde Odoo (res.currency.rate).
+    Retorna MXN por 1 USD, ej. 17.5. None si no se puede obtener.
+
+    En Odoo 17, res.currency.rate.rate = inverse_company_rate = USD por 1 MXN
+    (ej. rate=0.05714 si 1 USD = 17.5 MXN).
+    Por eso mxn_per_usd = 1 / rate.
+
+    SANITY CHECK: si el resultado es < 5 o > 500, el tipo de cambio no está
+    configurado correctamente en Odoo (ej. rate=1.0 por default) → falla con
+    code=1 (manual_review) para evitar registrar precios incorrectos.
+    """
+    try:
+        rates = exec_kw(uid, "res.currency.rate", "search_read",
+            [[["currency_id.name", "=", "USD"]]],
+            {"fields": ["rate", "name"], "order": "name desc", "limit": 1})
+        if rates and rates[0].get("rate"):
+            r = float(rates[0]["rate"])
+            if r > 0:
+                # En Odoo, rate = inverse_company_rate = 1/MXN_por_USD
+                mxn_per_usd = round(1.0 / r, 6)
+                # Sanity check: 1 USD no puede valer menos de 5 MXN ni más de 500
+                if mxn_per_usd < 5.0 or mxn_per_usd > 500.0:
+                    print(f"[FBM_PAID] ERROR tipo de cambio sospechoso: {mxn_per_usd} MXN/USD "
+                          f"(raw rate={r}). Configura el tipo de cambio USD en Odoo correctamente.",
+                          file=sys.stderr)
+                    return None
+                print(f"[FBM_PAID] USD/MXN rate={mxn_per_usd} (fecha={rates[0].get('name','?')})")
+                return mxn_per_usd
+    except Exception as e:
+        print(f"[FBM_PAID] WARN no se pudo leer tipo de cambio de res.currency.rate: {e}", file=sys.stderr)
+    return None
+
 if IS_USD_ORDER:
-    _usd = exec_kw(uid, "res.currency", "search_read",
-        [[["name", "=", "USD"], ["active", "=", True]]],
-        {"fields": ["id"], "limit": 1})
-    if not _usd:
-        die("USD currency no encontrada (o inactiva) en Odoo. Activar en Settings → Currencies.", code=1)
-    USD_CURRENCY_ID = _usd[0]["id"]
-    print(f"[FBM_PAID] orden USD — usando currency_id={USD_CURRENCY_ID} nativo (Odoo aplicará FX automático)")
+    usd_to_mxn = get_usd_to_mxn_rate()
+    if not usd_to_mxn:
+        die("No se pudo obtener tipo de cambio USD/MXN de Odoo. Verifica que el tipo de cambio USD esté configurado en Odoo (Contabilidad → Divisas → USD).", code=1)
+    for item in items:
+        item["unit_price"] = round(item["unit_price"] * usd_to_mxn, 2)
+    print(f"[FBM_PAID] precios convertidos USD→MXN (rate={usd_to_mxn})")
 
 # =========================
 # Check existing SO
@@ -201,7 +222,7 @@ display_ref = f"{order_id} | {BUYER_NAME}" if BUYER_NAME else order_id
 # picking the first one (would happen if Bug #2 ever produced doubles in past runs).
 existing = exec_kw(uid, "sale.order", "search_read",
     [[["client_order_ref", "=like", f"{order_id}%"]]],
-    {"fields": ["id", "name", "state", "client_order_ref", "currency_id"], "limit": 2})
+    {"fields": ["id", "name", "state", "client_order_ref"], "limit": 2})
 
 if len(existing) > 1:
     die(f"multiple SOs match order_id={order_id}: {[s['name'] for s in existing]}", code=1)
@@ -210,20 +231,6 @@ if existing:
     so = existing[0]
     so_id = so["id"]
     print(f"[FBM_PAID] SO exists: {so['name']} state={so['state']} — continuing to check invoice/payment")
-
-    # Bug #5 safety: detectar mismatch de currency entre orden Amazon (IS_USD_ORDER)
-    # y el SO ya creado. Sucede principalmente con SOs creados ANTES del fix que
-    # convertían USD→MXN inline. Reprocesarlos cambiaría price_unit (USD nativo)
-    # sin cambiar currency del SO → factura en MXN con números USD = total ridículo.
-    # die explícito → operador resuelve manual (cancela SO viejo, deja que se recree).
-    so_currency = so.get("currency_id") or [None, None]
-    so_currency_name = so_currency[1] if isinstance(so_currency, list) and len(so_currency) > 1 else None
-    if IS_USD_ORDER and so_currency_name != "USD":
-        die(f"SO existente {so['name']} está en {so_currency_name}, pero orden Amazon es USD. "
-            f"Probable SO pre-fix Bug #5. Cancelar SO manualmente y reintentar.", code=1)
-    if (not IS_USD_ORDER) and so_currency_name not in (None, "MXN"):
-        die(f"SO existente {so['name']} está en {so_currency_name}, pero orden Amazon es MXN.", code=1)
-
     if so.get("client_order_ref") == order_id and BUYER_NAME and display_ref != order_id:
         exec_kw(uid, "sale.order", "write", [[so_id], {"client_order_ref": display_ref}])
         print(f"[FBM_PAID] client_order_ref updated: {order_id} → {display_ref}")
@@ -279,14 +286,11 @@ print(f"[FBM_PAID] products resolved: {len(sku_to_pid)}")
 # Create SO if needed
 # =========================
 if not so_id:
-    so_payload = {
+    so_id = exec_kw(uid, "sale.order", "create", [{
         "partner_id": partner_id,
         "client_order_ref": display_ref,
         "note": f"{CHANNEL_LABEL} | ORDER={order_id} | {BUYER_NAME or 'N/A'}",
-    }
-    if USD_CURRENCY_ID:
-        so_payload["currency_id"] = USD_CURRENCY_ID
-    so_id = exec_kw(uid, "sale.order", "create", [so_payload])
+    }])
     print(f"[FBM_PAID] SO created id={so_id}")
 
 # =========================
@@ -321,16 +325,13 @@ else:
             print(f"[FBM_PAID] line price updated: {line_sku} ${line['price_unit']} → ${sku_price[line_sku]}")
 
 # =========================
-# Confirm SO (creates picking automatically)  Bug #6: try/except — SO en draft retry seguro
+# Confirm SO (creates picking automatically)
 # =========================
 so = exec_kw(uid, "sale.order", "read", [[so_id], ["id", "name", "state", "picking_ids"]])[0]
 if so["state"] in ("draft", "sent"):
-    try:
-        exec_kw(uid, "sale.order", "action_confirm", [[so_id]])
-        so = exec_kw(uid, "sale.order", "read", [[so_id], ["id", "name", "state", "picking_ids"]])[0]
-        print(f"[FBM_PAID] SO confirmed: {so['name']} state={so['state']} pickings={len(so.get('picking_ids', []))}")
-    except Exception as e:
-        die(f"SO confirm failed (state=draft, safe to retry): {e}", code=1)
+    exec_kw(uid, "sale.order", "action_confirm", [[so_id]])
+    so = exec_kw(uid, "sale.order", "read", [[so_id], ["id", "name", "state", "picking_ids"]])[0]
+    print(f"[FBM_PAID] SO confirmed: {so['name']} state={so['state']} pickings={len(so.get('picking_ids', []))}")
 
 # =========================
 # Check picking exists (do NOT validate)
@@ -365,7 +366,7 @@ else:
     so_lines = exec_kw(uid, "sale.order.line", "search_read",
         [[["order_id", "=", so_id]]],
         {"fields": ["id", "product_id", "product_uom_qty", "price_unit", "name"]})
-
+    
     invoice_lines = []
     for line in so_lines:
         invoice_lines.append((0, 0, {
@@ -375,63 +376,42 @@ else:
             "name": line["name"],
             "sale_line_ids": [(6, 0, [line["id"]])],  # Vínculo crítico
         }))
-
+    
     from datetime import datetime
-    # Bug #6: create+post envueltos en try/except con compensation.
-    # Si create OK pero post falla → unlink draft (no consume secuencia).
-    inv_id = None
-    try:
-        inv_id = exec_kw(uid, "account.move", "create", [{
-            "move_type": "out_invoice",
-            "partner_id": partner_id,
-            "invoice_origin": so["name"],
-            "invoice_date": datetime.now().strftime("%Y-%m-%d"),
-            "invoice_line_ids": invoice_lines,
-        }])
-        invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "name"]])[0]
-        print(f"[FBM_PAID] invoice created: {invoice['name']}")
-
-        if invoice["state"] == "draft":
-            exec_kw(uid, "account.move", "action_post", [[inv_id]])
-            invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "payment_state", "name"]])[0]
-            print(f"[FBM_PAID] invoice posted: {invoice['name']}")
-    except Exception as e:
-        if inv_id:
-            try:
-                _check = exec_kw(uid, "account.move", "read", [[inv_id], ["state"]])[0]
-                if _check["state"] == "draft":
-                    exec_kw(uid, "account.move", "unlink", [[inv_id]])
-                    print(f"[FBM_PAID] compensation: draft invoice {inv_id} unlinked", file=sys.stderr)
-                else:
-                    print(f"[FBM_PAID] WARN compensation skipped: invoice {inv_id} state={_check['state']} (manual review)", file=sys.stderr)
-            except Exception as ce:
-                print(f"[FBM_PAID] WARN compensation failed for invoice {inv_id}: {ce}", file=sys.stderr)
-        die(f"invoice create+post failed: {e}", code=1)
+    inv_id = exec_kw(uid, "account.move", "create", [{
+        "move_type": "out_invoice",
+        "partner_id": partner_id,
+        "invoice_origin": so["name"],
+        "invoice_date": datetime.now().strftime("%Y-%m-%d"),
+        "invoice_line_ids": invoice_lines,
+    }])
+    
+    invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "name"]])[0]
+    print(f"[FBM_PAID] invoice created: {invoice['name']}")
+    
+    if invoice["state"] == "draft":
+        exec_kw(uid, "account.move", "action_post", [[inv_id]])
+        invoice = exec_kw(uid, "account.move", "read", [[inv_id], ["id", "state", "payment_state", "name"]])[0]
+        print(f"[FBM_PAID] invoice posted: {invoice['name']}")
 
 # =========================
 # Pay Invoice
 # =========================
 if invoice and invoice.get("payment_state") != "paid":
-    invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "state", "payment_state", "amount_residual", "name"]])[0]
-
+    invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "state", "payment_state", "amount_residual"]])[0]
+    
     if invoice["payment_state"] != "paid" and invoice["state"] == "posted":
         journals = exec_kw(uid, "account.journal", "search_read",
             [[["type", "=", "bank"]]],
             {"fields": ["id", "name"], "limit": 1})
-
+        
         if journals:
-            # Bug #6: payment register sin try/except dejaba la invoice posted huérfana
-            # cuando algo fallaba. Ahora morimos limpio: invoice queda posted
-            # (no la cancelamos = no rompemos secuencia) y operador la paga manual.
-            try:
-                ctx = {"active_model": "account.move", "active_ids": [invoice["id"]], "active_id": invoice["id"]}
-                pay_wiz = exec_kw(uid, "account.payment.register", "create",
-                    [{"journal_id": journals[0]["id"]}], {"context": ctx})
-                exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], {"context": ctx})
-
-                invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "payment_state"]])[0]
-                print(f"[FBM_PAID] invoice paid: payment_state={invoice['payment_state']}")
-            except Exception as e:
-                die(f"payment register failed (invoice {invoice['name']} POSTED, register payment manualmente en Odoo): {e}", code=1)
+            ctx = {"active_model": "account.move", "active_ids": [invoice["id"]], "active_id": invoice["id"]}
+            pay_wiz = exec_kw(uid, "account.payment.register", "create",
+                [{"journal_id": journals[0]["id"]}], {"context": ctx})
+            exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], {"context": ctx})
+            
+            invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "payment_state"]])[0]
+            print(f"[FBM_PAID] invoice paid: payment_state={invoice['payment_state']}")
 
 print(f"[FBM_PAID] OK_DONE ref={CLIENT_ORDER_REF}")

@@ -112,17 +112,15 @@ for inv in invoices:
         continue
     
     # Create reversal
-    # Bug #6: cambio WARN+continue por die — ver explicación en amazon_fba_refund_and_cancel.
-    cn_id = None
     try:
         ctx = {"active_model": "account.move", "active_ids": [inv["id"]]}
         wiz_id = exec_kw(uid, "account.move.reversal", "create",
             [{"reason": "Amazon FBM refund/cancel", "journal_id": inv["journal_id"][0] if inv.get("journal_id") else 1}],
             {"context": ctx})
-
+        
         result = exec_kw(uid, "account.move.reversal", "refund_moves", [[wiz_id]], {"context": ctx})
         print(f"[FBM_REFUND] credit note created for {inv['name']}")
-
+        
         # Post the credit note
         if result and "res_id" in result:
             cn_id = result["res_id"]
@@ -131,21 +129,12 @@ for inv in invoices:
                 exec_kw(uid, "account.move", "action_post", [[cn_id]])
                 print(f"[FBM_REFUND] credit note posted: {cn['name']}")
     except Exception as e:
-        if cn_id:
-            try:
-                _check = exec_kw(uid, "account.move", "read", [[cn_id], ["state"]])[0]
-                if _check["state"] == "draft":
-                    exec_kw(uid, "account.move", "unlink", [[cn_id]])
-                    print(f"[FBM_REFUND] compensation: draft credit note {cn_id} unlinked", file=sys.stderr)
-            except Exception as ce:
-                print(f"[FBM_REFUND] WARN compensation failed for credit note {cn_id}: {ce}", file=sys.stderr)
-        die(f"reversal failed for invoice {inv['name']}: {e}", code=1)
+        print(f"[FBM_REFUND] WARN reversal failed for {inv['name']}: {e}")
 
 # =========================
 # Cancel SO via wizard
 # =========================
 if so["state"] != "cancel":
-    # Bug #6: cambio WARN+continue por die — SO sin cancel = venta activa pese al refund.
     try:
         action = exec_kw(uid, "sale.order", "action_cancel", [[so["id"]]])
         ctx = action.get("context") if isinstance(action, dict) else {}
@@ -156,6 +145,6 @@ if so["state"] != "cancel":
         so = exec_kw(uid, "sale.order", "read", [[so["id"]], ["state"]])[0]
         print(f"[FBM_REFUND] SO cancelled: {so['state']}")
     except Exception as e:
-        die(f"SO cancel failed (credit notes ya creados, cancelar SO {so['name']} manualmente en Odoo): {e}", code=1)
+        print(f"[FBM_REFUND] WARN SO cancel failed: {e}")
 
 print(f"[FBM_REFUND] OK_DONE ref={CLIENT_ORDER_REF}")

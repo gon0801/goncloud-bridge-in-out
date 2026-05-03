@@ -97,51 +97,34 @@ if credit_id:
     step("credit_note_ready", status="found_existing", credit_note_id=credit_id, state=credit["state"])
 else:
     # 4) Crear reversal wizard y reverse_moves()
-    # Bug #6: wizard + post envueltos en try/except con compensation.
-    # Si crea draft credit note pero post falla → unlink (no consume secuencia).
+    # Journal sale
     j = exec_kw(uid, "account.journal", "search_read", [[["type","=","sale"]]], {"fields":["id","name","type","company_id"], "limit": 1})
     if not j:
         die("NO_SALE_JOURNAL_FOUND")
     sale_journal_id = int(j[0]["id"])
     step("journals", sale_journal_id=sale_journal_id, sale_journal_name=j[0]["name"])
 
-    try:
-        ctx = {"active_model":"account.move","active_ids":[invoice_id],"active_id":invoice_id}
-        wiz_id = exec_kw(uid, "account.move.reversal", "create", [{
-            "journal_id": sale_journal_id,
-            "reason": "ML FBM refund/cancel",
-        }], context=ctx)
-        step("reversal_wizard_created", wiz_id=wiz_id)
+    ctx = {"active_model":"account.move","active_ids":[invoice_id],"active_id":invoice_id}
+    wiz_id = exec_kw(uid, "account.move.reversal", "create", [{
+        "journal_id": sale_journal_id,
+        "reason": "ML FBM refund/cancel",
+    }], context=ctx)
+    step("reversal_wizard_created", wiz_id=wiz_id)
 
-        action = exec_kw(uid, "account.move.reversal", "reverse_moves", [[wiz_id]], context=ctx)
-        res_id = int(action.get("res_id") or 0) if isinstance(action, dict) else 0
-        if not res_id:
-            die(f"COULD_NOT_INFER_CREDIT_NOTE_FROM_ACTION action={action}")
-        credit_id = res_id
-        credit = exec_kw(uid, "account.move", "read", [[credit_id], ["id","name","state","payment_state","amount_total","amount_residual","reversed_entry_id","move_type"]])[0]
-        step("credit_note_created", credit_note_id=credit_id, credit_note_name=credit["name"], state=credit["state"])
-    except SystemExit:
-        raise
-    except Exception as e:
-        die(f"reversal wizard failed for invoice {invoice['name']}: {e}")
+    action = exec_kw(uid, "account.move.reversal", "reverse_moves", [[wiz_id]], context=ctx)
+    res_id = int(action.get("res_id") or 0) if isinstance(action, dict) else 0
+    if not res_id:
+        die(f"COULD_NOT_INFER_CREDIT_NOTE_FROM_ACTION action={action}")
+    credit_id = res_id
+    credit = exec_kw(uid, "account.move", "read", [[credit_id], ["id","name","state","payment_state","amount_total","amount_residual","reversed_entry_id","move_type"]])[0]
+    step("credit_note_created", credit_note_id=credit_id, credit_note_name=credit["name"], state=credit["state"])
 
 # 5) Postear credit note si está draft
 credit = exec_kw(uid, "account.move", "read", [[credit_id], ["id","name","state","payment_state","amount_total","amount_residual"]])[0]
 if credit["state"] == "draft":
-    # Bug #6: post falla → unlink draft credit note (no consume secuencia).
-    try:
-        exec_kw(uid, "account.move", "action_post", [[credit_id]])
-        credit = exec_kw(uid, "account.move", "read", [[credit_id], ["id","state","payment_state","amount_total","amount_residual"]])[0]
-        step("credit_note_post", status="posted_now", state=credit["state"])
-    except Exception as e:
-        try:
-            _check = exec_kw(uid, "account.move", "read", [[credit_id], ["state"]])[0]
-            if _check["state"] == "draft":
-                exec_kw(uid, "account.move", "unlink", [[credit_id]])
-                step("compensation_credit_unlinked", credit_id=credit_id)
-        except Exception as ce:
-            step("compensation_failed", credit_id=credit_id, error=str(ce)[:200])
-        die(f"credit note post failed: {e}")
+    exec_kw(uid, "account.move", "action_post", [[credit_id]])
+    credit = exec_kw(uid, "account.move", "read", [[credit_id], ["id","state","payment_state","amount_total","amount_residual"]])[0]
+    step("credit_note_post", status="posted_now", state=credit["state"])
 else:
     step("credit_note_post", status="already_posted", state=credit["state"])
 
@@ -156,19 +139,13 @@ else:
     bank_journal_id = int(jb[0]["id"])
     step("bank_journal", bank_journal_id=bank_journal_id, bank_journal_name=jb[0]["name"])
 
-    # Bug #6: payment register sin try/except dejaba la credit note posted
-    # huérfana cuando fallaba. Ahora morimos limpio: credit posted (válida,
-    # no la cancelamos = no rompemos secuencia) y operador aplica el pago manual.
-    try:
-        ctx = {"active_model":"account.move","active_ids":[credit_id],"active_id":credit_id}
-        pay_wiz = exec_kw(uid, "account.payment.register", "create", [{"journal_id": bank_journal_id}], context=ctx)
-        step("payment_wizard_created", wiz_id=pay_wiz)
-        exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], context=ctx)
+    ctx = {"active_model":"account.move","active_ids":[credit_id],"active_id":credit_id}
+    pay_wiz = exec_kw(uid, "account.payment.register", "create", [{"journal_id": bank_journal_id}], context=ctx)
+    step("payment_wizard_created", wiz_id=pay_wiz)
+    exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], context=ctx)
 
-        credit = exec_kw(uid, "account.move", "read", [[credit_id], ["id","payment_state","amount_residual","state"]])[0]
-        step("credit_note_pay", status="paid_now", payment_state=credit["payment_state"], residual=str(credit["amount_residual"]))
-    except Exception as e:
-        die(f"payment register failed (credit note {credit['name']} POSTED, register payment manualmente en Odoo): {e}")
+    credit = exec_kw(uid, "account.move", "read", [[credit_id], ["id","payment_state","amount_residual","state"]])[0]
+    step("credit_note_pay", status="paid_now", payment_state=credit["payment_state"], residual=str(credit["amount_residual"]))
 
 # 7) Cancelar SO via wizard sale.order.cancel (action_cancel) — 1 SOLO step
 so = exec_kw(
@@ -181,49 +158,42 @@ so = exec_kw(
 if so["state"] == "cancel":
     step("so_cancel", status="already_cancelled", so_state=so["state"])
 else:
-    # Bug #6: SO cancel envuelto en try/except — credit notes ya creados, si esto
-    # falla queda venta activa pese al refund. Manual review.
-    try:
-        action = exec_kw(uid, "sale.order", "action_cancel", [[so_id]])
-        ctx = action.get("context") if isinstance(action, dict) else {}
-        ctx = ctx or {}
+    action = exec_kw(uid, "sale.order", "action_cancel", [[so_id]])
+    ctx = action.get("context") if isinstance(action, dict) else {}
+    ctx = ctx or {}
 
-        order_id_ctx = int(ctx.get("default_order_id") or so_id)
-        wiz_id = exec_kw(
-            uid,
-            "sale.order.cancel",
-            "create",
-            [{"order_id": order_id_ctx}],
-            context=ctx if ctx else None,
-        )
-        exec_kw(
-            uid,
-            "sale.order.cancel",
-            "action_cancel",
-            [[wiz_id]],
-            context=ctx if ctx else None,
-        )
+    order_id_ctx = int(ctx.get("default_order_id") or so_id)
+    wiz_id = exec_kw(
+        uid,
+        "sale.order.cancel",
+        "create",
+        [{"order_id": order_id_ctx}],
+        context=ctx if ctx else None,
+    )
+    exec_kw(
+        uid,
+        "sale.order.cancel",
+        "action_cancel",
+        [[wiz_id]],
+        context=ctx if ctx else None,
+    )
 
-        so = exec_kw(
-            uid,
-            "sale.order",
-            "read",
-            [[so_id], ["id", "name", "state", "invoice_status", "picking_ids"]],
-        )[0]
-        if so["state"] != "cancel":
-            die("SO_CANCEL_FAILED")
+    so = exec_kw(
+        uid,
+        "sale.order",
+        "read",
+        [[so_id], ["id", "name", "state", "invoice_status", "picking_ids"]],
+    )[0]
+    if so["state"] != "cancel":
+        die("SO_CANCEL_FAILED")
 
-        step(
-            "so_cancel",
-            status="cancelled_now",
-            so_state=so["state"],
-            invoice_status=so.get("invoice_status"),
-            pickings=len(so.get("picking_ids") or []),
-        )
-    except SystemExit:
-        raise
-    except Exception as e:
-        die(f"SO cancel failed (credit notes ya creados, cancelar SO {so['name']} manualmente en Odoo): {e}")
+    step(
+        "so_cancel",
+        status="cancelled_now",
+        so_state=so["state"],
+        invoice_status=so.get("invoice_status"),
+        pickings=len(so.get("picking_ids") or []),
+    )
 
 # Asegurar que so tenga name para el resumen final
 # Releer SO con name incluido para resumen final

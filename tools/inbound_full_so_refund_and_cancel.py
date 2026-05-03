@@ -127,34 +127,14 @@ def get_or_create_credit(invoice_id):
     )[0]
     return cn, "created"
 
-def post_credit(cn):
-    """Postear credit note. Bug #6: si falla → unlink draft (no consume secuencia)."""
-    if cn["state"] != "draft":
-        return
-    try:
+def post_and_pay_credit(cn):
+    if cn["state"]=="draft":
         exec_kw(uid,"account.move","action_post",[[cn["id"]]])
-    except Exception as e:
-        try:
-            _check = exec_kw(uid,"account.move","read",[[cn["id"]],["state"]])[0]
-            if _check["state"] == "draft":
-                exec_kw(uid,"account.move","unlink",[[cn["id"]]])
-                step("compensation_credit_unlinked", credit_id=cn["id"])
-        except Exception as ce:
-            step("compensation_failed", credit_id=cn["id"], error=str(ce)[:200])
-        die(f"credit note post failed: {e}")
-
-def pay_credit(cn):
-    """Pagar credit note. Bug #6: si falla, credit YA posted → die manual,
-    no la cancelamos (rompería secuencia). Operador aplica el pago en Odoo UI."""
-    if float(cn["amount_residual"]) == 0.0:
-        return
-    try:
+    if float(cn["amount_residual"])!=0.0:
         wiz = exec_kw(uid,"account.payment.register","create",[{}],
             {"context":{"active_model":"account.move","active_ids":[cn["id"]]}})
         exec_kw(uid,"account.payment.register","action_create_payments",[[wiz]],
             {"context":{"active_model":"account.move","active_ids":[cn["id"]]}})
-    except Exception as e:
-        die(f"payment register failed (credit note {cn['name']} POSTED, register payment manualmente en Odoo): {e}")
 
 def cancel_so(so):
     so_id = so["id"]
@@ -168,10 +148,6 @@ def cancel_so(so):
         die("so_cancel_failed")
 
 # ============== FLOW ====================
-# Bug #6: removido el wrap try/except global porque borraba la distinción entre
-# tipos de errores. Cada paso ahora muere con mensaje específico via die() (los
-# helpers tienen su propia compensation cuando aplica). El wrap final solo captura
-# excepciones que NO son SystemExit (errores de programación como AttributeError).
 
 try:
     step("input")
@@ -188,12 +164,7 @@ try:
     cn, src = get_or_create_credit(inv["id"])
     step("credit_note_ready", credit_note_id=cn["id"], source=src)
 
-    post_credit(cn)
-    cn = exec_kw(uid,"account.move","read",[[cn["id"]]],
-        {"fields":["id","name","state","payment_state","amount_residual"]})[0]
-    step("credit_note_posted", state=cn["state"])
-
-    pay_credit(cn)
+    post_and_pay_credit(cn)
     step("credit_note_paid")
 
     cancel_so(so)
@@ -203,7 +174,5 @@ try:
     write_audit(audit)
     log("OK_DONE")
 
-except SystemExit:
-    raise
 except Exception as e:
     die("unhandled_exception", err=str(e))
