@@ -377,12 +377,35 @@ def enrich_order_with_items(order_id: str) -> Optional[dict]:
             log("SP-API enrich: no access token", "WARN", {"order_id": order_id})
             return None
 
-        def _spapi_get(url: str) -> Optional[dict]:
-            req = urllib.request.Request(
-                url, headers={"x-amz-access-token": token}
-            )
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read())
+        def _spapi_get(url: str, params: Optional[dict] = None, max_retries: int = 4) -> Optional[dict]:
+            """SP-API GET con retry exponencial en 429/5xx/timeout (Bug #11)."""
+            full_url = url
+            if params:
+                full_url = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+            for attempt in range(max_retries):
+                try:
+                    req = urllib.request.Request(
+                        full_url, headers={"x-amz-access-token": token}
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        return json.loads(r.read())
+                except urllib.error.HTTPError as e:
+                    if e.code == 429 or e.code >= 500:
+                        wait = 2 ** attempt
+                        log("SP-API retry", "WARN", {"url": url, "code": e.code, "wait_s": wait, "attempt": attempt + 1})
+                        if attempt + 1 == max_retries:
+                            return None
+                        time.sleep(wait)
+                        continue
+                    return None
+                except (urllib.error.URLError, TimeoutError, OSError) as e:
+                    wait = 2 ** attempt
+                    log("SP-API network retry", "WARN", {"url": url, "err": str(e), "wait_s": wait, "attempt": attempt + 1})
+                    if attempt + 1 == max_retries:
+                        return None
+                    time.sleep(wait)
+                    continue
+            return None
 
         # Fetch order header (FulfillmentChannel, MarketplaceId, BuyerInfo, …)
         order_resp = _spapi_get(f"{_SPAPI_BASE}/orders/v0/orders/{order_id}")
@@ -390,14 +413,24 @@ def enrich_order_with_items(order_id: str) -> Optional[dict]:
         if isinstance(order_resp, dict):
             order_data = order_resp.get("payload", {}) or {}
 
-        # Fetch order items
-        items_resp = _spapi_get(
-            f"{_SPAPI_BASE}/orders/v0/orders/{order_id}/orderItems"
-        )
-        if isinstance(items_resp, dict):
-            order_data["OrderItems"] = (
-                items_resp.get("payload", {}).get("OrderItems", [])
+        # Bug #11: paginar OrderItems con NextToken (igual que poll path).
+        # Sin paginación: órdenes >100 items quedan sub-totalizadas.
+        items_collected = []
+        next_token = None
+        while True:
+            params = {"NextToken": next_token} if next_token else None
+            items_resp = _spapi_get(
+                f"{_SPAPI_BASE}/orders/v0/orders/{order_id}/orderItems",
+                params=params,
             )
+            if not isinstance(items_resp, dict):
+                break
+            payload = items_resp.get("payload", {}) or {}
+            items_collected.extend(payload.get("OrderItems", []))
+            next_token = payload.get("NextToken")
+            if not next_token:
+                break
+        order_data["OrderItems"] = items_collected
 
         if order_data:
             log("SP-API enrich OK", "INFO", {
@@ -887,7 +920,16 @@ def process_fba(order: dict, order_id: str, marketplace: str, action: str, dedup
 
     if action == "cancelled":
         if not is_enabled("amazon_inbound_fba_refunds_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"})
+            # Bug #13: antes era 'skipped' silencioso, dejaba SO viva con stock
+            # reservado si Pending/Unshipped ya había generado SO. Ahora va a
+            # manual_review para que el operador la cancele en Odoo. Cuando se
+            # parta el flag (cancel_so_enabled vs emit_credit_note_enabled),
+            # cancelar SO debería seguir siendo automático.
+            mark_completed(dedupe_key, "manual_review", {
+                "reason": "cancelled_upstream_but_refunds_disabled",
+                "ref": ref,
+                "hint": "Cancelar manualmente la SO en Odoo (stock reservado).",
+            })
             return False
         rc, out, err = run_tool("amazon_fba_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
         result, detail = map_tool_result(rc, out, err)
@@ -920,7 +962,12 @@ def process_fbm(order: dict, order_id: str, marketplace: str, action: str, dedup
 
     if action == "cancelled":
         if not is_enabled("amazon_inbound_fbm_refunds_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"})
+            # Bug #13: ver process_fba arriba.
+            mark_completed(dedupe_key, "manual_review", {
+                "reason": "cancelled_upstream_but_refunds_disabled",
+                "ref": ref,
+                "hint": "Cancelar manualmente la SO en Odoo (stock reservado).",
+            })
             return False
         rc, out, err = run_tool("amazon_fbm_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
         result, detail = map_tool_result(rc, out, err)
@@ -1045,9 +1092,21 @@ def main():
 
             dedupe_key = job.get("dedupe_key")
             if not dedupe_key:
-                order_id = str(job.get("order_json", {}).get("AmazonOrderId", ""))
-                marketplace = str(job.get("order_json", {}).get("MarketplaceId", "UNKNOWN"))
-                dedupe_key = f"amz:{marketplace}:{order_id}" if order_id else f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
+                # Bug #7 fix: alinear con el formato del poller para que webhook
+                # y poll del mismo (marketplace, order_id, status) compartan
+                # lock y no procesen dos veces. Status puede faltar en SNS
+                # pre-enrich; en ese caso queda string vacío al final del key
+                # — el poller que llega después con status real generará una
+                # key distinta y será procesado, pero al menos los webhooks
+                # entre sí (mismo status) deduplican entre sí.
+                ord_json = job.get("order_json") or {}
+                order_id = str(ord_json.get("AmazonOrderId", ""))
+                marketplace = str(ord_json.get("MarketplaceId", "UNKNOWN"))
+                status = str(ord_json.get("OrderStatus", ""))
+                if order_id:
+                    dedupe_key = f"amz:{marketplace}:{order_id}:{status}"
+                else:
+                    dedupe_key = f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
                 job["dedupe_key"] = dedupe_key
 
             payload_hash = persist_payload(dedupe_key, job)
