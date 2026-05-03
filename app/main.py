@@ -318,20 +318,31 @@ def meli_oauth_refresh():
 # =========================================================
 
 def _get_setting(key: str, default: str = "0") -> str:
+    """Lee bridge_settings(key,value). Si no existe la tabla o falla, regresa default.
+
+    AP-17/AP-30 fix: usar db_conn() (WAL + busy_timeout vía PRAGMA) en lugar
+    de sqlite3.connect() raw. Bursts de webhooks colisionaban con writers
+    (worker + reaper) y `try/except: return default` enmascaraba `database is
+    locked` devolviendo "0" → gates evaluados como off → webhook silenciosamente
+    ignorado. Plus: log explícito en error en vez de tragar la excepción.
     """
-    Lee bridge_settings(key,value). Si no existe la tabla o falla, regresa default.
-    """
+    con = None
     try:
-        con = sqlite3.connect(DB_PATH)
-        cur = con.cursor()
-        cur.execute("SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,))
+        con = db_conn()
+        cur = con.execute("SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,))
         row = cur.fetchone()
-        con.close()
         if row and row[0] is not None:
             return str(row[0])
         return default
-    except Exception:
+    except Exception as e:
+        logger.warning(f"_get_setting({key!r}) failed: {e!r} → returning default {default!r}")
         return default
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
 
 
 import hmac as _hmac
@@ -541,9 +552,14 @@ async def meli_orders_webhook(
 
     dedupe_key = f"rawsha:{sha}"
 
-    # Insert inbound_events (auditoría)
+    # Insert inbound_events (auditoría). AP-15: rowcount==0 significa que el
+    # INSERT OR IGNORE detectó duplicado (mismo dedupe_key) → NO encolar otro
+    # job al worker para evitar fetch redundante del order detail.
+    # AP-17: usar db_conn() (WAL + busy_timeout) en lugar de sqlite3.connect raw
+    # — bursts de webhooks colisionaban con writers internos.
+    insert_ignored = False
     try:
-        con = sqlite3.connect(DB_PATH)
+        con = db_conn()
         cur = con.cursor()
         cur.execute(
             """
@@ -560,12 +576,19 @@ async def meli_orders_webhook(
                 dedupe_key,
             ),
         )
+        insert_ignored = (cur.rowcount == 0)
         con.commit()
         con.close()
     except Exception as e:
         return JSONResponse(
             {"ok": False, "error": f"db_insert_failed: {e}"},
             status_code=500,
+        )
+
+    if insert_ignored:
+        return JSONResponse(
+            {"ok": True, "queued": False, "duplicate": True},
+            status_code=200,
         )
 
     # Enqueue Redis job
@@ -871,16 +894,25 @@ async def amazon_orders_webhook(
     _st = message.get("OrderStatus", "") if message else ""
     if order_id and _mp and _st:
         dedupe_key = f"amz:{_mp}:{order_id}:{_st}"
+    elif order_id and _mp:
+        # AP-13: si tenemos order_id+marketplace pero no status, usar key
+        # determinística basada en (mp, order_id) en lugar de sha[:16] que
+        # cambia con cada timestamp/MessageId del envelope SNS y produce
+        # falsos negativos de dedupe. Status vacío al final coincide con el
+        # fallback del worker (Bug #7) → mismo espacio de claves.
+        dedupe_key = f"amz:{_mp}:{order_id}:"
     else:
+        # Sin order_id ni marketplace: último recurso, sha del payload.
         dedupe_key = f"amz-webhook:{sha[:16]}"
+    # AP-17: usar db_conn() (WAL + busy_timeout) en lugar de sqlite3.connect raw.
     try:
-        con = sqlite3.connect(DB_PATH)
+        con = db_conn()
         cur = con.cursor()
         cur.execute("INSERT OR IGNORE INTO amazon_inbound_events (received_at, event_type, order_id, payload_json, dedupe_key, status) VALUES (?, ?, ?, ?, ?, 'pending')", (received_at, event_type, order_id, raw_text, dedupe_key))
         con.commit()
         con.close()
     except Exception as e:
-        print(f"[amazon_webhook] DB error: {e}")
+        logger.warning(f"[amazon_webhook] DB error: {e}")
     # order_json must be the parsed SNS Message body (has AmazonOrderId, OrderStatus,
     # FulfillmentChannel, MarketplaceId), NOT the raw SNS envelope.
     # The worker will fetch OrderItems from SP-API when they are absent.
@@ -1006,7 +1038,25 @@ async def get_amazon_skus():
 
 @app.post("/api/amazon/refresh-inventory", dependencies=[Depends(require_secret)])
 async def refresh_amazon_inventory():
-    """Refresh Amazon inventory cache from Listings Items API (FBA + FBM)"""
+    """Refresh Amazon inventory cache from Listings Items API (FBA + FBM).
+
+    AP-22: lock SETNX en redis con TTL=10min para evitar 2 calls concurrentes
+    que ambos hagan DELETE+INSERT y consuman doble rate limit SP-API.
+    """
+    lock_key = "refresh_amazon_inventory_lock"
+    if not r.set(lock_key, "1", nx=True, ex=600):
+        return {"ok": False, "error": "refresh_in_progress"}
+    try:
+        return await _refresh_amazon_inventory_locked()
+    finally:
+        try:
+            r.delete(lock_key)
+        except Exception:
+            pass
+
+
+async def _refresh_amazon_inventory_locked():
+    """Cuerpo real del refresh — sin la lógica de lock."""
     conn = sqlite3.connect(DB_PATH)
     def get_setting(k):
         row = conn.execute("SELECT value FROM bridge_settings WHERE key=?", (k,)).fetchone()
@@ -1130,13 +1180,35 @@ async def save_mapping(request: Request):
     data = await request.json()
     odoo_sku = data.get("odoo_sku", "").strip()
     amazon_sku = data.get("amazon_sku", "").strip()
+    confirm_overwrite = bool(data.get("confirm_overwrite", False))
     if not odoo_sku or not amazon_sku:
         return {"ok": False, "error": "SKUs requeridos"}
+
+    # AP-23: si el seller_sku ya está mapeado a OTRO odoo_sku, requerir confirm
+    # explícito para evitar reasignaciones silenciadas por INSERT OR REPLACE.
+    # El UI debe re-llamar con confirm_overwrite=true tras mostrar diff al user.
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("INSERT OR REPLACE INTO amazon_sku_mapping (seller_sku, odoo_default_code, notes, created_at) VALUES (?, ?, 'Web UI', datetime('now'))", (amazon_sku, odoo_sku))
+    existing = conn.execute(
+        "SELECT odoo_default_code FROM amazon_sku_mapping WHERE seller_sku=?",
+        (amazon_sku,),
+    ).fetchone()
+    if existing and existing[0] and existing[0] != odoo_sku and not confirm_overwrite:
+        conn.close()
+        return {
+            "ok": False,
+            "error": "overwrite_required",
+            "current_odoo_sku": existing[0],
+            "requested_odoo_sku": odoo_sku,
+            "hint": "Re-enviar con confirm_overwrite=true para reemplazar.",
+        }
+    conn.execute(
+        "INSERT OR REPLACE INTO amazon_sku_mapping (seller_sku, odoo_default_code, notes, created_at) "
+        "VALUES (?, ?, 'Web UI', datetime('now'))",
+        (amazon_sku, odoo_sku),
+    )
     conn.commit()
     conn.close()
-    return {"ok": True}
+    return {"ok": True, "overwrote": bool(existing and existing[0] and existing[0] != odoo_sku)}
 
 @app.delete("/api/amazon/mappings/{odoo_sku}", dependencies=[Depends(require_secret)])
 async def delete_mapping(odoo_sku: str, seller_sku: str = ""):
@@ -1520,22 +1592,27 @@ async def setup_auto_map(request: Request):
             user_id = tokens.get("user_id")
             
             if access_token and user_id:
-                # Get active items
+                # AP-29: timeout=20 en los 3 sitios para evitar que el wizard
+                # de setup cuelgue indefinidamente cuando MeLi no responde
+                # (combinado con Popen no-async desde HTTP request, bloqueaba
+                # el worker FastAPI).
                 resp = requests.get(
                     f"https://api.mercadolibre.com/users/{user_id}/items/search",
                     params={"status": "active", "limit": 100},
-                    headers={"Authorization": f"Bearer {access_token}"}
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=20,
                 )
                 items = resp.json().get("results", [])
-                
+
                 for item_id in items:
                     # Get item details with variations
                     item_resp = requests.get(
                         f"https://api.mercadolibre.com/items/{item_id}",
-                        headers={"Authorization": f"Bearer {access_token}"}
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=20,
                     )
                     item = item_resp.json()
-                    
+
                     for var in item.get("variations", [{}]) or [{}]:
                         var_id = var.get("id", "")
 
@@ -1544,7 +1621,8 @@ async def setup_auto_map(request: Request):
                         if var_id:
                             var_resp = requests.get(
                                 f"https://api.mercadolibre.com/items/{item_id}/variations/{var_id}",
-                                headers={"Authorization": f"Bearer {access_token}"}
+                                headers={"Authorization": f"Bearer {access_token}"},
+                                timeout=20,
                             )
                             var_data = var_resp.json()
                             for attr in var_data.get("attributes", []):
@@ -1646,8 +1724,12 @@ async def setup_activate(request: Request):
             save_setting("odoo_db", odoo["db"])
         if odoo.get("user"):
             save_setting("odoo_user", odoo["user"])
+        # AP-33: NO persistir odoo_password en bridge_settings (SQLite sin
+        # cifrado, dump del DB lo expone en plain text). Se lee de env
+        # ODOO_PASSWORD; el wizard solo lo usa para el test de conexión y
+        # debe quedar en .env por instalación. Si llega del wizard, ignoramos.
         if odoo.get("password"):
-            save_setting("odoo_password", odoo["password"])
+            logger.warning("odoo_password recibido en /setup/api/activate — NO persistido (debe estar en env ODOO_PASSWORD)")
         
         # Amazon settings
         amazon = data.get("amazon", {})
