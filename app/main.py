@@ -11,9 +11,11 @@ from typing import List, Optional
 
 import redis
 import requests
-from fastapi import FastAPI, Request, Header
+from fastapi import FastAPI, Request, Header, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
+
+from auth_middleware import require_secret
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
@@ -178,14 +180,30 @@ def _save_tokens(data: dict):
         json.dump(data, f, indent=2)
 
 
+# AP-3 — OAuth state CSRF protection.
+# Sin parámetro `state`, un atacante puede hacer landing en /oauth/callback con
+# un `code` de su propia cuenta para que el bridge lo canjee y guarde tokens del
+# atacante. Generamos un state único por start, lo persistimos en redis con TTL
+# 10 min, y validamos en callback.
+_OAUTH_STATE_TTL_SECONDS = 600
+
+
 @app.get("/oauth/start")
 def meli_oauth_start():
+    import secrets as _secrets
+    state = _secrets.token_urlsafe(32)
+    try:
+        r.setex(f"meli_oauth_state:{state}", _OAUTH_STATE_TTL_SECONDS, "1")
+    except Exception as e:
+        logger.error(f"OAuth state redis save failed: {e}")
+        return JSONResponse({"error": "oauth_state_store_failed"}, status_code=500)
     params = {
         "response_type": "code",
         "client_id": MELI_CLIENT_ID,
         "redirect_uri": MELI_REDIRECT_URI,
         # IMPORTANTE: pide refresh token (offline access)
         "scope": "offline_access",
+        "state": state,
     }
     url = "https://auth.mercadolibre.com.mx/authorization?" + urllib.parse.urlencode(params)
     return RedirectResponse(url)
@@ -197,7 +215,9 @@ def meli_oauth_callback(request: Request):
     if not code:
         return JSONResponse({"error": "missing code"}, status_code=400)
 
-    # Si el navegador/Cloudflare pega 2 veces el mismo callback, NO vuelvas a canjear el code
+    # Si el navegador/Cloudflare pega 2 veces el mismo callback, NO vuelvas a canjear el code.
+    # Esto se evalúa ANTES del state-check porque el state ya fue consumido (getdel) en el
+    # primer hit y un retry legítimo del mismo code no debe fallar como CSRF.
     last_code_file = "/data/.meli_last_code.txt"
     try:
         if os.path.exists(last_code_file):
@@ -210,6 +230,19 @@ def meli_oauth_callback(request: Request):
                 }
     except Exception:
         pass
+
+    # AP-3: validar state. GETDEL atómico evita replay del mismo state en otra sesión.
+    state = request.query_params.get("state", "")
+    if not state:
+        return JSONResponse({"error": "missing_state"}, status_code=400)
+    try:
+        consumed = r.getdel(f"meli_oauth_state:{state}")
+    except Exception as e:
+        logger.error(f"OAuth state redis check failed: {e}")
+        return JSONResponse({"error": "oauth_state_check_failed"}, status_code=500)
+    if not consumed:
+        # No coincide ningún state vivo: callback no iniciado por nosotros (CSRF) o expirado.
+        return JSONResponse({"error": "invalid_or_expired_state"}, status_code=400)
 
     resp = requests.post(
         "https://api.mercadolibre.com/oauth/token",
@@ -249,7 +282,7 @@ def meli_oauth_callback(request: Request):
     }
 
 
-@app.post("/oauth/refresh")
+@app.post("/oauth/refresh", dependencies=[Depends(require_secret)])
 def meli_oauth_refresh():
     if not os.path.exists(TOKEN_FILE):
         return JSONResponse({"error": "token_file_not_found"}, status_code=404)
@@ -336,6 +369,96 @@ def _check_webhook_secret(
         except Exception:
             continue
     return False
+
+
+# AP-12 — SNS message signature verification
+# https://docs.aws.amazon.com/sns/latest/dg/sns-verify-signature-of-message.html
+_SNS_CERT_CACHE: dict = {}  # url -> (loaded_cert, expires_at_epoch)
+_SNS_CERT_TTL_SECONDS = 24 * 3600
+
+# Campos canónicos por tipo de mensaje (orden alfabético, exactamente como
+# AWS los firma). Subject solo se incluye si está presente en Notification.
+_SNS_FIELDS_NOTIFICATION = ("Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type")
+_SNS_FIELDS_SUBSCRIPTION = ("Message", "MessageId", "SubscribeURL", "Timestamp", "Token", "TopicArn", "Type")
+
+
+def _sns_canonical_string(payload: dict) -> Optional[bytes]:
+    msg_type = payload.get("Type", "")
+    if msg_type == "Notification":
+        fields = _SNS_FIELDS_NOTIFICATION
+    elif msg_type in ("SubscriptionConfirmation", "UnsubscribeConfirmation"):
+        fields = _SNS_FIELDS_SUBSCRIPTION
+    else:
+        return None
+    parts = []
+    for f in fields:
+        if f == "Subject" and "Subject" not in payload:
+            continue
+        if f not in payload:
+            return None  # firma no verificable: campo requerido ausente
+        parts.append(f)
+        parts.append(str(payload[f]))
+    return ("\n".join(parts) + "\n").encode("utf-8")
+
+
+def _sns_load_cert(cert_url: str):
+    """Descarga + cachea el cert PKI de AWS. fail-closed si URL fuera de allowlist."""
+    if not _is_valid_sns_subscribe_url(cert_url):
+        # SigningCertURL DEBE ser un endpoint sns.<region>.amazonaws.com (mismo allowlist).
+        return None
+    now = time.time()
+    cached = _SNS_CERT_CACHE.get(cert_url)
+    if cached and cached[1] > now:
+        return cached[0]
+    try:
+        resp = requests.get(cert_url, timeout=10)
+        if resp.status_code != 200:
+            logger.warning(f"SNS cert download HTTP {resp.status_code} for {cert_url}")
+            return None
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        cert = x509.load_pem_x509_certificate(resp.content, default_backend())
+        _SNS_CERT_CACHE[cert_url] = (cert, now + _SNS_CERT_TTL_SECONDS)
+        return cert
+    except Exception as e:
+        logger.warning(f"SNS cert load failed: {e}")
+        return None
+
+
+def _verify_sns_signature(payload: dict) -> bool:
+    """Verifica firma RSA del SNS message (v1=SHA1, v2=SHA256). fail-closed."""
+    try:
+        import base64
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        sig_b64 = payload.get("Signature")
+        cert_url = payload.get("SigningCertURL") or payload.get("SigningCertUrl")
+        sig_ver = str(payload.get("SignatureVersion", ""))
+        if not sig_b64 or not cert_url:
+            return False
+        if sig_ver == "1":
+            hash_algo = hashes.SHA1()
+        elif sig_ver == "2":
+            hash_algo = hashes.SHA256()
+        else:
+            return False
+        canonical = _sns_canonical_string(payload)
+        if canonical is None:
+            return False
+        cert = _sns_load_cert(cert_url)
+        if cert is None:
+            return False
+        try:
+            signature = base64.b64decode(sig_b64)
+        except Exception:
+            return False
+        public_key = cert.public_key()
+        public_key.verify(signature, canonical, padding.PKCS1v15(), hash_algo)
+        return True
+    except Exception as e:
+        logger.warning(f"SNS signature verification failed: {e}")
+        return False
 
 
 @app.post("/webhooks/meli/orders/{secret}")
@@ -523,7 +646,7 @@ def debug_rejected_skus(limit: int = 20):
         conn.close()
 
 
-@app.post("/v1/stock/snapshot")
+@app.post("/v1/stock/snapshot", dependencies=[Depends(require_secret)])
 def stock_snapshot(snapshot: StockSnapshot):
     created_at = utc_now_iso()
     payload = snapshot.model_dump()
@@ -697,6 +820,17 @@ async def amazon_orders_webhook(
     except Exception:
         data = {}
     msg_type = request.headers.get("x-amz-sns-message-type", "")
+    # AP-12: validar firma SNS antes de procesar/responder cualquier acción.
+    # Sin firma válida no podemos confiar en SubscribeURL ni en Message body
+    # — el shared-secret protege ENTRE Cloudflare y bridge, pero no ATA al
+    # publisher SNS de Amazon.
+    if msg_type in ("Notification", "SubscriptionConfirmation", "UnsubscribeConfirmation"):
+        if not _verify_sns_signature(data if isinstance(data, dict) else {}):
+            logger.warning(f"Rejected SNS message: signature verification failed (type={msg_type})")
+            return JSONResponse(
+                {"ok": False, "error": "invalid_sns_signature"},
+                status_code=401,
+            )
     if msg_type == "SubscriptionConfirmation":
         subscribe_url = data.get("SubscribeURL")
         if not subscribe_url or not _is_valid_sns_subscribe_url(subscribe_url):
@@ -759,7 +893,7 @@ async def amazon_orders_webhook(
     r.rpush("amazon_orders_jobs", json.dumps(job, ensure_ascii=False))
     return {"ok": True, "dedupe_key": dedupe_key}
 
-@app.get("/v1/settings")
+@app.get("/v1/settings", dependencies=[Depends(require_secret)])
 def get_settings():
     """
     Internal read-only endpoint. Bridge is not publicly exposed.
@@ -789,7 +923,7 @@ async def amazon_mapper_ui():
     html = open("/app/amazon_mapper.html").read()
     return HTMLResponse(content=html)
 
-@app.get("/api/amazon/odoo-skus")
+@app.get("/api/amazon/odoo-skus", dependencies=[Depends(require_secret)])
 async def get_odoo_skus():
     import xmlrpc.client
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
@@ -807,7 +941,7 @@ async def get_odoo_skus():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@app.get("/api/amazon/amazon-skus")
+@app.get("/api/amazon/amazon-skus", dependencies=[Depends(require_secret)])
 async def get_amazon_skus():
     """Get Amazon SKUs from cache - enriched with Odoo display names"""
     import xmlrpc.client
@@ -870,8 +1004,7 @@ async def get_amazon_skus():
     
     return {"ok": True, "skus": skus_list}
 
-@app.post("/api/amazon/refresh-inventory")
-
+@app.post("/api/amazon/refresh-inventory", dependencies=[Depends(require_secret)])
 async def refresh_amazon_inventory():
     """Refresh Amazon inventory cache from Listings Items API (FBA + FBM)"""
     conn = sqlite3.connect(DB_PATH)
@@ -918,18 +1051,48 @@ async def refresh_amazon_inventory():
             next_token = data.get("pagination", {}).get("nextToken")
             if not next_token:
                 break
-        conn.execute("DELETE FROM amazon_inventory_cache")
-        conn.executemany("INSERT INTO amazon_inventory_cache (seller_sku, asin, product_name, qty, updated_at) VALUES (?, ?, ?, ?, datetime('now'))", skus)
-        conn.commit()
+        # AP-20: swap atómico via tabla staging.
+        # Antes: DELETE + INSERT en la MISMA tabla expone una ventana donde
+        # consumidores concurrentes (ej. /api/amazon/amazon-skus) ven 0 filas.
+        # Plus: si la SP-API devuelve lista vacía por glitch, NO sobrescribimos
+        # el cache vivo. Requiere len(skus) > 0 para hacer el swap.
+        if not skus:
+            conn.close()
+            logger.warning("Amazon listings API returned 0 items — keeping previous cache")
+            return {"ok": False, "error": "empty_listings_response"}
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS amazon_inventory_cache_staging "
+            "(seller_sku TEXT, asin TEXT, product_name TEXT, qty INTEGER, updated_at TEXT)"
+        )
+        conn.execute("DELETE FROM amazon_inventory_cache_staging")
+        conn.executemany(
+            "INSERT INTO amazon_inventory_cache_staging (seller_sku, asin, product_name, qty, updated_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'))",
+            skus,
+        )
+        # Swap atómico — todo dentro de una transacción explícita.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DELETE FROM amazon_inventory_cache")
+            conn.execute(
+                "INSERT INTO amazon_inventory_cache (seller_sku, asin, product_name, qty, updated_at) "
+                "SELECT seller_sku, asin, product_name, qty, updated_at FROM amazon_inventory_cache_staging"
+            )
+            conn.execute("DELETE FROM amazon_inventory_cache_staging")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         conn.close()
-        logger.info(f"Amazon inventory cache updated: {len(skus)} listings")
+        logger.info(f"Amazon inventory cache updated: {len(skus)} listings (atomic swap)")
         return {"ok": True, "count": len(skus)}
     except Exception as e:
         conn.close()
         logger.error(f"Error refreshing Amazon inventory: {e}")
         return {"ok": False, "error": str(e)}
 
-@app.get("/api/amazon/mappings")
+@app.get("/api/amazon/mappings", dependencies=[Depends(require_secret)])
 async def get_mappings():
     import xmlrpc.client
     conn = sqlite3.connect(DB_PATH)
@@ -962,7 +1125,7 @@ async def get_mappings():
         "has_sell_on_amazon": r[1] in sell_on_amazon_skus
     } for r in rows]}
 
-@app.post("/api/amazon/mappings")
+@app.post("/api/amazon/mappings", dependencies=[Depends(require_secret)])
 async def save_mapping(request: Request):
     data = await request.json()
     odoo_sku = data.get("odoo_sku", "").strip()
@@ -975,7 +1138,7 @@ async def save_mapping(request: Request):
     conn.close()
     return {"ok": True}
 
-@app.delete("/api/amazon/mappings/{odoo_sku}")
+@app.delete("/api/amazon/mappings/{odoo_sku}", dependencies=[Depends(require_secret)])
 async def delete_mapping(odoo_sku: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM amazon_sku_mapping WHERE odoo_default_code = ?", (odoo_sku,))
@@ -987,7 +1150,7 @@ async def delete_mapping(odoo_sku: str):
 # MELI SKU MAPPER ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
-@app.get("/api/meli/odoo-skus")
+@app.get("/api/meli/odoo-skus", dependencies=[Depends(require_secret)])
 async def get_meli_odoo_skus():
     import xmlrpc.client
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
@@ -1005,7 +1168,7 @@ async def get_meli_odoo_skus():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@app.get("/api/meli/meli-skus")
+@app.get("/api/meli/meli-skus", dependencies=[Depends(require_secret)])
 async def get_meli_skus():
     """Get SKUs from MercadoLibre listings"""
     conn = sqlite3.connect(DB_PATH)
@@ -1015,14 +1178,14 @@ async def get_meli_skus():
     conn.close()
     return {"ok": True, "skus": skus}
 
-@app.get("/api/meli/mappings")
+@app.get("/api/meli/mappings", dependencies=[Depends(require_secret)])
 async def get_meli_mappings():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("SELECT seller_sku, odoo_default_code, notes, created_at FROM meli_sku_mapping").fetchall()
     conn.close()
     return {"ok": True, "mappings": [{"meli_sku": r[0], "odoo_sku": r[1], "notes": r[2], "created_at": r[3]} for r in rows]}
 
-@app.post("/api/meli/mappings")
+@app.post("/api/meli/mappings", dependencies=[Depends(require_secret)])
 async def save_meli_mapping(request: Request):
     data = await request.json()
     odoo_sku = data.get("odoo_sku", "").strip()
@@ -1035,7 +1198,7 @@ async def save_meli_mapping(request: Request):
     conn.close()
     return {"ok": True}
 
-@app.delete("/api/meli/mappings/{odoo_sku}")
+@app.delete("/api/meli/mappings/{odoo_sku}", dependencies=[Depends(require_secret)])
 async def delete_meli_mapping(odoo_sku: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM meli_sku_mapping WHERE odoo_default_code = ?", (odoo_sku,))
@@ -1043,7 +1206,7 @@ async def delete_meli_mapping(odoo_sku: str):
     conn.close()
     return {"ok": True}
 
-@app.get("/api/meli/listings")
+@app.get("/api/meli/listings", dependencies=[Depends(require_secret)])
 async def get_meli_listings():
     """Get MeLi listings from cache (fast)"""
     conn = sqlite3.connect(DB_PATH)
@@ -1075,7 +1238,7 @@ async def get_meli_listings():
         "cached": True
     }
 
-@app.post("/api/meli/listings/refresh")
+@app.post("/api/meli/listings/refresh", dependencies=[Depends(require_secret)])
 async def refresh_meli_listings():
     """Trigger manual refresh of MeLi listings cache"""
     import subprocess
@@ -1096,7 +1259,7 @@ async def refresh_meli_listings():
             "error": str(e)
         }
 
-@app.get("/api/meli/sku-mappings")
+@app.get("/api/meli/sku-mappings", dependencies=[Depends(require_secret)])
 async def get_meli_sku_mappings():
     """Get sku_mapping entries for meli channel with sell_on_meli status"""
     import xmlrpc.client
@@ -1130,7 +1293,7 @@ async def get_meli_sku_mappings():
         "has_sell_on_meli": r[0] in sell_on_meli_skus
     } for r in rows]}
 
-@app.post("/api/meli/sku-mappings")
+@app.post("/api/meli/sku-mappings", dependencies=[Depends(require_secret)])
 async def save_meli_sku_mapping(request: Request):
     data = await request.json()
     odoo_sku = data.get("odoo_sku", "").strip()
@@ -1147,7 +1310,7 @@ async def save_meli_sku_mapping(request: Request):
     conn.close()
     return {"ok": True}
 
-@app.delete("/api/meli/sku-mappings/{item_id}/{variation_id}")
+@app.delete("/api/meli/sku-mappings/{item_id}/{variation_id}", dependencies=[Depends(require_secret)])
 async def delete_meli_sku_mapping(item_id: str, variation_id: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM sku_mapping WHERE channel='meli' AND remote_item_id = ? AND remote_variation_id = ?", (item_id, variation_id))
@@ -1201,24 +1364,36 @@ async def setup_wizard():
     
     return FileResponse("/app/static/setup.html")
 
-@app.get("/setup/force")
-async def setup_wizard_force(secret: str = ""):
-    """Forzar wizard (requiere secret)"""
-    if secret != "goncloud2026":
-        return JSONResponse({"error": "Secret inválido"}, status_code=403)
+@app.get("/setup/force", dependencies=[Depends(require_secret)])
+async def setup_wizard_force():
+    """AP-8: ex-secret hardcoded `goncloud2026` reemplazado por require_secret.
+    Solo accesible con header X-Goncloud-Secret válido o tras Cloudflare Access.
+    """
     return FileResponse("/app/static/setup.html")
 
-@app.post("/setup/api/test-odoo")
+@app.post("/setup/api/test-odoo", dependencies=[Depends(require_secret)])
 async def test_odoo_connection(request: Request):
-    """Valida credenciales de Odoo"""
+    """AP-9: valida credenciales de Odoo.
+    Plus: URL allowlist contra env ODOO_URL para evitar SSRF (un atacante
+    podría apuntar a un servidor XML-RPC interno y harvest credenciales).
+    """
     data = await request.json()
     url = data.get("url", "").strip().rstrip("/")
     db = data.get("db", "").strip()
     user = data.get("user", "").strip()
     password = data.get("password", "")
-    
+
     if not all([url, db, user, password]):
         return {"ok": False, "error": "Todos los campos son requeridos"}
+
+    # AP-9: URL DEBE coincidir con la que el operador ya configuró por env.
+    # Esto evita que el wizard se use como SSRF probe contra hosts internos.
+    expected_odoo_url = (os.getenv("ODOO_URL", "") or "").strip().rstrip("/")
+    if expected_odoo_url and url != expected_odoo_url:
+        return {
+            "ok": False,
+            "error": f"URL fuera de allowlist. Esperado: {expected_odoo_url}",
+        }
     
     try:
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
@@ -1246,7 +1421,7 @@ async def test_odoo_connection(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@app.get("/setup/api/status")
+@app.get("/setup/api/status", dependencies=[Depends(require_secret)])
 async def setup_status():
     """Retorna estado actual del sistema"""
     meli_connected = False
@@ -1279,7 +1454,7 @@ async def setup_status():
         "amazon_connected": amazon_connected
     }
 
-@app.post("/setup/api/auto-map")
+@app.post("/setup/api/auto-map", dependencies=[Depends(require_secret)])
 async def setup_auto_map(request: Request):
     """Ejecuta mapeo automático de SKUs"""
     data = await request.json()
@@ -1393,56 +1568,58 @@ async def setup_auto_map(request: Request):
         except Exception as e:
             result["meli"] = {"mapped": 0, "pending": 0, "error": str(e)}
     
-    # Amazon auto-map
+    # AP-21: Amazon auto-map deshabilitado.
+    # La lógica original asumía `seller_sku == odoo_default_code` literal, lo
+    # cual produce mappings silenciosamente erróneos cuando el operador usa
+    # convenciones distintas (FBM-XXX vs XXX, prefix por marketplace, etc).
+    # El UI de C5 hará match candidate-based con confirmación 1-a-1.
     if data.get("amazon"):
-        try:
-            mapped = 0
-            pending = 0
-            
-            # Get Amazon SKUs from inventory (if available)
-            amazon_skus = conn.execute(
-                "SELECT DISTINCT seller_sku FROM amazon_sku_mapping"
-            ).fetchall()
-            
-            for row in amazon_skus:
-                seller_sku = row[0]
-                if seller_sku in odoo_skus:
-                    # Check if mapping exists
-                    existing = conn.execute(
-                        "SELECT 1 FROM amazon_sku_mapping WHERE seller_sku=? AND odoo_default_code IS NOT NULL",
-                        (seller_sku,)
-                    ).fetchone()
-                    
-                    if not existing:
-                        conn.execute(
-                            "UPDATE amazon_sku_mapping SET odoo_default_code=? WHERE seller_sku=?",
-                            (seller_sku, seller_sku)
-                        )
-                        mapped += 1
-                else:
-                    pending += 1
-            
-            conn.commit()
-            result["amazon"] = {"mapped": mapped, "pending": pending}
-        except Exception as e:
-            result["amazon"] = {"mapped": 0, "pending": 0, "error": str(e)}
-    
+        result["amazon"] = {
+            "mapped": 0,
+            "pending": 0,
+            "disabled": True,
+            "reason": "auto-map Amazon deshabilitado (AP-21): match literal seller_sku=odoo_default_code "
+                      "produce errores silenciosos. Usar /amazon/mapper para confirmar 1-a-1.",
+        }
+
     conn.close()
     return result
 
-@app.post("/setup/api/activate")
+@app.post("/setup/api/activate", dependencies=[Depends(require_secret)])
 async def setup_activate(request: Request):
-    """Guarda configuración y activa GONCLOUD"""
+    """Guarda configuración y activa GONCLOUD.
+    AP-10: idempotente — si setup_completed ya es '1', rechaza para evitar
+    re-escritura accidental de credenciales / re-activación de flags por un
+    POST repetido del wizard.
+    """
     data = await request.json()
-    
+
     conn = sqlite3.connect(DB_PATH)
-    
+
+    # AP-10: gate idempotencia. El wizard SOLO debe correr una vez por instalación.
+    try:
+        row = conn.execute(
+            "SELECT value FROM bridge_settings WHERE key='setup_completed'"
+        ).fetchone()
+        if row and str(row[0]) == "1":
+            conn.close()
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "setup_already_completed",
+                    "hint": "Para re-configurar, borrar setup_completed de bridge_settings manualmente.",
+                },
+                status_code=409,
+            )
+    except Exception:
+        pass
+
     def save_setting(key, value):
         conn.execute("""
             INSERT INTO bridge_settings (key, value) VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value
         """, (key, str(value)))
-    
+
     try:
         # Odoo settings
         odoo = data.get("odoo", {})
