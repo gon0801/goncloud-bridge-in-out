@@ -1139,12 +1139,29 @@ async def save_mapping(request: Request):
     return {"ok": True}
 
 @app.delete("/api/amazon/mappings/{odoo_sku}", dependencies=[Depends(require_secret)])
-async def delete_mapping(odoo_sku: str):
+async def delete_mapping(odoo_sku: str, seller_sku: str = ""):
+    """AP-24: borrar 1 mapping específico, no todos los que comparten odoo_sku.
+    Un mismo odoo_default_code puede mapear a múltiples seller_sku (FBA-XXX,
+    FBM-XXX, marketplace-prefix, etc). El UI ahora envía ambos para precisión.
+    Backward-compat: si seller_sku no llega, conservamos el comportamiento
+    histórico (delete-all by odoo_sku) — el wizard viejo y posibles scripts
+    pueden depender de ello.
+    """
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("DELETE FROM amazon_sku_mapping WHERE odoo_default_code = ?", (odoo_sku,))
+    if seller_sku:
+        cur = conn.execute(
+            "DELETE FROM amazon_sku_mapping WHERE odoo_default_code = ? AND seller_sku = ?",
+            (odoo_sku, seller_sku),
+        )
+    else:
+        cur = conn.execute(
+            "DELETE FROM amazon_sku_mapping WHERE odoo_default_code = ?",
+            (odoo_sku,),
+        )
+    deleted = cur.rowcount
     conn.commit()
     conn.close()
-    return {"ok": True}
+    return {"ok": True, "deleted": deleted}
 
 # ═══════════════════════════════════════════════════════════════════
 # MELI SKU MAPPER ENDPOINTS

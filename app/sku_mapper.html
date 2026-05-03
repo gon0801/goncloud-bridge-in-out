@@ -278,6 +278,7 @@
     </div>
   </div>
 
+<script src="/static/app.js"></script>
 <script>
   // State
   let state = {
@@ -335,7 +336,7 @@
       state.meli.listings = meliData.listings;
       renderMeliListings();
     } else {
-      document.getElementById('meli-meli-list').innerHTML = '<div style="padding:10px;color:var(--bad);">Error: ' + (meliData.error || 'Unknown') + '</div>';
+      document.getElementById('meli-meli-list').innerHTML = '<div style="padding:10px;color:var(--bad);">Error: ' + esc(meliData.error || 'Unknown') + '</div>';
     }
     const mapResp = await fetch('/api/meli/sku-mappings');
     const mapData = await mapResp.json();
@@ -367,17 +368,25 @@
     const pageItems = filtered.slice(start, start + pageSize);
     
     const container = document.getElementById('meli-meli-list');
-    let html = pageItems.map(l => `
-      <div class="item" onclick="selectMeliListing('${l.item_id}', '${l.variation_id}', '${l.title.replace(/'/g, "\\'")}')">
+    // MAP-1: todos los campos provenientes de la API MeLi (item_id, variation_id,
+    // title, var_name, sku, qty) deben pasar por esc() antes de inyectarse
+    // como innerHTML. El title de un listing puede contener `<img onerror=...>`.
+    // Para los onclick='...' usamos JSON.stringify para serializar y luego
+    // esc() del string completo (HTML attribute escaping).
+    let html = pageItems.map(l => {
+      const onclickArgs = JSON.stringify([l.item_id, l.variation_id, l.title]);
+      return `
+      <div class="item" onclick="selectMeliListingFromArgs(${esc(onclickArgs)})">
         <span>
-          <span class="sku">${l.item_id}${l.variation_id ? ':' + l.variation_id : ''}</span>
-          <span class="name">${l.title}${l.var_name ? ' - ' + l.var_name : ''}</span>
-          ${l.sku ? '<br><span style="color:var(--teal);font-size:11px;">SKU: ' + l.sku + '</span>' : ''}
+          <span class="sku">${esc(l.item_id)}${l.variation_id ? ':' + esc(l.variation_id) : ''}</span>
+          <span class="name">${esc(l.title)}${l.var_name ? ' - ' + esc(l.var_name) : ''}</span>
+          ${l.sku ? '<br><span style="color:var(--teal);font-size:11px;">SKU: ' + esc(l.sku) + '</span>' : ''}
         </span>
-        <span class="badge">${l.qty}</span>
+        <span class="badge">${esc(l.qty)}</span>
       </div>
-    `).join('');
-    
+    `;
+    }).join('');
+
     if (totalPages > 1) {
       html += `<div style="display:flex;justify-content:center;align-items:center;gap:10px;padding:10px;border-top:1px solid var(--border);margin-top:10px;">
         <button class="btn small" onclick="changeMeliPage(-1)" ${page <= 1 ? 'disabled' : ''}>◀</button>
@@ -389,6 +398,12 @@
       html = '<div style="padding:10px;color:var(--muted);">No hay listings</div>';
     }
     container.innerHTML = html;
+  }
+
+  // Wrapper: deserializa args desde el atributo onclick (escaped JSON tuple).
+  function selectMeliListingFromArgs(jsonArgs) {
+    const args = JSON.parse(jsonArgs);
+    return selectMeliListing(args[0], args[1], args[2]);
   }
   
   function changeMeliPage(delta) {
@@ -453,7 +468,7 @@
     let html = pageItems.map(i => {
       let displayName = i.name || '';
       let variant = '';
-      
+
       if (type === 'amazon') {
         const match = displayName.match(/^(.+)\s*\(([^)]+)\)\s*$/);
         if (match) {
@@ -461,15 +476,19 @@
           variant = match[2];
         }
       }
-      
+
+      // MAP-1: esc() en sku/displayName/variant/qty (provienen de Odoo/Amazon
+      // API; un product name puede contener `<` o comillas). Para onclick
+      // serializamos los args como JSON y los pasamos por esc() de atributo.
+      const onclickArgs = JSON.stringify([channel, type, i.sku]);
       return `
-        <div class="item" onclick="selectItem('${channel}', '${type}', '${i.sku.replace(/'/g, "\\'")}')">
+        <div class="item" onclick="selectItemFromArgs(${esc(onclickArgs)})">
           <span>
-            <span class="sku">${i.sku}</span>
-            <span class="name">${displayName.substring(0, 50)}</span>
-            ${variant && type === 'amazon' ? '<br><span style="color:var(--teal);font-size:11px;">Variante: ' + variant + '</span>' : ''}
+            <span class="sku">${esc(i.sku)}</span>
+            <span class="name">${esc(displayName.substring(0, 50))}</span>
+            ${variant && type === 'amazon' ? '<br><span style="color:var(--teal);font-size:11px;">Variante: ' + esc(variant) + '</span>' : ''}
           </span>
-          ${i.qty !== undefined ? `<span class="badge">${i.qty}</span>` : ''}
+          ${i.qty !== undefined ? `<span class="badge">${esc(i.qty)}</span>` : ''}
         </div>
       `;
     }).join('');
@@ -509,6 +528,12 @@
     const sku = val.trim();
     state.amazon.selAmazon = sku || null;
     document.getElementById('amz-save-btn').disabled = !(state.amazon.selOdoo && state.amazon.selAmazon);
+  }
+
+  // Wrapper: deserializa args desde el atributo onclick (escaped JSON tuple).
+  function selectItemFromArgs(jsonArgs) {
+    const args = JSON.parse(jsonArgs);
+    return selectItem(args[0], args[1], args[2]);
   }
 
   function selectItem(channel, type, sku) {
@@ -559,13 +584,23 @@
     }
   }
   
-  async function deleteMapping(channel, itemIdOrSku, variationId = null) {
-    const displayText = variationId ? `${itemIdOrSku}:${variationId}` : itemIdOrSku;
+  async function deleteMapping(channel, itemIdOrSku, variationId = null, sellerSku = null) {
+    // MAP-2/AP-24: confirm muestra ambos lados del mapping para que el operador
+    // sepa exactamente qué fila se borra (un odoo_sku puede tener N seller_sku).
+    let displayText;
+    if (channel === 'amazon' && sellerSku) {
+      displayText = `${sellerSku} → ${itemIdOrSku}`;
+    } else {
+      displayText = variationId ? `${itemIdOrSku}:${variationId}` : itemIdOrSku;
+    }
     if (!confirm(`¿Eliminar mapeo para ${displayText}?`)) return;
-    
+
     try {
       if (channel === 'amazon') {
-        const resp = await fetch(`/api/amazon/mappings/${encodeURIComponent(itemIdOrSku)}`, { method: 'DELETE' });
+        const url = sellerSku
+          ? `/api/amazon/mappings/${encodeURIComponent(itemIdOrSku)}?seller_sku=${encodeURIComponent(sellerSku)}`
+          : `/api/amazon/mappings/${encodeURIComponent(itemIdOrSku)}`;
+        const resp = await fetch(url, { method: 'DELETE' });
         const data = await resp.json();
         if (data.ok) {
           loadAmazonData();
@@ -592,31 +627,45 @@
     const filtered = state.amazon.mappings.filter(m => 
       m.odoo_sku.toLowerCase().includes(search) || m.amazon_sku.toLowerCase().includes(search)
     );
-    document.getElementById('amz-mappings').innerHTML = filtered.map(m => `
+    // MAP-1+MAP-2: esc() en odoo_sku/amazon_sku/created_at; onclick pasa
+    // ambos lados (odoo_sku, amazon_sku) por JSON-tuple para que el delete
+    // sea preciso (AP-24 backend acepta seller_sku como query param).
+    document.getElementById('amz-mappings').innerHTML = filtered.map(m => {
+      const delArgs = JSON.stringify(['amazon', m.odoo_sku, null, m.amazon_sku]);
+      return `
       <tr>
-        <td class="mono">${m.odoo_sku}</td>
-        <td class="mono">${m.amazon_sku}</td>
+        <td class="mono">${esc(m.odoo_sku)}</td>
+        <td class="mono">${esc(m.amazon_sku)}</td>
         <td>${m.has_sell_on_amazon ? '<span class="badge">✅</span>' : '<span class="badge bad">❌</span>'}</td>
-        <td>${m.created_at ? m.created_at.substring(0,10) : '-'}</td>
-        <td><button class="del-btn" onclick="deleteMapping('amazon', '${m.odoo_sku}')">🗑️</button></td>
+        <td>${m.created_at ? esc(m.created_at.substring(0,10)) : '-'}</td>
+        <td><button class="del-btn" onclick="deleteMappingFromArgs(${esc(delArgs)})">🗑️</button></td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   }
-  
+
   function renderMeliMappings() {
     const search = document.getElementById('meli-map-search')?.value?.toLowerCase() || '';
-    const filtered = state.meli.mappings.filter(m => 
+    const filtered = state.meli.mappings.filter(m =>
       m.sku.toLowerCase().includes(search) || m.remote_item_id.toLowerCase().includes(search)
     );
-    document.getElementById('meli-mappings').innerHTML = filtered.map(m => `
+    document.getElementById('meli-mappings').innerHTML = filtered.map(m => {
+      const delArgs = JSON.stringify(['meli', m.remote_item_id, m.remote_variation_id || '']);
+      return `
       <tr>
-        <td class="mono">${m.sku}</td>
-        <td class="mono">${m.remote_item_id}</td>
-        <td class="mono">${m.remote_variation_id || '-'}</td>
+        <td class="mono">${esc(m.sku)}</td>
+        <td class="mono">${esc(m.remote_item_id)}</td>
+        <td class="mono">${esc(m.remote_variation_id || '-')}</td>
         <td>${m.has_sell_on_meli ? '<span class="badge">✅</span>' : '<span class="badge bad">❌</span>'}</td>
-        <td><button class="del-btn" onclick="deleteMapping('meli', '${m.remote_item_id}', '${m.remote_variation_id}')">🗑️</button></td>
+        <td><button class="del-btn" onclick="deleteMappingFromArgs(${esc(delArgs)})">🗑️</button></td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
+  }
+
+  function deleteMappingFromArgs(jsonArgs) {
+    const args = JSON.parse(jsonArgs);
+    return deleteMapping(args[0], args[1], args[2], args[3]);
   }
   
   function filterMappings(channel) {
@@ -632,25 +681,41 @@
   }
   
   async function autoMapAmazon() {
-    if (!confirm('¿Mapear automáticamente todos los SKUs que coincidan entre Odoo y Amazon?')) return;
+    // MAP-3: el match literal seller_sku === odoo_default_code produce mappings
+    // silenciosamente erróneos cuando el operador usa convenciones distintas
+    // (FBA-XXX vs XXX, prefix por marketplace, etc). En vez de auto-aplicar,
+    // mostramos el set de candidatos exactos y pedimos confirmación item-por-item.
     const odooSkus = new Set(state.amazon.odooSkus.map(s => s.sku));
     const amazonSkus = state.amazon.amazonSkus;
     const mappedSkus = new Set(state.amazon.mappings.map(m => m.odoo_sku));
-    
-    let count = 0;
-    for (const amz of amazonSkus) {
-      if (odooSkus.has(amz.sku) && !mappedSkus.has(amz.sku)) {
-        try {
-          const resp = await fetch('/api/amazon/mappings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ odoo_sku: amz.sku, amazon_sku: amz.sku })
-          });
-          if ((await resp.json()).ok) count++;
-        } catch(e) {}
-      }
+    const candidates = amazonSkus.filter(amz => odooSkus.has(amz.sku) && !mappedSkus.has(amz.sku));
+
+    if (candidates.length === 0) {
+      alert('No hay coincidencias literales (Amazon SKU == Odoo SKU). Mappear manualmente.');
+      return;
     }
-    alert(`Se mapearon ${count} SKUs automáticamente`);
+
+    const list = candidates.slice(0, 20).map(c => `  ${c.sku}`).join('\n');
+    const more = candidates.length > 20 ? `\n  ... +${candidates.length - 20} más` : '';
+    if (!confirm(
+      `Se encontraron ${candidates.length} candidatos con match LITERAL Amazon=Odoo.\n\n` +
+      `Esto NO valida que sean el mismo producto. Si tu convención difiere\n` +
+      `(ej. FBA-XXX vs XXX), confirma SOLO si estás seguro.\n\n` +
+      `Primeros candidatos:\n${list}${more}\n\n¿Crear estos ${candidates.length} mappings?`
+    )) return;
+
+    let count = 0;
+    for (const amz of candidates) {
+      try {
+        const resp = await fetch('/api/amazon/mappings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ odoo_sku: amz.sku, amazon_sku: amz.sku })
+        });
+        if ((await resp.json()).ok) count++;
+      } catch(e) {}
+    }
+    alert(`Se crearon ${count} mappings.`);
     loadAmazonData();
   }
   

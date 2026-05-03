@@ -135,7 +135,15 @@ def extract_variation_sku(variation: dict, fallback: str = "") -> str:
     """Lee SKU de una variacion con precedencia:
     1) attribute_combinations[SELLER_SKU]
     2) variation.seller_custom_field (legacy)
-    3) fallback (SKU del listing padre)
+    3) "" (sin fallback al SKU del padre — BFM-3)
+
+    NO usamos el SKU del listing padre como fallback: en MeLi cada variación
+    es un producto distinto (color/talle/etc) y heredar el SKU del padre
+    creaba mappings 1:N falsos donde 1 SKU Odoo apuntaba a múltiples
+    variation_id distintos. Si la variación no tiene SELLER_SKU propio, el
+    caller la trata como huérfana y la skipea (PENDIENTES.md task 5).
+    El parámetro `fallback` se conserva por compat de signature pero ya no
+    se usa para emitir un mapping; queda disponible para logging del caller.
     """
     for a in variation.get("attribute_combinations") or []:
         if a.get("id") == "SELLER_SKU":
@@ -145,7 +153,7 @@ def extract_variation_sku(variation: dict, fallback: str = "") -> str:
     legacy = str(variation.get("seller_custom_field") or "").strip()
     if legacy:
         return legacy
-    return fallback
+    return ""
 
 
 def main() -> int:
@@ -193,6 +201,9 @@ def main() -> int:
                 for v in variations:
                     vsku = extract_variation_sku(v, fallback=sku)
                     if not vsku:
+                        # BFM-3: variación sin SELLER_SKU propio. NO usamos el
+                        # SKU del padre — el operador debe asignarlo en MeLi.
+                        log(f"WARN orphan_variation item={iid} variation={v.get('id')} parent_sku={sku!r}")
                         continue
                     rows_to_upsert.append(
                         ("meli", vsku, iid, str(v.get("id") or ""))
