@@ -46,15 +46,23 @@ def get_setting(conn: sqlite3.Connection, key: str) -> str:
 
 
 def ml_get_json(url: str, token: str, retries: int = 3) -> dict:
+    """BFM-4 fix: distinguir 4xx (fail-fast) de 5xx/timeout/429 (retry).
+    Antes: cualquier excepción → 3 retries con sleep total ~9s. Token
+    expirado (401) era inmediatamente fatal pero perdíamos 9s primero."""
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     last = None
     for i in range(retries):
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return json.load(r)
-        except Exception as e:
+        except urllib.error.HTTPError as e:
+            # 4xx no-429 = fatal (auth, validation): no reintentar.
+            if 400 <= e.code < 500 and e.code != 429:
+                raise RuntimeError(f"ml_get_4xx url={url} code={e.code} body={e.read()[:200]!r}")
             last = e
-            time.sleep(1.5 * (i + 1))
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = e
+        time.sleep(1.5 * (i + 1))
     raise RuntimeError(f"ml_get_failed url={url} err={last}")
 
 
@@ -166,6 +174,25 @@ def main() -> int:
 
     token = load_token(args.token_file)
     conn = sqlite3.connect(args.db)
+    # BFM-1: tabla de auditoría de cambios SKU silenciosos. Cada vez que
+    # backfill cambia el sku asociado a (item_id, variation_id), registramos
+    # old_sku → new_sku para que el operador pueda detectar reasignaciones
+    # del SELLER_SKU en el panel MeLi (caso normal: rebrand) o detectar
+    # listings invadidos por error (caso patológico).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sku_mapping_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL DEFAULT (datetime('now')),
+            channel TEXT NOT NULL,
+            remote_item_id TEXT NOT NULL,
+            remote_variation_id TEXT NOT NULL DEFAULT '',
+            old_sku TEXT,
+            new_sku TEXT NOT NULL,
+            source TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sku_audit_ts ON sku_mapping_audit(ts)")
+    conn.commit()
     try:
         seller_id = get_setting(conn, "meli_seller_id") or get_setting(conn, "ml_user_id")
         if not seller_id:
@@ -221,16 +248,64 @@ def main() -> int:
             log("DRY RUN -> no se escribe")
             return 0
 
+        # BFM-1: snapshot pre-upsert para detectar SKU changes silenciosos.
+        seen_keys = set()
+        existing_skus = {}
+        cur = conn.execute(
+            "SELECT remote_item_id, remote_variation_id, sku "
+            "FROM sku_mapping WHERE channel='meli'"
+        )
+        for iid, vid, sku in cur.fetchall():
+            existing_skus[(iid, vid or "")] = sku
+
+        sku_changes = []
         with conn:
             for channel, sku, iid, vid in rows_to_upsert:
+                vid_norm = vid or ""
+                seen_keys.add((iid, vid_norm))
+                old_sku = existing_skus.get((iid, vid_norm))
+                if old_sku is not None and old_sku != sku:
+                    conn.execute(
+                        "INSERT INTO sku_mapping_audit "
+                        "(channel, remote_item_id, remote_variation_id, old_sku, new_sku, source) "
+                        "VALUES (?, ?, ?, ?, ?, 'backfill')",
+                        (channel, iid, vid_norm, old_sku, sku),
+                    )
+                    sku_changes.append((iid, vid_norm, old_sku, sku))
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO sku_mapping
                     (channel, sku, remote_item_id, remote_variation_id, last_seen_at)
                     VALUES (?, ?, ?, ?, datetime('now'))
                     """,
-                    (channel, sku, iid, vid),
+                    (channel, sku, iid, vid_norm),
                 )
+
+        if sku_changes:
+            log(f"WARN sku_changes_detected={len(sku_changes)}: {sku_changes[:5]}")
+
+        # BFM-2: marcar como stale los mappings que el seller ya no tiene
+        # activos (closed/deleted en MeLi). NO los borramos para preservar
+        # historia y evitar bombas si la API retorna parcial; el outbound
+        # worker debe consultar last_seen_at antes de pushear.
+        if seen_keys:
+            run_started = conn.execute("SELECT datetime('now', '-5 minutes')").fetchone()[0]
+            cur = conn.execute(
+                "SELECT remote_item_id, remote_variation_id FROM sku_mapping "
+                "WHERE channel='meli' AND last_seen_at < ?", (run_started,)
+            )
+            stale = [(r[0], r[1] or "") for r in cur.fetchall() if (r[0], r[1] or "") not in seen_keys]
+            if stale:
+                log(f"stale_mappings={len(stale)} (no aparecen en run actual): {stale[:5]}")
+                # Documentar en audit que están stale; outbound puede skipearlos.
+                for iid, vid in stale:
+                    conn.execute(
+                        "INSERT INTO sku_mapping_audit "
+                        "(channel, remote_item_id, remote_variation_id, old_sku, new_sku, source) "
+                        "VALUES ('meli', ?, ?, NULL, '__STALE__', 'backfill_stale')",
+                        (iid, vid),
+                    )
+                conn.commit()
 
         # Reporte post-backfill
         rep = conn.execute(

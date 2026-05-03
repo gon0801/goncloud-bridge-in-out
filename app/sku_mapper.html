@@ -565,7 +565,7 @@
     if (channel === 'amazon') {
       const resp = await fetch('/api/amazon/mappings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'goncloud-mapper' },
         body: JSON.stringify({ odoo_sku: state.amazon.selOdoo, amazon_sku: state.amazon.selAmazon })
       });
       const data = await resp.json();
@@ -575,7 +575,7 @@
       const listing = state.meli.selListing;
       const resp = await fetch('/api/meli/sku-mappings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'goncloud-mapper' },
         body: JSON.stringify({ odoo_sku: state.meli.selOdoo, item_id: listing.item_id, variation_id: listing.variation_id })
       });
       const data = await resp.json();
@@ -600,7 +600,7 @@
         const url = sellerSku
           ? `/api/amazon/mappings/${encodeURIComponent(itemIdOrSku)}?seller_sku=${encodeURIComponent(sellerSku)}`
           : `/api/amazon/mappings/${encodeURIComponent(itemIdOrSku)}`;
-        const resp = await fetch(url, { method: 'DELETE' });
+        const resp = await fetch(url, { method: 'DELETE', headers: {'X-Requested-With': 'goncloud-mapper'} });
         const data = await resp.json();
         if (data.ok) {
           loadAmazonData();
@@ -609,7 +609,7 @@
         }
       } else {
         const url = `/api/meli/sku-mappings/${encodeURIComponent(itemIdOrSku)}/${encodeURIComponent(variationId)}`;
-        const resp = await fetch(url, { method: 'DELETE' });
+        const resp = await fetch(url, { method: 'DELETE', headers: {'X-Requested-With': 'goncloud-mapper'} });
         const data = await resp.json();
         if (data.ok) {
           loadMeliData();
@@ -704,41 +704,60 @@
       `Primeros candidatos:\n${list}${more}\n\n¿Crear estos ${candidates.length} mappings?`
     )) return;
 
+    // MAP-4: disable button + progress display para evitar doble-click freeze.
+    const btn = document.querySelector("[onclick='autoMapAmazon()']");
+    const prevText = btn ? btn.textContent : null;
+    if (btn) { btn.disabled = true; }
     let count = 0;
+    let i = 0;
     for (const amz of candidates) {
+      i++;
+      if (btn) { btn.textContent = `Mapeando... ${i}/${candidates.length}`; }
       try {
+        // MAP-5: X-Requested-With es defensa-en-profundidad CSRF — fetch
+        // cross-origin no puede setear este header sin preflight; combinado
+        // con Cloudflare Access (origin tunnel-only) y require_secret en el
+        // backend, eleva el costo de un ataque CSRF a un 0day en Cloudflare.
         const resp = await fetch('/api/amazon/mappings', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'goncloud-mapper' },
           body: JSON.stringify({ odoo_sku: amz.sku, amazon_sku: amz.sku })
         });
         if ((await resp.json()).ok) count++;
       } catch(e) {}
     }
+    if (btn) { btn.disabled = false; btn.textContent = prevText; }
     alert(`Se crearon ${count} mappings.`);
     loadAmazonData();
   }
-  
+
   async function autoMapMeli() {
     if (!confirm('¿Mapear automáticamente todos los SKUs que coincidan entre Odoo y MercadoLibre?')) return;
     const odooSkus = new Set(state.meli.odooSkus.map(s => s.sku));
     const listings = state.meli.listings || [];
     const mappedVariations = new Set(state.meli.mappings.map(m => `${m.remote_item_id}:${m.remote_variation_id}`));
-    
+
+    // MAP-4: disable button + progress display.
+    const btn = document.querySelector("[onclick='autoMapMeli()']");
+    const prevText = btn ? btn.textContent : null;
+    if (btn) { btn.disabled = true; }
+    const candidates = listings.filter(l => l.sku && odooSkus.has(l.sku) &&
+      !mappedVariations.has(`${l.item_id}:${l.variation_id}`));
     let count = 0;
-    for (const listing of listings) {
-      const varKey = `${listing.item_id}:${listing.variation_id}`;
-      if (listing.sku && odooSkus.has(listing.sku) && !mappedVariations.has(varKey)) {
-        try {
-          const resp = await fetch('/api/meli/sku-mappings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ odoo_sku: listing.sku, item_id: listing.item_id, variation_id: listing.variation_id })
-          });
-          if ((await resp.json()).ok) count++;
-        } catch(e) {}
-      }
+    let i = 0;
+    for (const listing of candidates) {
+      i++;
+      if (btn) { btn.textContent = `Mapeando... ${i}/${candidates.length}`; }
+      try {
+        const resp = await fetch('/api/meli/sku-mappings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'goncloud-mapper' },
+          body: JSON.stringify({ odoo_sku: listing.sku, item_id: listing.item_id, variation_id: listing.variation_id })
+        });
+        if ((await resp.json()).ok) count++;
+      } catch(e) {}
     }
+    if (btn) { btn.disabled = false; btn.textContent = prevText; }
     alert(`Se mapearon ${count} variaciones automáticamente`);
     loadMeliData();
   }

@@ -433,7 +433,7 @@
         try{
           const url = `/api/amazon/mappings/${encodeURIComponent(m.odoo_sku)}` +
                       `?seller_sku=${encodeURIComponent(m.amazon_sku)}`;
-          const resp = await fetch(url, { method:"DELETE" });
+          const resp = await fetch(url, { method:"DELETE", headers: {"X-Requested-With": "goncloud-mapper"} });
           const data = await resp.json();
           if (!data.ok) throw new Error(data.error || "error");
           toast(true, "OK", `Eliminado (${data.deleted ?? 1}): ${m.amazon_sku} → ${m.odoo_sku}`);
@@ -580,9 +580,10 @@
     if (!selectedAmazon || !selectedAmazon.sku) return toast(false, "Falta", "Selecciona un SKU de Amazon (Usar).");
 
     try{
+      // MAP-5: X-Requested-With defense-in-depth CSRF.
       const resp = await fetch("/api/amazon/mappings", {
         method:"POST",
-        headers: {"Content-Type":"application/json"},
+        headers: {"Content-Type":"application/json", "X-Requested-With": "goncloud-mapper"},
         body: JSON.stringify({ odoo_sku: selectedOdoo.sku, amazon_sku: selectedAmazon.sku })
       });
       const data = await resp.json();
