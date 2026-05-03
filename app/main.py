@@ -961,7 +961,7 @@ async def get_odoo_skus():
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     db = os.getenv("ODOO_DB", "EHV")
     user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-    pwd = os.getenv("ODOO_PASSWORD", "bloqnum1")
+    pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
     try:
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         uid = common.authenticate(db, user, pwd, {})
@@ -999,7 +999,7 @@ async def get_amazon_skus():
         url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
         db = os.getenv("ODOO_DB", "EHV")
         user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-        pwd = os.getenv("ODOO_PASSWORD", "bloqnum1")
+        pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
         
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         uid = common.authenticate(db, user, pwd, {})
@@ -1153,7 +1153,7 @@ async def get_mappings():
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     db = os.getenv("ODOO_DB", "EHV")
     user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-    pwd = os.getenv("ODOO_PASSWORD", "bloqnum1")
+    pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
     
     sell_on_amazon_skus = set()
     try:
@@ -1245,7 +1245,7 @@ async def get_meli_odoo_skus():
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     db = os.getenv("ODOO_DB", "EHV")
     user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-    pwd = os.getenv("ODOO_PASSWORD", "bloqnum1")
+    pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
     try:
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         uid = common.authenticate(db, user, pwd, {})
@@ -1360,7 +1360,7 @@ async def get_meli_sku_mappings():
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     db = os.getenv("ODOO_DB", "EHV")
     user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-    pwd = os.getenv("ODOO_PASSWORD", "bloqnum1")
+    pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
     
     sell_on_meli_skus = set()
     try:
