@@ -2,10 +2,11 @@
 
 > **Para Claude:** este archivo es la **fuente de verdad única** de qué falta por hacer. Al iniciar sesión revísalo y recuérdaselos al usuario. Cuando termine una subtarea, marca el checkbox (`[ ]` → `[x]`). Cuando surja una nueva, agrégala. Al finalizar sesión: commit + push + PR + merge.
 
-**Última actualización:** 2026-04-24
-**Progreso:** 1/18 subtareas (6%)
+**Última actualización:** 2026-05-03
+**Progreso:** 1/21 subtareas (5%)
 
 ```
+Task 0 (VPS Hetzner): [░░░] 0/3   ← nuevo: migración server
 Task 1 (Odoo):        [█░░░░░░] 1/7
 Task 2 (SP-API):      [░░░] 0/3
 Task 3 (Picking):     [░░░░] 0/4
@@ -16,6 +17,14 @@ Task 5 (Huérfanos):   [░░░] 0/3
 ---
 
 ## 🎯 En curso
+
+### 0. Validar crons del bridge en el VPS Hetzner
+
+> El 2026-05-02 se completó la migración (gonserver → VPS Hetzner `goncloud`) y los 5 containers del bridge están corriendo (entrada del diario lo confirma). Falta validar que los crons del host también se trasladaron correctamente.
+
+- [ ] `ssh gonserver "crontab -l | grep backfill_meli_mappings"` — confirmar que el cron `0 */4 * * *` está activo en el VPS
+- [ ] `ssh gonserver "ls /etc/cron.d/goncloud_meli_refresh"` + `tail /mnt/data/appdata/bridge/data/meli_token_refresh.log` — confirmar que el refresh `5 */6 * * *` sigue operativo
+- [ ] Si falta alguno: re-aplicar (los comandos están documentados en CLAUDE.md sección 3 "Cron del host")
 
 ### 1. Setup almacenes Odoo FULL/FBA
 

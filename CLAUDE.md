@@ -50,7 +50,7 @@ MercadoLibre y Amazon con Odoo 17 ERP.
 
 - **Inbound:** Órdenes de MeLi/Amazon → crea Sale Orders + facturas pagadas en Odoo
 - **Outbound:** Cambios de stock en Odoo → actualiza listings en MeLi/Amazon
-- **Servidor:** `gonserver` · **URL pública:** `https://meli.goncloud.cc`
+- **Servidor:** VPS Hetzner — alias SSH `gonserver` o `goncloud` (user `root`, IP pública `65.109.4.81`, Tailscale `100.127.167.103`). Migrado del servidor LAN viejo (192.168.0.200, user `gon`) el 2026-05-03. · **URL pública:** `https://meli.goncloud.cc`
 - **DB:** SQLite en `/mnt/data/appdata/bridge/data/bridge.db`
 - **Repo:** `https://github.com/gon0801/goncloud-bridge-in-out.git`
 
@@ -722,6 +722,12 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 ---
 
 ## 11. Diario de cambios
+
+### 2026-05-03 — docs/memoria post-migración
+- **DOCS:** Actualizado en CLAUDE.md sección 1 + "Datos clave" de MASTER_RUNBOOK.md con datos del VPS Hetzner (IP pública `65.109.4.81`, Tailscale `100.127.167.103`, hostname `goncloud`, user `root`, Ubuntu 24.04.3 LTS, llave SSH cliente `~/.ssh/goncloud-mexico`). Sin cambios de código.
+- **MEMORIA:** Guardado `memory/project_servidor_produccion.md` para que próximas sesiones reconozcan el VPS desde el primer mensaje.
+- **PENDIENTES:** Agregada **Task 0** en `PENDIENTES.md` para verificar `bridge-*` containers en el VPS (la entrada del 2026-05-02 ya documenta que están deployados; falta validar el cron del backfill y el cron del meli-refresh sobre el nuevo host).
+- Las entradas históricas del diario (referencias a `gon@gonserver` o `192.168.0.200` antes del 2026-05-02) NO se modifican — son fieles al momento de cada sesión.
 
 ### 2026-05-02 — recuperación del bridge tras migración gonserver→goncloud
 - **Contexto:** El 2026-05-01/02 se migró el VPS de `gonserver` (caído) a `goncloud` (Hetzner Ubuntu 24.04). En la migración solo se trajo `bridge-worker` (stock) — los 2 inbound workers se levantaban en gonserver fuera del compose y nunca estuvieron versionados ahí. Resultado: webhooks MeLi entraban a `ml_orders_jobs` sin ser consumidos; Amazon ni siquiera se polleaba. **Última orden a Odoo: `S01321` 2026-05-01 02:48:27 UTC.**
