@@ -1,30 +1,47 @@
 # Pendientes activos — GONCLOUD Bridge
 
-> **Para Claude:** este archivo es la **fuente de verdad única** de qué falta por hacer. Al iniciar sesión revísalo y recuérdaselos al usuario. Cuando termine una subtarea, marca el checkbox (`[ ]` → `[x]`). Cuando surja una nueva, agrégala. Al finalizar sesión: commit + push + PR + merge.
+> **Para Claude:** este archivo es la **fuente de verdad única**. Al iniciar sesión: leerlo y recordar al usuario. Al terminar subtarea: actualizar tabla + checkbox + contadores + commit + push + PR + merge.
 
-**Última actualización:** 2026-05-03
-**Progreso:** 1/21 subtareas (5%)
-
-```
-Task 0 (VPS Hetzner): [░░░] 0/3   ← nuevo: migración server
-Task 1 (Odoo):        [█░░░░░░] 1/7
-Task 2 (SP-API):      [░░░] 0/3
-Task 3 (Picking):     [░░░░] 0/4
-Task 4 (Cleanup):     [░] 0/1
-Task 5 (Huérfanos):   [░░░] 0/3
-```
+**Última actualización:** 2026-05-04  
+**Progreso:** 4/21 subtareas (19%)
 
 ---
 
-## 🎯 En curso
+## Tabla de estado
 
-### 0. Validar crons del bridge en el VPS Hetzner
+| # | Tarea | Subtarea | Estado | Prioridad |
+|---|-------|----------|--------|-----------|
+| **0** | **VPS Hetzner — validar crons** | Backfill cron + MeLi refresh cron | ✅ Hecho | — |
+| **1** | **Setup almacenes Odoo FULL/FBA** | Crear los 4 warehouses | ✅ Hecho | Alta |
+| 1.1 | | Resupply From = EHV-MX en Meli-Full | ⏳ Pendiente | Alta |
+| 1.2 | | Resupply From = EHV-MX en FBA-MX | ⏳ Pendiente | Alta |
+| 1.3 | | Desmarcar Buy/Manufacture to Resupply en los 3 nuevos | ⏳ Pendiente | Media |
+| 1.4 | | Confirmar 1 step (incoming y outgoing) en los 3 nuevos | ⏳ Pendiente | Media |
+| 1.5 | | **Decidir estrategia phantom BOM** ⚠️ bloquea Task 3 | ⏳ Pendiente | **Crítica** |
+| 1.6 | | Primera transferencia prueba EHV/Stock → FBAMX/Stock | ⏳ Pendiente | Alta |
+| **2** | **SP-API v0 → v2026-01-01** | `tools/amazon_orders_poll.py` | ⏳ Pendiente | Media |
+| 2.1 | | `app/amazon_inbound_worker.py` | ⏳ Pendiente | Media |
+| 2.2 | | `app/debug_flex_order.py` | ⏳ Pendiente | Baja |
+| 2.3 | | **Deadline: 2027-03-27** (recomendado antes de enero 2027) | — | — |
+| **3** | **Tools picking por canal** *(depende Task 1)* | Mapping `canal → almacén` en `bridge_settings` | ⏳ Pendiente | Alta |
+| 3.1 | | `inbound_full_paid_one_shot_no_stock.py` → Full/Stock | ⏳ Pendiente | Alta |
+| 3.2 | | `amazon_fba_paid_one_shot.py` → FBAMX/FBAUS/Stock | ⏳ Pendiente | Alta |
+| 3.3 | | Probar flujo completo con orden real en cada canal | ⏳ Pendiente | Alta |
+| **4** | **Limpieza `manual_review` antiguos** | Automatizar script existente (cron o background) | ⏳ Pendiente | Baja |
+| **5** | **MeLi huérfanos** | `MLM2787930515` — asignar SKU en MeLi vendedor | ⏳ Pendiente | Media |
+| 5.1 | | `MLM2787902225` — asignar SKU en MeLi vendedor | ⏳ Pendiente | Media |
+| 5.2 | | Correr `backfill_meli_mappings.py` (o esperar cron 4h) | ⏳ Pendiente | Baja |
+| **6** | **AP-5 path-secret webhooks** | Rotar secrets + mover a header `X-Goncloud-Secret` | ⏳ Pendiente | Media |
 
-> El 2026-05-02 se completó la migración (gonserver → VPS Hetzner `goncloud`) y los 5 containers del bridge están corriendo (entrada del diario lo confirma). Falta validar que los crons del host también se trasladaron correctamente.
+---
 
-- [ ] `ssh gonserver "crontab -l | grep backfill_meli_mappings"` — confirmar que el cron `0 */4 * * *` está activo en el VPS
-- [ ] `ssh gonserver "ls /etc/cron.d/goncloud_meli_refresh"` + `tail /mnt/data/appdata/bridge/data/meli_token_refresh.log` — confirmar que el refresh `5 */6 * * *` sigue operativo
-- [ ] Si falta alguno: re-aplicar (los comandos están documentados en CLAUDE.md sección 3 "Cron del host")
+## Detalle por tarea
+
+### 0. Validar crons VPS Hetzner ✅
+
+- [x] Backfill cron `0 */4 * * *` — faltaba; re-aplicado 2026-05-04
+- [x] MeLi refresh `/etc/cron.d/goncloud_meli_refresh` — activo (4 OK el 2026-05-04)
+- [x] Re-aplicar si falta — hecho
 
 ### 1. Setup almacenes Odoo FULL/FBA
 
@@ -33,12 +50,8 @@ Task 5 (Huérfanos):   [░░░] 0/3
 - [ ] Confirmar **Resupply From = EHV-MX** en FBA-MX
 - [ ] Desmarcar **Buy to Resupply** y **Manufacture to Resupply** en los 3 almacenes nuevos
 - [ ] Confirmar **1 step** (incoming y outgoing) en los 3 nuevos
-- [ ] **Decidir estrategia phantom BOM** (recomendación: migrar a "Manufacture this product" los SKUs que van a FULL/FBA) ⚠️ *Bloquea las siguientes tareas*
+- [ ] **Decidir estrategia phantom BOM** ⚠️ *Bloquea Task 3*
 - [ ] Primera transferencia de prueba EHV/Stock → FBAMX/Stock con SKU piloto
-
----
-
-## 📋 Backlog
 
 ### 2. Migrar Amazon SP-API Orders v0 → v2026-01-01
 
@@ -69,25 +82,28 @@ Task 5 (Huérfanos):   [░░░] 0/3
 
 ### 6. AP-5 follow-up — eliminar path-secret en webhooks
 
-C4 (commit `_check_webhook_secret`) ya hace `hmac.compare_digest` y deja de validar contra path/query como dependencia, pero **sigue aceptando** `/webhooks/{meli,amazon}/orders/{secret}` por compatibilidad con suscripciones vivas. uvicorn loggea la URL completa en access log → el secret queda visible en `docker logs bridge-api`.
+uvicorn loggea la URL completa → el secret queda visible en `docker logs bridge-api`.
 
-Plan de migración (cuando se decida ventana):
-- [ ] Generar nuevos `meli_webhook_secret` y `amazon_webhook_secret` en `bridge_settings`.
-- [ ] Actualizar URL en panel MeLi (notifications) a `/webhooks/meli/orders` con header `X-Goncloud-Secret`.
-- [ ] Re-suscribir SNS Amazon Notifications con header `X-Goncloud-Secret` (Amazon SNS soporta extra headers en HTTP subscriptions).
-- [ ] Borrar las rutas con `{secret}` en `app/main.py` y dejar solo header.
-- [ ] Rotar logs nginx/cloudflare/uvicorn que tengan path-secret histórico.
+- [ ] Generar nuevos `meli_webhook_secret` y `amazon_webhook_secret` en `bridge_settings`
+- [ ] Actualizar URL en panel MeLi a `/webhooks/meli/orders` con header `X-Goncloud-Secret`
+- [ ] Re-suscribir SNS Amazon con header `X-Goncloud-Secret`
+- [ ] Borrar rutas con `{secret}` en `app/main.py`
+- [ ] Rotar logs nginx/cloudflare/uvicorn con path-secret histórico
 
 ---
 
 ## ✅ Cerrados recientemente
 
+**2026-05-04** — Task 0: Validar crons VPS Hetzner
+- Backfill cron faltaba en el VPS nuevo → re-aplicado manualmente
+- MeLi refresh cron `/etc/cron.d/goncloud_meli_refresh` activo y funcionando (4 OK el día de hoy)
+
 **2026-04-18** — Bug crítico: MeLi separa variantes → oversell potencial
 - PR #19: schema `sku_mapping` 1:N + worker outbound con `fetchall()` + loop
-- PR #20: fix backfill para leer `attributes[SELLER_SKU]` (campo actual) en vez de `seller_custom_field` (deprecated)
+- PR #20: fix backfill para leer `attributes[SELLER_SKU]` (campo actual)
 - PR #21: cron `0 */4 * * *` agregado — discovery automático de splits cada 4h
 
 **2026-04-18** — Documentación y versionado
-- PR #17: `meli_refresh_tokens.sh` versionado en repo + MeLi auto-refresh documentado (ya estaba activo en prod)
+- PR #17: `meli_refresh_tokens.sh` versionado en repo + MeLi auto-refresh documentado
 - PR #18: snippet de deploy resiste `/tmp/` ausente
 - PR #16: lista de pendientes activos como fuente de verdad

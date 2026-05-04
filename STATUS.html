@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="refresh" content="30">
+<title>GONCLOUD Bridge — Pendientes</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; margin: 0; padding: 24px; }
+  h1 { font-size: 1.4rem; font-weight: 600; color: #f8fafc; margin-bottom: 4px; }
+  .meta { color: #64748b; font-size: 0.85rem; margin-bottom: 20px; }
+  .progress-bar { background: #1e293b; border-radius: 8px; height: 8px; width: 300px; margin-bottom: 24px; overflow: hidden; }
+  .progress-fill { background: #3b82f6; height: 100%; border-radius: 8px; width: 19%; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th { background: #1e293b; color: #94a3b8; font-weight: 500; text-align: left; padding: 10px 14px; border-bottom: 1px solid #334155; }
+  td { padding: 9px 14px; border-bottom: 1px solid #1e293b; vertical-align: top; }
+  tr:hover td { background: #1e293b44; }
+  tr.group-header td { background: #1e293b; font-weight: 600; color: #f1f5f9; padding-top: 14px; }
+  tr.group-header td:first-child { border-radius: 4px 0 0 4px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.78rem; font-weight: 500; white-space: nowrap; }
+  .badge-done     { background: #14532d; color: #86efac; }
+  .badge-pending  { background: #1e3a5f; color: #93c5fd; }
+  .badge-blocker  { background: #7f1d1d; color: #fca5a5; }
+  .badge-info     { background: #1e293b; color: #64748b; }
+  .pri { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+  .pri-critica   { background: #450a0a; color: #f87171; }
+  .pri-alta      { background: #431407; color: #fb923c; }
+  .pri-media     { background: #1e3a5f; color: #7dd3fc; }
+  .pri-baja      { background: #1e293b; color: #64748b; }
+  .sub { color: #94a3b8; font-size: 0.82rem; }
+  code { background: #1e293b; padding: 1px 5px; border-radius: 3px; font-size: 0.8rem; color: #7dd3fc; }
+  .section-closed { color: #86efac; font-size: 0.82rem; margin-top: 28px; padding: 12px 16px; background: #14532d22; border-left: 3px solid #22c55e; border-radius: 0 6px 6px 0; }
+  .section-closed h3 { margin: 0 0 6px; font-size: 0.9rem; color: #86efac; }
+  .section-closed ul { margin: 0; padding-left: 16px; }
+  .section-closed li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+
+<h1>GONCLOUD Bridge — Pendientes activos</h1>
+<div class="meta">Última actualización: 2026-05-04 &nbsp;·&nbsp; Se refresca cada 30 seg</div>
+<div class="progress-bar"><div class="progress-fill"></div></div>
+<div class="meta" style="margin-top:-18px; margin-bottom:20px;">4 / 21 subtareas completadas (19%)</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:40px">#</th>
+      <th style="width:220px">Tarea</th>
+      <th>Subtarea</th>
+      <th style="width:120px">Estado</th>
+      <th style="width:90px">Prioridad</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <!-- TASK 0 -->
+    <tr class="group-header">
+      <td>0</td>
+      <td>VPS Hetzner — crons</td>
+      <td>Backfill cron + MeLi refresh cron</td>
+      <td><span class="badge badge-done">✅ Hecho</span></td>
+      <td>—</td>
+    </tr>
+
+    <!-- TASK 1 -->
+    <tr class="group-header">
+      <td>1</td>
+      <td>Setup almacenes Odoo FULL/FBA</td>
+      <td>Crear los 4 warehouses</td>
+      <td><span class="badge badge-done">✅ Hecho</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">1.1</td>
+      <td></td>
+      <td>Resupply From = EHV-MX en <strong>Meli-Full</strong></td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">1.2</td>
+      <td></td>
+      <td>Resupply From = EHV-MX en <strong>FBA-MX</strong></td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">1.3</td>
+      <td></td>
+      <td>Desmarcar Buy/Manufacture to Resupply en los 3 nuevos</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">1.4</td>
+      <td></td>
+      <td>Confirmar 1 step (incoming y outgoing) en los 3 nuevos</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">1.5</td>
+      <td></td>
+      <td><strong>Decidir estrategia phantom BOM</strong> ⚠️ bloquea Task 3</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">1.6</td>
+      <td></td>
+      <td>Primera transferencia prueba EHV/Stock → FBAMX/Stock</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+
+    <!-- TASK 2 -->
+    <tr class="group-header">
+      <td>2</td>
+      <td>SP-API v0 → v2026-01-01</td>
+      <td><code>tools/amazon_orders_poll.py</code> — getOrders, getOrderItems</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">2.1</td>
+      <td></td>
+      <td><code>app/amazon_inbound_worker.py</code> — getOrder, getOrderItems</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">2.2</td>
+      <td></td>
+      <td><code>app/debug_flex_order.py</code> — getOrder</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+    <tr>
+      <td class="sub">2.3</td>
+      <td></td>
+      <td>📅 <strong>Deadline: 2027-03-27</strong> (recomendado antes de enero 2027)</td>
+      <td><span class="badge badge-info">~11 meses</span></td>
+      <td>—</td>
+    </tr>
+
+    <!-- TASK 3 -->
+    <tr class="group-header">
+      <td>3</td>
+      <td>Tools picking por canal <span class="sub">(depende Task 1)</span></td>
+      <td>Mapping <code>canal → almacén</code> en <code>bridge_settings</code></td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">3.1</td>
+      <td></td>
+      <td><code>inbound_full_paid_one_shot_no_stock.py</code> → Full/Stock</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">3.2</td>
+      <td></td>
+      <td><code>amazon_fba_paid_one_shot.py</code> → FBAMX/Stock o FBAUS/Stock</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">3.3</td>
+      <td></td>
+      <td>Probar flujo completo con orden real en cada canal</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+
+    <!-- TASK 4 -->
+    <tr class="group-header">
+      <td>4</td>
+      <td>Limpieza <code>manual_review</code></td>
+      <td>Automatizar script existente (cron o background task)</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+
+    <!-- TASK 5 -->
+    <tr class="group-header">
+      <td>5</td>
+      <td>MeLi huérfanos</td>
+      <td><code>MLM2787930515</code> — asignar SKU en MeLi vendedor</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">5.1</td>
+      <td></td>
+      <td><code>MLM2787902225</code> — asignar SKU en MeLi vendedor</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">5.2</td>
+      <td></td>
+      <td>Correr <code>backfill_meli_mappings.py</code> (o esperar cron 4h)</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+
+    <!-- TASK 6 -->
+    <tr class="group-header">
+      <td>6</td>
+      <td>AP-5 path-secret webhooks</td>
+      <td>Rotar secrets + mover a header <code>X-Goncloud-Secret</code></td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+
+  </tbody>
+</table>
+
+<div class="section-closed">
+  <h3>✅ Cerrados recientemente</h3>
+  <ul>
+    <li><strong>2026-05-04</strong> — Task 0: crons VPS Hetzner validados y re-aplicados</li>
+    <li><strong>2026-04-18</strong> — PR #19/20/21: bug split variantes MeLi → oversell potencial (sku_mapping 1:N, backfill SELLER_SKU, cron 4h)</li>
+    <li><strong>2026-04-18</strong> — PR #17/18/16: meli_refresh_tokens.sh versionado, deploy snippet, PENDIENTES.md creado</li>
+  </ul>
+</div>
+
+</body>
+</html>
