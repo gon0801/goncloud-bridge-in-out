@@ -95,6 +95,12 @@ def lookup_sku_mapping(item_id: str, variation_id: str, site: str) -> str:
         return ""
 
 def parse_items(order_dict):
+    """Bug M3: si un item viene sin SKU resoluble (seller_sku ausente +
+    sku_mapping miss), antes hacía `continue` silencioso → factura
+    sub-totalada. Ahora die con `unmapped_items` para que el worker lo
+    mande a manual_review. La tool retorna rc != 0 y el operador asigna
+    el SKU en el panel MeLi o agrega el mapping a sku_mapping.
+    """
     items = order_dict.get("order_items") or []
     if not isinstance(items, list):
         return []
@@ -102,6 +108,7 @@ def parse_items(order_dict):
     site = (SITE_ID_ENV or str(order_dict.get("site_id") or "").strip() or "MLM").strip()
 
     out = []
+    skipped = []
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -125,6 +132,11 @@ def parse_items(order_dict):
             sku = lookup_sku_mapping(item_id, var_id, site)
 
         if not sku:
+            skipped.append({
+                "item_id": str(item.get("id") or ""),
+                "variation_id": str(item.get("variation_id") or it.get("variation_id") or ""),
+                "title": str(item.get("title") or ""),
+            })
             continue
 
         unit_price = it.get("unit_price")
@@ -136,6 +148,11 @@ def parse_items(order_dict):
             unit_price = 0.0
 
         out.append({"sku": sku, "qty": qty, "unit_price": unit_price})
+
+    if skipped:
+        # rc=1 → worker map_tool_result lo trata como manual_review (no deferred).
+        die(f"unmapped_items: {len(skipped)} item(s) sin SKU resoluble: {skipped}", code=1)
+
     return out
 
 # =========================

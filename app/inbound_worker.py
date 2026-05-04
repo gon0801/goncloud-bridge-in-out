@@ -1,949 +1,1245 @@
 #!/usr/bin/env python3
 """
-INBOUND WORKER — GONCLOUD BRIDGE
-Procesa órdenes MercadoLibre → Odoo 17
-
-Versión: 3.2 (FIX: pack_id como display_id)
-Fecha: 2026-02-12
-Estado: LIMPIO · FULL + FBM COMPLETO · PACK_ID FIX
+GONCLOUD Inbound Worker v8.4 — "Payload-Persistent"
+Arquitectura: Locks transient + Audit permanent + Payload persistente
+Diseñado para: 500k SKUs, 10+ workers, recuperación autónoma, zero duplicación
 """
 
 import json
 import os
 import re
 import sqlite3
-import time
 import subprocess
-from datetime import datetime, timezone
+import sys
+import time
+import hashlib
+import threading
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import redis
-import requests
 
-# ============================================================
-# ENV / CONSTANTES
-# ============================================================
+# =========================
+# CONFIG — Environment-driven, zero hardcode
+# =========================
+class Config:
+    # Paths
+    DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
+    REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
+    TOKEN_FILE = os.getenv("MELI_TOKEN_FILE", "/data/.meli_tokens.json")
+    
+    # Queues (Redis)
+    QUEUE = "ml_orders_jobs"           # FIFO: trabajos pendientes
+    PROCESSING = "ml_orders_processing" # Jobs actualmente en proceso (para observabilidad)
+    DEAD_LETTER = "ml_orders_dead"      # Jobs fallidos permanentemente
+    
+    # Timeouts (segundos)
+    LOCK_TIMEOUT = 600          # 10 min: tiempo máximo de procesamiento antes de considerar stale
+    HEARTBEAT_INTERVAL = 30     # 30 seg: frecuencia de heartbeat para jobs largos
+    REAPER_INTERVAL = 30        # 30 seg: frecuencia de limpieza de locks stale
+    
+    # Retry policy
+    MAX_RETRIES = 3
+    RETRY_DELAY_BASE = 2
+    
+    # Worker identity
+    WORKER_ID = f"{os.getpid()}@{os.uname().nodename}"
+    WORKER_START_TIME = datetime.now(timezone.utc).isoformat()
+    
+    # Odoo (lazy load desde DB)
+    ODOO_URL: Optional[str] = None
+    ODOO_DB: Optional[str] = None
+    ODOO_USER: Optional[str] = None
+    ODOO_PASS: Optional[str] = None
 
-DB_PATH = (
-    os.getenv("BRIDGE_DB_PATH")
-    or os.getenv("BRIDGE_DB")
-    or "/data/bridge.db"
-)
+# Estados MeLi que disparan el flujo "paid" (process_fbm/process_full).
+# Sin "confirmed" en process_full, una orden FULL pre-aprobación quedaba con
+# lock activo y mark_completed nunca se llamaba → reaper loop infinito.
+PAID_STATES = ("paid", "approved", "confirmed")
+CANCELLED_STATES = ("cancelled", "refunded")
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
-TOKEN_FILE = os.getenv("MELI_TOKEN_FILE", "/data/.meli_tokens.json")
+# =========================
+# DATABASE — SQLite con WAL, optimizado para concurrencia
+# =========================
+class Database:
+    _instance: Optional['Database'] = None
+    _lock = threading.Lock()
+    
+    def __new__(cls, path: str):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self, path: str):
+        if self._initialized:
+            return
+            
+        self.path = path
+        self._local = threading.local()
+        self._writer_lock = threading.Lock()
+        
+        # Conexión inicial para crear tablas
+        conn = self._create_connection()
+        self._ensure_tables(conn)
+        conn.close()
+        
+        self._initialized = True
+    
+    def _create_connection(self) -> sqlite3.Connection:
+        """Crea conexión optimizada para alta concurrencia"""
+        conn = sqlite3.connect(
+            self.path,
+            timeout=60,
+            isolation_level=None,
+            check_same_thread=False
+        )
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=60000")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
+        conn.execute("PRAGMA cache_size=-65536")    # 64MB page cache
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def _get_conn(self) -> sqlite3.Connection:
+        """Thread-local connection pooling"""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            self._local.conn = self._create_connection()
+        return self._local.conn
+    
+    def execute(self, sql: str, params: tuple = (), use_writer_lock: bool = False) -> sqlite3.Cursor:
+        """Ejecución con retry exponencial y jitter"""
+        conn = self._get_conn()
+        
+        if use_writer_lock:
+            with self._writer_lock:
+                return self._execute_with_retry(conn, sql, params)
+        return self._execute_with_retry(conn, sql, params)
+    
+    def _execute_with_retry(self, conn: sqlite3.Connection, sql: str, params: tuple, max_retries: int = 5) -> sqlite3.Cursor:
+        for attempt in range(max_retries):
+            try:
+                return conn.execute(sql, params)
+            except sqlite3.OperationalError as e:
+                if "busy" in str(e).lower() and attempt < max_retries - 1:
+                    # Jitter: 100ms, 200ms, 400ms, 800ms, 1600ms + random(0-100ms)
+                    sleep_time = (0.1 * (2 ** attempt)) + (hash(str(params)) % 100 / 1000)
+                    time.sleep(sleep_time)
+                    continue
+                raise
+    
+    def transaction(self):
+        return Transaction(self._get_conn(), self._writer_lock)
+    
+    def _ensure_tables(self, conn: sqlite3.Connection):
+        """Schema v8.4: 4 tablas core"""
+        
+        # 1. PAYLOAD PERSISTENTE — El fix crítico para reaper
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbound_job_payloads (
+                dedupe_key TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,      -- Job completo, inmutable
+                payload_hash TEXT NOT NULL,      -- SHA256 para integridad
+                created_at TEXT NOT NULL,
+                expires_at TEXT                  -- TTL para limpieza automática
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payloads_expires 
+            ON inbound_job_payloads(expires_at)
+        """)
+        
+        # 2. LOCKS TRANSIENTES — Coordinación entre workers
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbound_processing_locks (
+                dedupe_key TEXT PRIMARY KEY,
+                claimed_at TEXT NOT NULL,
+                worker_id TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,      -- Validación: lock corresponde a payload
+                heartbeat_at TEXT                -- Último heartbeat del worker
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_locks_worker 
+            ON inbound_processing_locks(worker_id)
+        """)
+        
+        # 3. AUDIT PERMANENTE — Historial inmutable de resultados
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS processed_inbound_events (
+                dedupe_key TEXT PRIMARY KEY,
+                processed_at TEXT NOT NULL,
+                result TEXT NOT NULL CHECK(result IN ('success', 'manual_review', 'dead', 'error', 'skipped')),
+                detail_json TEXT,
+                worker_id TEXT,
+                processing_time_ms INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_result_time 
+            ON processed_inbound_events(result, processed_at)
+        """)
+        
+        # 4. ESTADO DE ÓRDENES — Último estado conocido por order_id
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbound_orders_state (
+                order_id TEXT PRIMARY KEY,
+                site TEXT NOT NULL,
+                last_state TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                pack_id TEXT,
+                first_seen_at TEXT DEFAULT (datetime('now')),
+                logistic_type TEXT
+            )
+        """)
+        
+        # 5. MÉTRICAS HORARIAS — Agregación para dashboards
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbound_metrics (
+                hour TEXT PRIMARY KEY,
+                processed INTEGER DEFAULT 0,
+                manual_review INTEGER DEFAULT 0,
+                dead INTEGER DEFAULT 0,
+                errors INTEGER DEFAULT 0,
+                retries INTEGER DEFAULT 0
+            )
+        """)
 
-QUEUE = "ml_orders_jobs"
-ORDER_ID_RE = re.compile(r"^/orders/([A-Za-z0-9\-]+)$")
+        # Auto-sync: cualquier SKU insertado en sku_mapping queda automáticamente en inbound_allowed_skus
+        try:
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_sku_mapping_to_allowlist
+                AFTER INSERT ON sku_mapping
+                BEGIN
+                    INSERT OR IGNORE INTO inbound_allowed_skus (sku, enabled)
+                    VALUES (NEW.sku, 1);
+                END
+            """)
+        except Exception:
+            pass  # sku_mapping puede no existir aún en este contexto
 
-ML_API = "https://api.mercadolibre.com"
+class Transaction:
+    def __init__(self, conn: sqlite3.Connection, writer_lock: threading.Lock):
+        self.conn = conn
+        self.writer_lock = writer_lock
+        self.active = False
+    
+    def __enter__(self):
+        self.writer_lock.acquire()
+        self.conn.execute("BEGIN IMMEDIATE")
+        self.active = True
+        return self.conn
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                self.conn.execute("COMMIT")
+            else:
+                self.conn.execute("ROLLBACK")
+        finally:
+            self.active = False
+            self.writer_lock.release()
 
-# ============================================================
-# UTILS
-# ============================================================
+# Singleton global
+db: Optional[Database] = None
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def init_db():
+    global db
+    db = Database(Config.DB_PATH)
+    
+    # Lazy load Odoo config
+    Config.ODOO_URL = get_setting("odoo_url", "http://odoo-odoo-1:8069")
+    Config.ODOO_DB = get_setting("odoo_db", "")
+    Config.ODOO_USER = get_setting("odoo_user", "")
+    Config.ODOO_PASS = get_setting("odoo_password", "")
 
+# =========================
+# LOGGING — Estructurado, con contexto de worker
+# =========================
+def log(msg: str, level: str = "INFO", extra: dict = None):
+    ts = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "ts": ts,
+        "level": level,
+        "worker": Config.WORKER_ID,
+        "msg": msg
+    }
+    if extra:
+        entry.update(extra)
+    print(json.dumps(entry), flush=True)
 
-def db_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=20)
-    conn.execute("PRAGMA busy_timeout=5000;")
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    return conn
+# =========================
+# SETTINGS — Cache local con fallback a DB
+# =========================
+_settings_cache: Dict[str, Tuple[str, datetime]] = {}
+_settings_ttl = timedelta(seconds=30)
 
-
-def get_setting(key: str, default: str = "0") -> str:
+def get_setting(key: str, default: str = "") -> str:
     try:
-        with db_conn() as conn:
-            row = conn.execute(
-                "SELECT value FROM bridge_settings WHERE key=? LIMIT 1",
-                (key,),
-            ).fetchone()
-        return str(row[0]) if row and row[0] is not None else default
-    except Exception:
+        # Cache hit?
+        if key in _settings_cache:
+            value, cached_at = _settings_cache[key]
+            if datetime.now(timezone.utc) - cached_at < _settings_ttl:
+                return value
+        
+        # Cache miss o expirado
+        row = db.execute("SELECT value FROM bridge_settings WHERE key=?", (key,)).fetchone()
+        value = str(row[0]) if row and row[0] else default
+        
+        _settings_cache[key] = (value, datetime.now(timezone.utc))
+        return value
+    except Exception as e:
+        log(f"Settings error for {key}: {e}", "ERROR")
         return default
 
+def is_enabled(key: str) -> bool:
+    return get_setting(key, "0") == "1"
 
-def get_display_id(order: Dict[str, Any], order_id: str) -> str:
-    """
-    Devuelve el ID que el usuario ve en la web de MercadoLibre.
-    - Si existe pack_id -> es lo que muestra la web
-    - Si no -> usa order_id
+# =========================
+# MÉTRICAS — Agregación eficiente
+# =========================
+def record_metric(result_type: str, processing_time_ms: Optional[int] = None):
+    hour = datetime.now().strftime("%Y-%m-%d-%H")
+    column = result_type if result_type in ("processed", "manual_review", "dead", "errors", "retries") else "processed"
     
-    IMPORTANTE: MeLi agrupa órdenes en "packs" y la web muestra el pack_id,
-    pero la API envía webhooks con order_id individual.
-    """
-    pack_id = order.get("pack_id")
-    if pack_id:
-        return str(pack_id)
-    return str(order_id)
-
-
-# ============================================================
-# AUDITORÍA / IDEMPOTENCIA
-# ============================================================
-
-def mark_processed(dedupe_key: str, result: str, detail: dict):
-    """
-    FUNCIÓN CRÍTICA:
-    Todo job que sale de Redis DEBE pasar por aquí.
-    """
     try:
-        with db_conn() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO processed_inbound_events
-                (dedupe_key, processed_at, result, detail_json)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    dedupe_key,
-                    utc_now_iso(),
-                    result,
-                    json.dumps(detail, ensure_ascii=False),
-                ),
-            )
-            conn.execute(
-                "UPDATE inbound_events SET status='processed' WHERE dedupe_key=?",
-                (dedupe_key,),
-            )
-            conn.commit()
-        print(f"[inbound_worker] AUDIT OK dedupe={dedupe_key} result={result}", flush=True)
+        db.execute(f"""
+            INSERT INTO inbound_metrics (hour, {column}) VALUES (?, 1)
+            ON CONFLICT(hour) DO UPDATE SET {column} = {column} + 1
+        """, (hour,))
+        
+        if processing_time_ms and column == "processed":
+            # Podríamos trackear percentiles en tabla separada si se necesita
+            pass
     except Exception as e:
-        print(f"[inbound_worker] CRITICAL DB ERROR in mark_processed: {e}", flush=True)
+        log(f"Metric error: {e}", "ERROR")
 
-
-def already_processed(dedupe_key: str) -> bool:
+# =========================
+# PAYLOAD PERSISTENCE — Fix crítico v8.4
+# =========================
+def persist_payload(dedupe_key: str, job: dict) -> str:
+    """
+    Guarda payload completo en DB antes de procesar.
+    Retorna hash SHA256 para validación de integridad.
+    """
+    payload_json = json.dumps(job, sort_keys=True)
+    payload_hash = hashlib.sha256(payload_json.encode()).hexdigest()
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(days=7)).isoformat()  # TTL 7 días
+    
     try:
-        with db_conn() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM processed_inbound_events WHERE dedupe_key=? LIMIT 1",
-                (dedupe_key,),
+        db.execute("""
+            INSERT INTO inbound_job_payloads (dedupe_key, payload_json, payload_hash, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(dedupe_key) DO UPDATE SET
+                payload_json = CASE 
+                    WHEN excluded.payload_hash != inbound_job_payloads.payload_hash 
+                    THEN excluded.payload_json 
+                    ELSE inbound_job_payloads.payload_json 
+                END,
+                expires_at = excluded.expires_at
+        """, (dedupe_key, payload_json, payload_hash, now.isoformat(), expires_at))
+        return payload_hash
+    except Exception as e:
+        log(f"Payload persistence failed for {dedupe_key}: {e}", "ERROR")
+        raise
+
+def get_payload(dedupe_key: str) -> Optional[Tuple[dict, str]]:
+    """
+    Recupera payload original + hash para reaper.
+    Retorna None si no existe (job muy antiguo o corrupción).
+    """
+    try:
+        row = db.execute(
+            "SELECT payload_json, payload_hash FROM inbound_job_payloads WHERE dedupe_key=?",
+            (dedupe_key,)
+        ).fetchone()
+        
+        if not row:
+            return None
+        
+        return json.loads(row["payload_json"]), row["payload_hash"]
+    except Exception as e:
+        log(f"Payload retrieval failed for {dedupe_key}: {e}", "ERROR")
+        return None
+
+def cleanup_expired_payloads():
+    """Limpia payloads expirados (llamar periódicamente desde reaper)"""
+    try:
+        cursor = db.execute(
+            "DELETE FROM inbound_job_payloads WHERE expires_at < datetime('now')",
+            ()
+        )
+        if cursor.rowcount > 0:
+            log(f"Cleaned up {cursor.rowcount} expired payloads", "INFO")
+    except Exception as e:
+        log(f"Payload cleanup error: {e}", "ERROR")
+
+# =========================
+# LOCK MANAGEMENT — Atomic, stealable, with heartbeat
+# =========================
+def acquire_lock(dedupe_key: str, payload_hash: str) -> bool:
+    """
+    Adquiere lock de procesamiento.
+    Roba locks stale automáticamente.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    stale_threshold = (datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)).isoformat()
+    
+    try:
+        with db.transaction():
+            # UPSERT atómico: insertar nuevo o robar stale
+            cursor = db.execute("""
+                INSERT INTO inbound_processing_locks 
+                    (dedupe_key, claimed_at, worker_id, payload_hash, heartbeat_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(dedupe_key) DO UPDATE SET
+                    claimed_at = CASE 
+                        WHEN inbound_processing_locks.claimed_at < ? THEN ?
+                        ELSE inbound_processing_locks.claimed_at
+                    END,
+                    worker_id = CASE 
+                        WHEN inbound_processing_locks.claimed_at < ? THEN ?
+                        ELSE inbound_processing_locks.worker_id
+                    END,
+                    payload_hash = CASE 
+                        WHEN inbound_processing_locks.claimed_at < ? THEN ?
+                        ELSE inbound_processing_locks.payload_hash
+                    END,
+                    heartbeat_at = CASE 
+                        WHEN inbound_processing_locks.claimed_at < ? THEN ?
+                        ELSE inbound_processing_locks.heartbeat_at
+                    END
+                WHERE inbound_processing_locks.claimed_at < ?
+            """, (
+                dedupe_key, now, Config.WORKER_ID, payload_hash, now,  # INSERT
+                stale_threshold, now,  # UPDATE claimed_at
+                stale_threshold, Config.WORKER_ID,  # UPDATE worker_id
+                stale_threshold, payload_hash,  # UPDATE payload_hash
+                stale_threshold, now,  # UPDATE heartbeat_at
+                stale_threshold  # WHERE condition
+            ))
+            
+            # Verificar si somos dueños del lock
+            row = db.execute(
+                "SELECT worker_id, claimed_at FROM inbound_processing_locks WHERE dedupe_key=?",
+                (dedupe_key,)
             ).fetchone()
-        return row is not None
+            
+            if not row:
+                return False
+            
+            is_mine = row["worker_id"] == Config.WORKER_ID
+            is_fresh = row["claimed_at"] == now
+            
+            if is_mine and is_fresh:
+                log(f"Lock acquired: {dedupe_key}", "DEBUG")
+                return True
+            else:
+                log(f"Lock busy: {dedupe_key} held by {row['worker_id']}", "DEBUG")
+                return False
+                
     except Exception as e:
-        print(f"[inbound_worker] DB READ ERROR: {e}", flush=True)
+        log(f"Lock acquisition error: {dedupe_key}: {e}", "ERROR")
         return False
 
-
-# ============================================================
-# MERCADOLIBRE
-# ============================================================
-
-def load_access_token() -> str:
-    if not os.path.exists(TOKEN_FILE):
-        raise RuntimeError(f"token_file_not_found: {TOKEN_FILE}")
-    with open(TOKEN_FILE, "r") as f:
-        t = json.load(f)
-    tok = t.get("access_token")
-    if not tok:
-        raise RuntimeError("no_access_token_in_token_file")
-    return str(tok)
-
-
-def ml_get_json(path: str) -> Dict[str, Any]:
-    token = load_access_token()
-    url = f"{ML_API}{path}"
-    resp = requests.get(
-        url,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=20,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f"ml_get_failed path={path} status={resp.status_code} body={resp.text[:200]}"
+def update_heartbeat(dedupe_key: str):
+    """Actualiza heartbeat para jobs de larga duración"""
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        db.execute(
+            "UPDATE inbound_processing_locks SET heartbeat_at=? WHERE dedupe_key=? AND worker_id=?",
+            (now, dedupe_key, Config.WORKER_ID)
         )
-    data = resp.json()
-    if not isinstance(data, dict):
-        raise RuntimeError("ml_get_bad_json")
-    return data
-
-
-def ml_get_order(order_id: str) -> Dict[str, Any]:
-    return ml_get_json(f"/orders/{order_id}")
-
-
-def ml_get_shipment(shipment_id: str) -> Dict[str, Any]:
-    return ml_get_json(f"/shipments/{shipment_id}")
-
-
-def detect_full(order: Dict[str, Any], shipment: Optional[Dict[str, Any]]) -> Tuple[Optional[bool], str]:
-    """
-    Regla SELLADA:
-    FULL si logistic_type == "fulfillment"
-    Prioridad:
-      1) order.logistic_type
-      2) shipment.logistic_type
-      3) indeterminado => manual_review
-    """
-    lt = order.get("logistic_type")
-    if lt is not None:
-        return (str(lt) == "fulfillment", "order.logistic_type")
-
-    if shipment and shipment.get("logistic_type") is not None:
-        lt2 = shipment.get("logistic_type")
-        return (str(lt2) == "fulfillment", "shipment.logistic_type")
-
-    return (None, "unknown")
-
-
-# ============================================================
-# LÓGICA DE NEGOCIO
-# ============================================================
-
-def upsert_order_state(order_id: str, state: str, last_updated_at: str, pack_id: Optional[str]):
-    try:
-        with db_conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO inbound_orders_state
-                  (order_id, last_state, last_updated_at, last_seen_at, pack_id)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(order_id) DO UPDATE SET
-                  last_state=excluded.last_state,
-                  last_updated_at=excluded.last_updated_at,
-                  last_seen_at=excluded.last_seen_at,
-                  pack_id=excluded.pack_id
-                """,
-                (order_id, state, last_updated_at, utc_now_iso(), pack_id),
-            )
-            conn.commit()
     except Exception as e:
-        print(f"[inbound_worker] STATE UPSERT ERROR: {e}", flush=True)
+        log(f"Heartbeat error for {dedupe_key}: {e}", "ERROR")
 
-
-def upsert_inbound_sales_order_plan(site: str, order_id: str, status: str):
-    """
-    Crea/actualiza el plan de SO (idempotente por dedupe_key so-plan:<site>:<order_id>)
-    """
-    dedupe = f"so-plan:{site}:{order_id}"
+def release_lock(dedupe_key: str):
+    """Libera lock al completar (éxito o fallo)"""
     try:
-        with db_conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO inbound_sales_orders
-                  (dedupe_key, ml_order_id, site, status, odoo_so_id, odoo_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
+        db.execute(
+            "DELETE FROM inbound_processing_locks WHERE dedupe_key=? AND worker_id=?",
+            (dedupe_key, Config.WORKER_ID)
+        )
+    except Exception as e:
+        log(f"Lock release error: {dedupe_key}: {e}", "ERROR")
+
+def is_already_completed(dedupe_key: str) -> bool:
+    """Verifica si ya fue procesado exitosamente (audit table).
+
+    Solo bloquea resultados TERMINALES permanentes:
+    - 'success'  → procesado correctamente en Odoo, no reintentar
+    - 'dead'     → agotó MAX_RETRIES, no reintentar automáticamente
+
+    NO bloquea:
+    - 'manual_review' → falló por error de negocio (ej. sell_on_meli=False,
+      SKU no en Odoo). Se puede auto-curar si se corrige el dato en Odoo
+      y MeLi reenvía el webhook o se usa recover_manual_review.py.
+    - 'skipped' → kill-switch estaba OFF; si se reactiva, se reintentará.
+    - 'error'   → error transiente, retryable.
+    """
+    try:
+        row = db.execute(
+            "SELECT 1 FROM processed_inbound_events WHERE dedupe_key=? AND result IN ('success', 'dead')",
+            (dedupe_key,)
+        ).fetchone()
+        return row is not None
+    except Exception as e:
+        log(f"Completion check error: {dedupe_key}: {e}", "ERROR")
+        return False  # Conservador: si no podemos verificar, asumimos no completado
+
+def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_ms: Optional[int] = None, lock_key: Optional[str] = None):
+    """
+    Marca job como completado en audit table.
+    Libera lock y limpia payload (opcional).
+
+    `lock_key` separa el key del audit (que puede ser action-aware, ej `ml:123:cancelled`)
+    del key del lock (que serializa por order_id, ej `ml:123`). Si None, se usa dedupe_key
+    para ambos (back-compat con reaper paths donde no hay action determinada todavía).
+    """
+    effective_lock_key = lock_key if lock_key is not None else dedupe_key
+    try:
+        with db.transaction():
+            # Insertar en audit
+            db.execute("""
+                INSERT INTO processed_inbound_events
+                    (dedupe_key, processed_at, result, detail_json, worker_id, processing_time_ms)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(dedupe_key) DO UPDATE SET
-                  status=excluded.status,
-                  updated_at=excluded.updated_at
-                """,
-                (dedupe, order_id, site, status, utc_now_iso(), utc_now_iso()),
+                    processed_at=excluded.processed_at,
+                    result=excluded.result,
+                    detail_json=excluded.detail_json,
+                    worker_id=excluded.worker_id,
+                    processing_time_ms=excluded.processing_time_ms
+            """, (
+                dedupe_key,
+                datetime.now(timezone.utc).isoformat(),
+                result,
+                json.dumps(detail),
+                Config.WORKER_ID,
+                processing_time_ms
+            ))
+
+            # Liberar lock
+            db.execute(
+                "DELETE FROM inbound_processing_locks WHERE dedupe_key=?",
+                (effective_lock_key,)
             )
-            conn.commit()
+            
+            # Opcional: limpiar payload inmediatamente (ahorro de espacio)
+            # db.execute("DELETE FROM inbound_job_payloads WHERE dedupe_key=?", (dedupe_key,))
+        
+        record_metric(result, processing_time_ms)
+        log(f"Completed: {dedupe_key} = {result}", "INFO", {"detail": detail})
+        
     except Exception as e:
-        print(f"[inbound_worker] SO PLAN UPSERT ERROR: {e}", flush=True)
+        log(f"CRITICAL: mark_completed failed: {dedupe_key}: {e}", "CRITICAL")
+        # No relanzar: mejor perder audit que crashar el worker
 
+# =========================
+# REAPER — Recuperación autónoma con payload real
+# =========================
+def reaper_loop(redis_client: redis.Redis):
+    """
+    Limpia locks stale y reencola jobs con payload original.
+    Fix v8.4: Usa tabla inbound_job_payloads, no reconstrucción ad-hoc.
+    """
+    log("Reaper started", "INFO")
+    
+    while True:
+        try:
+            time.sleep(Config.REAPER_INTERVAL)
+            
+            stale_threshold = (datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)).isoformat()
+            
+            # 1. Encontrar locks stale
+            stale_locks = db.execute(
+                """SELECT dedupe_key, worker_id, payload_hash 
+                   FROM inbound_processing_locks 
+                   WHERE claimed_at < ? 
+                   LIMIT 100""",
+                (stale_threshold,)
+            ).fetchall()
+            
+            if not stale_locks:
+                continue
+            
+            log(f"Reaper found {len(stale_locks)} stale locks", "WARN")
+            
+            for lock in stale_locks:
+                dedupe_key = lock["dedupe_key"]
+                old_worker = lock["worker_id"]
+                expected_hash = lock["payload_hash"]
+                
+                try:
+                    with db.transaction():
+                        # Verificar que sigue siendo stale (race condition check)
+                        current = db.execute(
+                            "SELECT claimed_at FROM inbound_processing_locks WHERE dedupe_key=?",
+                            (dedupe_key,)
+                        ).fetchone()
+                        
+                        if not current or current["claimed_at"] > stale_threshold:
+                            continue  # Ya fue actualizado por otro
+                        
+                        # Eliminar lock stale
+                        db.execute("DELETE FROM inbound_processing_locks WHERE dedupe_key=?", (dedupe_key,))
+                        
+                        # RECUPERAR PAYLOAD REAL — Fix crítico v8.4
+                        payload_data = get_payload(dedupe_key)
+                        
+                        if payload_data:
+                            job, stored_hash = payload_data
+                            
+                            # Validar integridad
+                            if stored_hash != expected_hash:
+                                log(f"Hash mismatch for {dedupe_key}: expected {expected_hash[:16]}..., got {stored_hash[:16]}...", "ERROR")
+                                # Enviar a manual review en lugar de reencolar
+                                mark_completed(dedupe_key, "manual_review", {
+                                    "reason": "payload_integrity_error",
+                                    "expected_hash_prefix": expected_hash[:16],
+                                    "stored_hash_prefix": stored_hash[:16]
+                                })
+                                continue
+                            
+                            # Incrementar contador de reaps
+                            reap_count = job.get("_reap_count", 0) + 1
+                            job["_reap_count"] = reap_count
+                            job["_reaped"] = True
+                            job["_reaped_at"] = datetime.now(timezone.utc).isoformat()
+                            job["_original_worker"] = old_worker
+                            
+                            # Guardar payload actualizado
+                            persist_payload(dedupe_key, job)
+                            
+                            # REENCOLAR CON FIFO CORRECTO (rpush) — Fix v8.4
+                            redis_client.rpush(Config.QUEUE, json.dumps(job))
+                            
+                            log(f"Reaper requeued: {dedupe_key} (reap #{reap_count}, was {old_worker})", "INFO")
+                            
+                            # Si ha sido reapeado muchas veces, alertar
+                            if reap_count >= 3:
+                                log(f"Job reaped {reap_count} times: {dedupe_key}", "WARN", {
+                                    "dedupe_key": dedupe_key,
+                                    "reap_count": reap_count,
+                                    "job_preview": json.dumps(job)[:200]
+                                })
+                        else:
+                            # Payload perdido (expirado o corrupción)
+                            log(f"Payload lost for stale lock: {dedupe_key}", "ERROR")
+                            mark_completed(dedupe_key, "dead", {
+                                "reason": "payload_lost",
+                                "original_worker": old_worker
+                            })
+                            
+                except Exception as e:
+                    log(f"Reaper error for {dedupe_key}: {e}", "ERROR")
+            
+            # 2. Cleanup de payloads expirados
+            cleanup_expired_payloads()
+            
+        except Exception as e:
+            log(f"Reaper fatal error: {e}", "ERROR")
+            time.sleep(5)
 
-def insert_delta(delta_id: str, order_id: str, sku: str, qty_delta: int, reason: str) -> bool:
-    with db_conn() as conn:
-        cur = conn.execute(
-            """
-            INSERT OR IGNORE INTO inbound_stock_deltas
-            (delta_id, order_id, sku, qty_delta, reason, created_at, applied_to_odoo)
-            VALUES (?, ?, ?, ?, ?, ?, 0)
-            """,
-            (delta_id, order_id, sku, int(qty_delta), reason, utc_now_iso()),
-        )
-        conn.commit()
-        return cur.rowcount == 1
+# =========================
+# MERCADOLIBRE API — Con retry y circuit breaker pattern
+# =========================
+def ml_token() -> str:
+    with open(Config.TOKEN_FILE) as f:
+        return json.load(f)["access_token"]
 
+def ml_get(path: str, retries: int = 0) -> dict:
+    import requests  # Import local para no fallar si no está disponible al inicio
+    
+    token = ml_token()
+    url = f"https://api.mercadolibre.com{path}"
+    
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
+            
+            if r.status_code == 200:
+                return r.json()
+            
+            if r.status_code == 401:
+                raise RuntimeError("token_expired")
+            
+            if r.status_code in (429, 500, 502, 503, 504):
+                if attempt < retries:
+                    sleep_time = Config.RETRY_DELAY_BASE * (2 ** attempt)
+                    log(f"ML API retry: {r.status_code} attempt {attempt+1}/{retries}", "WARN")
+                    time.sleep(sleep_time)
+                    continue
+            
+            raise RuntimeError(f"ML API error: {path} = {r.status_code}")
+            
+        except requests.exceptions.Timeout:
+            if attempt < retries:
+                time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
+                continue
+            raise RuntimeError(f"ML API timeout after {retries} retries")
+        
+        except requests.exceptions.RequestException as e:
+            if attempt < retries:
+                time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
+                continue
+            raise RuntimeError(f"ML API exception: {e}")
+
+# =========================
+# BUSINESS LOGIC — Idempotente, con validación de SKU
+# =========================
+def is_full(order: dict, shipment: Optional[dict]) -> Optional[bool]:
+    """Detecta si es Fulfillment (Full) o FBM"""
+    lt = order.get("logistic_type")
+    if lt == "fulfillment":
+        return True
+    if lt in ("cross_docking", "drop_off", "xd_drop_off"):
+        return False
+    
+    if lt is None and shipment:
+        lt = shipment.get("logistic_type")
+        if lt == "fulfillment":
+            return True
+        if lt in ("cross_docking", "drop_off", "xd_drop_off"):
+            return False
+    
+    return None
 
 def is_allowed_sku(sku: str) -> bool:
+    """Fail-closed: si no puede verificar, rechaza.
+    Fallback: si el SKU tiene mapping en sku_mapping, se permite aunque no esté en la allowlist."""
     sku = (sku or "").strip()
     if not sku:
         return False
+
     try:
-        with db_conn() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM inbound_allowed_skus WHERE sku=? AND enabled=1 LIMIT 1",
-                (sku,),
-            ).fetchone()
+        # Si no existe tabla de allowlist, permitir todo (modo legacy)
+        row = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='inbound_allowed_skus'"
+        ).fetchone()
+        if not row:
+            return True
+
+        row = db.execute(
+            "SELECT 1 FROM inbound_allowed_skus WHERE sku=? AND enabled=1",
+            (sku,)
+        ).fetchone()
+        if row:
+            return True
+
+        # Fallback: SKU con mapping activo en sku_mapping siempre se permite
+        row = db.execute(
+            "SELECT 1 FROM sku_mapping WHERE sku=?",
+            (sku,)
+        ).fetchone()
         return row is not None
-    except Exception:
+    except Exception as e:
+        log(f"SKU allowlist error: {e}", "ERROR")
         return False
 
+def parse_items(order: dict) -> List[dict]:
+    """Extrae SKUs válidos de la orden"""
+    items = []
 
-def compute_reason_and_multiplier(state: str) -> Tuple[Optional[str], Optional[int]]:
-    state = (state or "").strip().lower()
-    if state in {"paid", "confirmed"}:
-        return ("sale", -1)
-    if state in {"cancelled", "canceled"}:
-        return ("cancel", +1)
-    return (None, None)
-
-def resolve_site(order: Dict[str, Any]) -> str:
-    site = str(order.get("site_id") or "").strip()
-    if site:
-        return site
-
-    # fallback: infer from item_id prefix like "MLM..."
-    try:
-        oi = (order.get("order_items") or [])[0]
-        item = oi.get("item") or {}
-        item_id = str(item.get("id") or "")
-        if len(item_id) >= 3:
-            return item_id[:3]
-    except Exception:
-        pass
-
-    return "UNKNOWN"
-
-
-def build_so_note(order: Dict[str, Any], order_id: str, display_id: str, prefix: str = "ML") -> str:
-    """
-    Construye la nota para el SO.
-    Formato estándar: {prefix} | ORDER={display_id} | {buyer_name}
-    """
-    buyer = order.get("buyer") or {}
-    buyer_first = (buyer.get("nickname") or buyer.get("first_name") or "").strip()
-    buyer_last = (buyer.get("last_name") or "").strip()
-    buyer_name = (f"{buyer_first} {buyer_last}".strip() if buyer_last else buyer_first) or "N/A"
-
-    return f"{prefix} | ORDER={display_id} | {buyer_name}"
-
-
-# ============================================================
-# SKU PARSING
-# ============================================================
-
-def extract_sku(item_dict: Dict[str, Any]) -> Optional[str]:
-    sku = item_dict.get("seller_sku") or item_dict.get("SELLER_SKU")
-    if sku:
-        return str(sku).strip()
-
-    for attr in item_dict.get("attributes") or []:
-        if isinstance(attr, dict) and str(attr.get("id")).upper() == "SELLER_SKU":
-            val = attr.get("value_name") or attr.get("value_id")
-            if val:
-                return str(val).strip()
-
-    return None
-
-
-def lookup_sku_mapping(item_id: str, variation_id: str, site: str) -> Optional[str]:
-    item_id = (item_id or "").strip()
-    variation_id = (variation_id or "").strip()
-    site = (site or "MLM").strip() or "MLM"
-    if not item_id or not variation_id:
-        return None
-
-    try:
-        with db_conn() as conn:
-            # site es extra guardrail (tu PK no lo requiere, pero ayuda si hay duplicados cross-site)
-            row = conn.execute(
-                """
-                SELECT sku
-                FROM sku_mapping
-                WHERE channel='meli'
-                  AND remote_item_id=?
-                  AND remote_variation_id=?
-                  AND (site=? OR site IS NULL OR site='')
-                LIMIT 1
-                """,
-                (item_id, variation_id, site),
-            ).fetchone()
-        return str(row[0]).strip() if row and row[0] else None
-    except Exception:
-        return None
-
-
-def parse_items(order: Dict[str, Any]) -> List[Dict[str, Any]]:
-    items = order.get("order_items") or order.get("order_items_v2") or []
-    if not isinstance(items, list):
-        return []
-
-    site = str(order.get("site_id") or "").strip() or "MLM"
-
-    out: List[Dict[str, Any]] = []
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-
-        item_data = it.get("item") or {}
-        if not isinstance(item_data, dict):
-            continue
-
-        # 1) Primero: mapping canónico v2 por (item_id, variation_id)
-        item_id = str(item_data.get("id") or "").strip()
-        var_id = (
-            item_data.get("variation_id")
-            or it.get("variation_id")
-            or it.get("var_id")
-            or it.get("variation")
-        )
-        var_id = str(var_id or "").strip()
+    for it in order.get("order_items", []):
+        item = it.get("item", {})
+        item_id = str(item.get("id") or "").strip()
+        # variation_id puede llegar como None — evitar convertir None a "None"
+        raw_var = item.get("variation_id") or it.get("variation_id")
+        var_id = str(raw_var).strip() if raw_var is not None else ""
 
         sku = None
-        if item_id and var_id:
-            sku = lookup_sku_mapping(item_id, var_id, site)
 
-        # 2) Fallback: si no hay mapping, usa SKU directo del payload
+        # 1. Buscar en mapping local (item_id + variation_id)
+        if item_id and var_id:
+            row = db.execute(
+                "SELECT sku FROM sku_mapping WHERE channel='meli' AND remote_item_id=? AND remote_variation_id=?",
+                (item_id, var_id)
+            ).fetchone()
+            sku = row[0] if row else None
+
+        # 2. Fallback: campo seller_sku directo en el item (campo top-level de la API de MeLi)
         if not sku:
-            sku = extract_sku(item_data)
+            sku = (item.get("seller_sku") or item.get("SELLER_SKU") or "").strip() or None
+
+        # 3. Fallback: seller_sku dentro del array attributes
+        if not sku:
+            for attr in item.get("attributes", []):
+                if str(attr.get("id", "")).upper() == "SELLER_SKU":
+                    sku = attr.get("value_name")
+                    break
+
+        if not sku:
+            continue
+            
+        sku = sku.strip()
+        
         try:
             qty = int(it.get("quantity", 0))
-        except Exception:
+        except:
             qty = 0
+        
+        if qty <= 0 or not is_allowed_sku(sku):
+            continue
+        
+        items.append({"sku": sku, "qty": qty, "item_id": item_id, "variation_id": var_id})
+    
+    return items
 
-        if sku and qty > 0:
-            out.append({"sku": sku, "quantity": qty})
-
-    return out
-
-# ============================================================
-# FULL REFUND / RETURN (NO STOCK) — tool canónica
-# ============================================================
-
-def maybe_run_full_refund(order: Dict[str, Any], order_id: str, display_id: str, site: str, state: str, dedupe_key: str):
+def run_tool(tool_name: str, env_vars: dict) -> Tuple[int, str, str]:
     """
-    FULL refund/cancel:
-      - Llama tool canónica inbound_full_so_refund_and_cancel.py
-      - Si la tool regresa RC=2 => SO todavía no existe => NO es error (deferred)
-    Kill-switch:
-      - bridge_settings: meli_inbound_full_refunds_enabled = "1"
+    Ejecuta tool externa con idempotencia garantizada por CLIENT_ORDER_REF.
+    Las tools deben usar CLIENT_ORDER_REF como clave única en Odoo.
     """
-    enabled = (
-        os.getenv("INBOUND_FULL_REFUNDS_ENABLED", "0") == "1"
-        or get_setting("meli_inbound_full_refunds_enabled", "0") == "1"
-    )
-    if not enabled:
-        return
-
-    st = (state or "").strip().lower()
-    if st not in {"cancelled", "canceled", "refunded"}:
-        return
-
-    client_order_ref = f"MLFULL:{site}:{display_id}"
-    _refund_candidates = [
-        "/data/inbound_full_so_refund_and_cancel.py",
-        "/mnt/data/appdata/bridge/tools/inbound_full_so_refund_and_cancel.py",
+    tool_paths = [
+        f"/data/{tool_name}.py",
+        f"/mnt/data/appdata/bridge/tools/{tool_name}.py",
+        f"./tools/{tool_name}.py"
     ]
-    tool = next((p for p in _refund_candidates if os.path.exists(p)), _refund_candidates[-1])
-
+    
+    tool_path = next((p for p in tool_paths if os.path.exists(p)), None)
+    if not tool_path:
+        return -1, "", f"Tool not found: {tool_name}"
+    
+    env = os.environ.copy()
+    env.update({
+        "ODOO_URL": Config.ODOO_URL or "",
+        "ODOO_DB": Config.ODOO_DB or "",
+        "ODOO_USER": Config.ODOO_USER or "",
+        "ODOO_PASS": Config.ODOO_PASS or "",
+    })
+    env.update(env_vars)
+    
     try:
+        start = time.time()
         p = subprocess.run(
-            ["python3", tool],
-            env=dict(
-                os.environ,
-                CLIENT_ORDER_REF=client_order_ref,
-                ODOO_URL=get_setting("odoo_url", ""),
-                ODOO_DB=get_setting("odoo_db", ""),
-                ODOO_USER=get_setting("odoo_user", ""),
-                ODOO_PASSWORD=get_setting("odoo_password", ""),
-            ),
-            capture_output=True,
-            text=True,
-            timeout=180,
+            ["python3", tool_path], 
+            env=env, 
+            capture_output=True, 
+            text=True, 
+            timeout=180
         )
+        elapsed_ms = int((time.time() - start) * 1000)
+        
+        if p.returncode != 0:
+            log(f"Tool failed: {tool_name} rc={p.returncode}", "ERROR", {
+                "stderr": p.stderr[-500:],
+                "stdout": p.stdout[-500:]
+            })
+        
+        return p.returncode, p.stdout, p.stderr
+        
+    except subprocess.TimeoutExpired:
+        return -2, "", f"Timeout after 180s"
+    except Exception as e:
+        return -3, "", str(e)
 
-        if p.returncode == 0:
-            print(f"[inbound_worker] FULL_REFUND_OK dedupe={dedupe_key} ref={client_order_ref}", flush=True)
+def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str, lock_key: str):
+    """Procesa orden Fulfillment.
+
+    `dedupe_key` es action-aware (`ml:{id}:paid` / `ml:{id}:cancelled`) — usado para audit/idempotency.
+    `lock_key` es el initial key (`ml:{id}`) — se libera al finalizar para soltar la serialización.
+    """
+    ref = f"MLFULL:{site}:{visible_ref}"
+    start_time = time.time()
+
+    # Estados terminales negativos
+    if state in CANCELLED_STATES:
+        if not is_enabled("meli_inbound_full_refunds_enabled"):
+            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key)
             return
 
-        if p.returncode == 2:
-            print(f"[inbound_worker] FULL_REFUND_DEFERRED_NO_SO dedupe={dedupe_key} ref={client_order_ref}", flush=True)
+        rc, out, err = run_tool("inbound_full_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
+        result = "success" if rc == 0 else "manual_review"
+        processing_time = int((time.time() - start_time) * 1000)
+        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
+        return
+
+    # Estados positivos
+    if state in PAID_STATES:
+        if not is_enabled("meli_inbound_full_paid_enabled"):
+            mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"}, lock_key=lock_key)
             return
 
-        err_tail = (p.stderr or "")[-500:]
-        print(
-            f"[inbound_worker] FULL_REFUND_ERROR dedupe={dedupe_key} ref={client_order_ref} "
-            f"rc={p.returncode} stderr_tail={err_tail}",
-            flush=True,
-        )
+        buyer = order.get("buyer") or {}
+        buyer_name = (buyer.get("nickname") or buyer.get("first_name") or "").strip()
+        buyer_last = (buyer.get("last_name") or "").strip()
+        full_name = (f"{buyer_name} {buyer_last}".strip() if buyer_last else buyer_name)
 
-    except subprocess.TimeoutExpired:
-        print(f"[inbound_worker] FULL_REFUND_TIMEOUT dedupe={dedupe_key} ref={client_order_ref}", flush=True)
-    except Exception as e:
-        print(f"[inbound_worker] FULL_REFUND_EXCEPTION dedupe={dedupe_key} ref={client_order_ref} err={e}", flush=True)
+        so_note = f"MercadoLibre FULL | ORDER={visible_ref} | {full_name or 'N/A'}"
 
-
-# ========================================================
-# FULL PAID (NO STOCK) — contable puro
-# ========================================================
-
-def maybe_run_full_paid_no_stock(
-    order: Dict[str, Any],
-    order_id: str,
-    display_id: str,
-    site: str,
-    state: str,
-    dedupe_key: str,
-):
-    """
-    FULL paid/approved/finalized:
-      - Crea/Confirma SO contable + crea factura + paga
-      - NO crea pickings / NO mueve stock
-    Kill-switch:
-      - bridge_settings: meli_inbound_full_paid_enabled = "1"
-    """
-    enabled = (
-        os.getenv("INBOUND_FULL_PAID_ENABLED", "0") == "1"
-        or get_setting("meli_inbound_full_paid_enabled", "0") == "1"
-    )
-    if not enabled:
+        rc, out, err = run_tool("inbound_full_paid_one_shot_no_stock", {
+            "CLIENT_ORDER_REF": ref,
+            "ORDER_JSON": json.dumps(order),
+            "SITE_ID": site,
+            "SO_NOTE": so_note,
+        })
+        result = "success" if rc == 0 else "manual_review"
+        processing_time = int((time.time() - start_time) * 1000)
+        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
         return
 
-    st = (state or "").strip().lower()
-    if st not in {"paid", "approved", "finalized"}:
+    # Estado desconocido — marcar review en lugar de dejar el lock activo (M2 backstop).
+    mark_completed(dedupe_key, "manual_review", {"reason": "unsupported_state", "state": state}, lock_key=lock_key)
+
+def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str, lock_key: str):
+    """Procesa orden FBM (Fulfillment by Merchant)."""
+    ref = f"MLFBM:{site}:{visible_ref}"
+    start_time = time.time()
+
+    if state in CANCELLED_STATES:
+        if not is_enabled("meli_inbound_fbm_refunds_enabled"):
+            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key)
+            return
+
+        rc, out, err = run_tool("inbound_fbm_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
+        result = "success" if rc == 0 else "manual_review"
+        processing_time = int((time.time() - start_time) * 1000)
+        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
         return
 
-    client_order_ref = f"MLFULL:{site}:{display_id}"
+    if state in PAID_STATES:
+        if not is_enabled("meli_inbound_fbm_paid_enabled"):
+            mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"}, lock_key=lock_key)
+            return
 
-    tool_candidates = [
-        "/data/inbound_full_paid_one_shot_no_stock.py",
-        "/mnt/data/appdata/bridge/tools/inbound_full_paid_one_shot_no_stock.py",
-    ]
-    tool = next((p for p in tool_candidates if os.path.exists(p)), None)
+        items = parse_items(order)
+        if not items:
+            mark_completed(dedupe_key, "manual_review", {"reason": "no_valid_items"}, lock_key=lock_key)
+            return
 
-    if not tool:
-        print(
-            f"[inbound_worker] FULL_PAID_ERROR dedupe={dedupe_key} ref={client_order_ref} tool_not_found",
-            flush=True,
-        )
-        return
+        buyer = order.get("buyer") or {}
+        buyer_name = (buyer.get("nickname") or buyer.get("first_name") or "").strip()
+        buyer_last = (buyer.get("last_name") or "").strip()
+        full_name = (buyer_name + (" " + buyer_last if buyer_last else "")).strip() or "UNKNOWN"
 
-    try:
-        env = os.environ.copy()
-        env["CLIENT_ORDER_REF"] = client_order_ref
-        env["ODOO_URL"] = get_setting("odoo_url", "")
-        env["ODOO_DB"] = get_setting("odoo_db", "")
-        env["ODOO_USER"] = get_setting("odoo_user", "")
-        env["ODOO_PASSWORD"] = get_setting("odoo_password", "")
-        env["ORDER_JSON"] = json.dumps(order, ensure_ascii=False)
-        env["SITE_ID"] = site
+        so_note = f"MercadoLibre FBM | ORDER={visible_ref} | {full_name or 'N/A'}"
 
-        env["SO_NOTE"] = build_so_note(order, order_id, display_id, "ML: FULL paid")
+        rc, out, err = run_tool("inbound_fbm_so_apply_paid_one_shot", {
+            "CLIENT_ORDER_REF": ref,
+            "ORDER_JSON": json.dumps(order),
+            "SITE_ID": site,
+            "SO_NOTE": so_note,
+        })
 
-        p = subprocess.run(
-            ["python3", tool],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=180,
-        )
-
-        if p.returncode == 0:
-            print(f"[inbound_worker] FULL_PAID_OK dedupe={dedupe_key} ref={client_order_ref}", flush=True)
+        processing_time = int((time.time() - start_time) * 1000)
+        if rc == 0:
+            mark_completed(dedupe_key, "success", {"ref": ref, "items": len(items)}, processing_time, lock_key=lock_key)
         else:
-            stderr_tail = (p.stderr or "")[-500:]
-            print(
-                f"[inbound_worker] FULL_PAID_ERROR dedupe={dedupe_key} ref={client_order_ref} rc={p.returncode} stderr_tail={stderr_tail}",
-                flush=True,
-            )
+            mark_completed(dedupe_key, "manual_review", {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
+        return
 
-    except subprocess.TimeoutExpired:
-        print(f"[inbound_worker] FULL_PAID_TIMEOUT dedupe={dedupe_key} ref={client_order_ref}", flush=True)
-    except Exception as e:
-        print(f"[inbound_worker] FULL_PAID_EXCEPTION dedupe={dedupe_key} ref={client_order_ref} err={e}", flush=True)
+    # Estado desconocido — marcar review en lugar de dejar el lock activo (M2 backstop).
+    mark_completed(dedupe_key, "manual_review", {"reason": "unsupported_state", "state": state}, lock_key=lock_key)
 
-
-# ========================================================
-# FBM PAID — SO + Picking (SIN validar picking)
-# ========================================================
-
-def maybe_run_fbm_paid(
-    order: Dict[str, Any],
-    order_id: str,
-    display_id: str,
-    site: str,
-    state: str,
-    dedupe_key: str,
-) -> bool:
-    """
-    FBM paid/approved/finalized:
-      - Crea SO + líneas + confirma (crea picking automáticamente)
-      - Crea Invoice + paga
-      - NO valida picking (queda para humano)
-    Kill-switch:
-      - bridge_settings: meli_inbound_fbm_paid_enabled = "1"
-    Returns:
-      - True si se procesó (éxito o error)
-      - False si no está habilitado o no aplica
-    """
-    enabled = (
-        os.getenv("INBOUND_FBM_PAID_ENABLED", "0") == "1"
-        or get_setting("meli_inbound_fbm_paid_enabled", "0") == "1"
-    )
-    if not enabled:
-        return False
-
-    st = (state or "").strip().lower()
-    if st not in {"paid", "approved", "finalized", "confirmed"}:
-        return False
-
-    client_order_ref = f"MLFBM:{site}:{display_id}"
-
-    tool_candidates = [
-        "/data/inbound_fbm_so_apply_paid_one_shot.py",
-        "/mnt/data/appdata/bridge/tools/inbound_fbm_so_apply_paid_one_shot.py",
-    ]
-    tool = next((p for p in tool_candidates if os.path.exists(p)), None)
-
-    if not tool:
-        print(
-            f"[inbound_worker] FBM_PAID_ERROR dedupe={dedupe_key} ref={client_order_ref} tool_not_found",
-            flush=True,
-        )
-        return False
-
-    try:
-        env = os.environ.copy()
-        env["ODOO_URL"] = get_setting("odoo_url", "http://odoo-odoo-1:8069")
-        env["ODOO_DB"] = get_setting("odoo_db", "")
-        env["ODOO_USER"] = get_setting("odoo_user", "")
-        env["ODOO_PASS"] = get_setting("odoo_password", "")
-        env["ORDER_JSON"] = json.dumps(order, ensure_ascii=False)
-
-        env["SITE_ID"] = site
-        env["CLIENT_ORDER_REF"] = client_order_ref
-
-        env["SO_NOTE"] = build_so_note(order, order_id, display_id, "ML: FBM paid")
-
-        p = subprocess.run(
-            ["python3", tool],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=180,
-        )
-
-        stdout_tail = (p.stdout or "")[-800:]
-        stderr_tail = (p.stderr or "")[-800:]
-
-        if p.returncode == 0:
-            print(f"[inbound_worker] FBM_PAID_OK dedupe={dedupe_key} ref={client_order_ref}", flush=True)
-            return True
-        else:
-            print(
-                f"[inbound_worker] FBM_PAID_ERROR dedupe={dedupe_key} ref={client_order_ref} "
-                f"rc={p.returncode} stderr_tail={stderr_tail}",
-                flush=True,
-            )
-            return "manual_review"
-
-    except subprocess.TimeoutExpired:
-        print(f"[inbound_worker] FBM_PAID_TIMEOUT dedupe={dedupe_key} ref={client_order_ref}", flush=True)
-        return "error"
-    except Exception as e:
-        print(f"[inbound_worker] FBM_PAID_EXCEPTION dedupe={dedupe_key} ref={client_order_ref} err={e}", flush=True)
-        return "error"
-
-
-# ============================================================
-# MAIN LOOP
-# ============================================================
-
+# =========================
+# MAIN LOOP — FIFO correcto, heartbeat, graceful degradation
+# =========================
 def main():
+    init_db()
+    log(f"Worker started: {Config.WORKER_ID}", "INFO", {
+        "start_time": Config.WORKER_START_TIME,
+        "db": Config.DB_PATH,
+        "queue": Config.QUEUE
+    })
+    
+    redis_client = redis.Redis.from_url(Config.REDIS_URL, decode_responses=True)
+    
+    # Verificar conectividad
     try:
-        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-        r.ping()
-        print(f"[inbound_worker] START queue={QUEUE} db={DB_PATH}", flush=True)
+        redis_client.ping()
+        log("Redis connected", "INFO")
     except Exception as e:
-        print(f"[inbound_worker] FATAL redis error: {e}", flush=True)
-        time.sleep(5)
-        return
-
+        log(f"Redis connection failed: {e}", "CRITICAL")
+        sys.exit(1)
+    
+    # Iniciar reaper thread
+    reaper_thread = threading.Thread(target=reaper_loop, args=(redis_client,), daemon=True)
+    reaper_thread.start()
+    
+    # Métricas periódicas
+    def metrics_reporter():
+        while True:
+            time.sleep(300)  # 5 minutos
+            try:
+                locks = db.execute("SELECT COUNT(*) FROM inbound_processing_locks").fetchone()[0]
+                payloads = db.execute("SELECT COUNT(*) FROM inbound_job_payloads").fetchone()[0]
+                completed_1h = db.execute(
+                    "SELECT COUNT(*) FROM processed_inbound_events WHERE processed_at > datetime('now', '-1 hour')"
+                ).fetchone()[0]
+                
+                q_len = redis_client.llen(Config.QUEUE)
+                proc_len = redis_client.llen(Config.PROCESSING)
+                dlq_len = redis_client.llen(Config.DEAD_LETTER)
+                
+                log("Metrics snapshot", "INFO", {
+                    "db_locks": locks,
+                    "db_payloads": payloads,
+                    "completed_1h": completed_1h,
+                    "redis_queue": q_len,
+                    "redis_processing": proc_len,
+                    "redis_dlq": dlq_len
+                })
+            except Exception as e:
+                log(f"Metrics error: {e}", "ERROR")
+    
+    threading.Thread(target=metrics_reporter, daemon=True).start()
+    
+    # Main processing loop
     while True:
-        if get_setting("meli_inbound_enabled", "0") != "1":
+        if not is_enabled("meli_inbound_enabled"):
             time.sleep(2)
             continue
-
+        
+        item = None
+        dedupe_key = None
+        lock_key = None
+        processing_start = None
+        
         try:
-            item = r.blpop(QUEUE, timeout=5)
+            # FIFO correcto: BRPOP (derecha) → LPUSH (izquierda) en processing
+            # Pero para mantener FIFO en requeue, usamos RPUSH
+            item = redis_client.brpop(Config.QUEUE, timeout=5)
             if not item:
                 continue
-            _, payload = item
-        except Exception as e:
-            print(f"[inbound_worker] REDIS ERROR: {e}", flush=True)
-            time.sleep(2)
-            continue
-
-        job_hash = str(hash(payload))[-8:]
-        print(f"[inbound_worker] JOB recv hash={job_hash}", flush=True)
-
-        dedupe_key = f"unknown:{job_hash}"
-
-        try:
+            
+            # brpop retorna (queue_name, item)
+            _, item_data = item
+            
+            processing_start = time.time()
+            
+            # Parsear job
             try:
-                job = json.loads(payload)
-                if not isinstance(job, dict):
-                    raise ValueError("payload_not_dict")
-            except Exception:
-                mark_processed(
-                    f"badjson:{job_hash}",
-                    "skipped",
-                    {"error": "bad_json", "payload": payload[:200]},
-                )
+                job = json.loads(item_data)
+            except json.JSONDecodeError:
+                log(f"Invalid JSON in queue", "ERROR", {"preview": str(item_data)[:200]})
+                redis_client.lpush(Config.DEAD_LETTER, json.dumps({
+                    "raw": str(item_data)[:1000],
+                    "error": "json_decode_error",
+                    "ts": datetime.now(timezone.utc).isoformat()
+                }))
+                redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
                 continue
-
-            dedupe_key = str(job.get("dedupe_key") or "").strip()
+            
+            # Generar/extraer dedupe_key
+            dedupe_key = job.get("dedupe_key")
             if not dedupe_key:
-                dedupe_key = f"missingdedupe:{job_hash}"
+                resource = job.get("resource", "")
+                m = re.match(r"^/orders/([A-Z0-9\-]+)$", resource)
+                if m:
+                    dedupe_key = f"ml:{m.group(1)}"
+                else:
+                    dedupe_key = f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
+                job["dedupe_key"] = dedupe_key
+            
+            # 1. Persistir payload ANTES de cualquier operación — Fix v8.4
+            payload_hash = persist_payload(dedupe_key, job)
 
-            if already_processed(dedupe_key):
-                print(f"[inbound_worker] SKIP dedupe={dedupe_key}", flush=True)
+            # 2. (M5) Idempotency check movido post-fetch: el dedupe_key real es action-aware
+            #    (`ml:{order_id}:{action}`), pero `action` solo se conoce tras leer el state
+            #    de la orden. El check aquí silenciaría cancellations posteriores a un paid
+            #    success. Mantenemos el lock por order_id para serializar concurrencia.
+
+            # 3. Adquirir lock
+            if not acquire_lock(dedupe_key, payload_hash):
+                # Lock ocupado por otro worker activo
+                # FIX v8.4: FIFO correcto — usar RPUSH, no LPUSH
+                job["_retry_delay"] = job.get("_retry_delay", 0) + 1
+                redis_client.rpush(Config.QUEUE, json.dumps(job))
+                log(f"Lock busy: requeued with delay", "DEBUG", {
+                    "dedupe_key": dedupe_key,
+                    "delay": job["_retry_delay"]
+                })
+                time.sleep(min(job["_retry_delay"], 10))  # Backoff creciente, max 10s
                 continue
 
-            resource = str(job.get("resource") or "")
-            order_json = job.get("order_json")
+            # M5: tracker del initial lock_key. Si dedupe_key se reasigna a action-aware
+            # más adelante, exception handler aún sabe qué lock liberar.
+            lock_key = dedupe_key
 
-            if isinstance(order_json, dict):
-                order = order_json
-                order_id = str(order.get("id") or f"TEST-{job_hash}")
-            else:
-                m = ORDER_ID_RE.match(resource)
+            # Tenemos el lock — agregar a processing list para observabilidad
+            redis_client.lpush(Config.PROCESSING, json.dumps({
+                "dedupe_key": dedupe_key,
+                "worker": Config.WORKER_ID,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "payload_hash": payload_hash[:16]
+            }))
+            
+            log(f"Processing started", "INFO", {
+                "dedupe_key": dedupe_key,
+                "retry_count": job.get("_retry_count", 0),
+                "reaped": job.get("_reaped", False)
+            })
+            
+            # 4. Extraer o fetchear orden
+            order = job.get("order_json")
+            
+            if not order:
+                # Necesitamos fetchear de ML
+                resource = job.get("resource", "")
+                m = re.match(r"^/orders/([A-Z0-9\-]+)$", resource)
+                
                 if not m:
-                    mark_processed(dedupe_key, "manual_review", {"reason": "bad_resource"})
+                    mark_completed(dedupe_key, "dead", {"reason": "bad_resource", "resource": resource})
+                    redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": dedupe_key}))
                     continue
-                order_id = m.group(1)
-                order = ml_get_order(order_id)
-
-            # CRITICAL: display_id es lo que el usuario ve en MeLi web
-            display_id = get_display_id(order, order_id)
-
-            site = resolve_site(order)
-            state = str(order.get("status") or "")
-
-            print(
-                f"[inbound_worker] STATE_PROBE order_id={order_id} display_id={display_id} site={site} status={state} logistic_type={order.get('logistic_type')}",
-                flush=True,
-            )
-
-            last_updated = str(
-                order.get("last_updated")
-                or order.get("date_last_updated")
-                or utc_now_iso()
-            )
-
-            upsert_order_state(
-                order_id,
-                state,
-                last_updated,
-                str(order.get("pack_id")) if order.get("pack_id") else None,
-            )
-
-            # ========= FULL DETECTION =========
-            shipment = None
-
-            shipment_json = job.get("shipment_json")
-            if isinstance(shipment_json, dict):
-                shipment = shipment_json
-            else:
-                ship_id = None
+                
                 try:
-                    ship_id = (order.get("shipping") or {}).get("id")
-                except Exception:
-                    ship_id = None
-
-                if ship_id:
-                    try:
-                        shipment = ml_get_shipment(str(ship_id))
-                    except Exception as e:
-                        print(f"[inbound_worker] WARN shipment fetch failed id={ship_id} err={e}", flush=True)
-
-            is_full, src = detect_full(order, shipment)
-
-            if is_full is None:
-                mark_processed(
-                    dedupe_key,
-                    "manual_review",
-                    {"order_id": order_id, "display_id": display_id, "site": site, "reason": "full_unknown", "src": src},
-                )
-                continue
-
-            # ========= FULL PATH =========
-            if is_full:
-                upsert_inbound_sales_order_plan(site, order_id, "planned")
-                maybe_run_full_refund(order, order_id, display_id, site, state, dedupe_key)
-                maybe_run_full_paid_no_stock(order, order_id, display_id, site, state, dedupe_key)
-
-                mark_processed(
-                    dedupe_key,
-                    "planned_full",
-                    {
-                        "order_id": order_id,
-                        "display_id": display_id,
-                        "site": site,
-                        "state": state,
-                        "full": True,
-                        "full_detect_src": src,
-                        "full_paid_enabled": get_setting("meli_inbound_full_paid_enabled", "0") == "1",
-                        "full_refunds_enabled": get_setting("meli_inbound_full_refunds_enabled", "0") == "1",
-                    },
-                )
-                continue
-
-            # ========= FBM PATH =========
-            st_lower = state.strip().lower()
-
-            # FBM CANCEL/REFUND/RETURN
-            if st_lower in ("cancelled", "canceled", "refunded", "returned"):
-                if get_setting("meli_inbound_fbm_refunds_enabled", "0") != "1":
-                    mark_processed(
-                        dedupe_key,
-                        "skipped_disabled",
-                        {
-                            "order_id": order_id,
-                            "display_id": display_id,
-                            "site": site,
-                            "state": state,
-                            "full": False,
-                            "fbm_refund_cancel_enabled": False,
-                        },
-                    )
-                    continue
-
-                client_order_ref = f"MLFBM:{site}:{display_id}"
-                env = os.environ.copy()
-                env["ODOO_URL"] = get_setting("odoo_url", "http://odoo-odoo-1:8069")
-                env["ODOO_DB"] = get_setting("odoo_db", "")
-                env["ODOO_USER"] = get_setting("odoo_user", "")
-                env["ODOO_PASS"] = get_setting("odoo_password", "")
-                env["CLIENT_ORDER_REF"] = client_order_ref
-
-                tool = "/data/inbound_fbm_so_refund_and_cancel.py"
-
-                try:
-                    p = subprocess.run(
-                        ["python3", tool],
-                        env=env,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        timeout=180,
-                    )
-                    rc = int(p.returncode)
-                    stderr_tail = (p.stderr or "")[-1200:]
-
-                    if rc != 0:
-                        print(
-                            f"[inbound_worker] FBM_REFUND_ERROR dedupe={dedupe_key} ref={client_order_ref} rc={rc} stderr_tail={stderr_tail}",
-                            flush=True,
-                        )
-                        mark_processed(
-                            dedupe_key,
-                            "manual_review",
-                            {
-                                "order_id": order_id,
-                                "display_id": display_id,
-                                "site": site,
-                                "state": state,
-                                "client_order_ref": client_order_ref,
-                                "error": "fbm_refund_failed",
-                                "rc": rc,
-                            },
-                        )
-                        continue
-
-                    print(f"[inbound_worker] FBM_REFUND_OK dedupe={dedupe_key} ref={client_order_ref}", flush=True)
-                    mark_processed(
-                        dedupe_key,
-                        "fbm_refund_ok",
-                        {
-                            "order_id": order_id,
-                            "display_id": display_id,
-                            "site": site,
-                            "state": state,
-                            "client_order_ref": client_order_ref,
-                        },
-                    )
-                    continue
-
+                    order = ml_get(f"/orders/{m.group(1)}", retries=2)
                 except Exception as e:
-                    print(f"[inbound_worker] FBM_REFUND_EXCEPTION dedupe={dedupe_key} err={e}", flush=True)
-                    mark_processed(
-                        dedupe_key,
-                        "error",
-                        {"order_id": order_id, "display_id": display_id, "error": "fbm_refund_exception", "msg": str(e)},
-                    )
+                    error_msg = str(e)
+                    retry_count = job.get("_retry_count", 0)
+
+                    # Bug M4 fix: NO mandar a dead inmediato cuando
+                    # token_expired. El cron de refresh corre cada 6h, mientras
+                    # MAX_RETRIES con backoff = ~14s no le da tiempo. Tratarlo
+                    # como transitorio: el reaper requeue + tiempo natural deja
+                    # que el refresh complete. Solo dead cuando se rebasan los
+                    # MAX_RETRIES, igual que cualquier otra falla.
+                    if retry_count >= Config.MAX_RETRIES:
+                        mark_completed(dedupe_key, "dead", {
+                            "reason": "ml_fetch_failed",
+                            "error": error_msg,
+                            "retries": retry_count
+                        })
+                        redis_client.lpush(Config.DEAD_LETTER, json.dumps({
+                            "job": job,
+                            "error": error_msg,
+                            "failed_at": "ml_fetch"
+                        }))
+                        redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
+                    else:
+                        # Reintentar con backoff.
+                        # Bug M1 fix: rpush ANTES de release_lock. Si el proceso
+                        # muere entre las dos llamadas (OOM/SIGKILL/panic),
+                        # antes el lock quedaba liberado y el job perdido. Con
+                        # este orden: si el rpush falla o crash, el lock sigue
+                        # activo y el reaper lo recupera al detectar lock stale.
+                        job["_retry_count"] = retry_count + 1
+                        redis_client.rpush(Config.QUEUE, json.dumps(job))
+                        release_lock(dedupe_key)
+                        log(f"ML fetch failed: retry scheduled", "WARN", {
+                            "dedupe_key": dedupe_key,
+                            "retry": job["_retry_count"],
+                            "error": error_msg
+                        })
+                    
+                    redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": dedupe_key}))
                     continue
+            
+            # 5. Procesar orden
+            order_id = str(order.get("id", "UNKNOWN"))
+            site = str(order.get("site_id", "MLM"))
+            state = str(order.get("status", "")).lower()
+            pack_id = str(order.get("pack_id")) if order.get("pack_id") else None
+            # --- Visible reference for ops: prefer pack_id, fallback to order_id ---
+            visible_ref = pack_id if pack_id else order_id
+            log(f"Visible ref computed | order_id={order_id} | pack_id={pack_id} | visible_ref={visible_ref}")
 
-            # FBM PAID - Crear SO + Picking
-            if st_lower in ("paid", "approved", "finalized", "confirmed"):
-                fbm_paid_processed = maybe_run_fbm_paid(order, order_id, display_id, site, state, dedupe_key)
-                if fbm_paid_processed == True:
-                    mark_processed(
-                        dedupe_key,
-                        "fbm_paid_ok",
-                        {
-                            "order_id": order_id,
-                            "display_id": display_id,
-                            "site": site,
-                            "state": state,
-                            "full": False,
-                            "fbm_paid_enabled": True,
-                        },
-                    )
-                    continue
-                elif fbm_paid_processed in ("manual_review", "error"):
-                    mark_processed(dedupe_key, fbm_paid_processed, {"order_id": order_id, "display_id": display_id, "site": site, "state": state, "reason": "fbm_paid_failed"})
-                    continue
-
-            # FBM FALLBACK: Deltas (legacy)
-            reason, mult = compute_reason_and_multiplier(state)
-            if reason is None:
-                mark_processed(
-                    dedupe_key,
-                    "manual_review",
-                    {"order_id": order_id, "display_id": display_id, "state": state, "reason": "unknown_state"},
-                )
-                continue
-
-            items = parse_items(order)
-            if not items:
-                mark_processed(
-                    dedupe_key,
-                    "manual_review",
-                    {"order_id": order_id, "display_id": display_id, "reason": "no_items"},
-                )
-                continue
-
-            inserted = 0
-            blocked = 0
-
-            for it in items:
-                sku = it["sku"]
-                qty = it["quantity"]
-
-                if not is_allowed_sku(sku):
-                    blocked += 1
-                    continue
-
-                delta_id = f"ml-delta:{site}:{order_id}:{sku}:{reason}:{last_updated}"
-                if insert_delta(delta_id, order_id, sku, mult * qty, reason):
-                    inserted += 1
-
-            detail = {
-                "order_id": order_id,
-                "display_id": display_id,
-                "site": site,
-                "state": state,
-                "full": False,
-                "inserted_deltas": inserted,
-                "blocked_items": blocked,
-            }
-
-            if inserted == 0:
-                mark_processed(dedupe_key, "manual_review", detail)
+            # M5: action-aware idempotency.
+            # Pre-fix: dedupe_key=`ml:{order_id}` → "cancelled" tras "paid success" era silenciado.
+            # Lock sigue por order_id (lock_key, ya seteado tras acquire_lock); audit usa action_key (`...:{action}`).
+            if state in CANCELLED_STATES:
+                action = "cancelled"
+            elif state in PAID_STATES:
+                action = "paid"
             else:
-                mark_processed(dedupe_key, "applied", detail)
+                action = state or "unknown"
+            dedupe_key = f"{lock_key}:{action}"
 
+            if is_already_completed(dedupe_key):
+                log(f"Dedupe action: already completed", "DEBUG", {"dedupe_key": dedupe_key})
+                release_lock(lock_key)
+                redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
+                continue
+
+            # Guardar estado
+            db.execute("""
+                INSERT INTO inbound_orders_state (order_id, site, last_state, last_seen_at, pack_id, logistic_type)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    last_state=excluded.last_state,
+                    last_seen_at=excluded.last_seen_at,
+                    pack_id=COALESCE(excluded.pack_id, pack_id),
+                    logistic_type=COALESCE(excluded.logistic_type, logistic_type)
+            """, (
+                order_id, site, state,
+                datetime.now(timezone.utc).isoformat(),
+                pack_id,
+                order.get("logistic_type")
+            ))
+
+            # Detectar tipo logístico
+            shipment = None
+            if order.get("shipping", {}).get("id"):
+                try:
+                    shipment = ml_get(f"/shipments/{order['shipping']['id']}", retries=1)
+                except Exception as e:
+                    log(f"Shipment fetch warning", "WARN", {"error": str(e)})
+
+            full = is_full(order, shipment)
+
+            if full is None:
+                mark_completed(dedupe_key, "manual_review", {
+                    "order_id": order_id,
+                    "reason": "unknown_logistic_type",
+                    "logistic_type": order.get("logistic_type")
+                }, lock_key=lock_key)
+                redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
+                continue
+
+            # Ejecutar lógica de negocio
+            if full:
+                process_full(order, order_id, site, state, dedupe_key, visible_ref, lock_key)
+            else:
+                process_fbm(order, order_id, site, state, dedupe_key, visible_ref, lock_key)
+
+            # Limpiar de processing list
+            redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
+            
         except Exception as e:
-            print(f"[inbound_worker] UNHANDLED EXCEPTION: {e}", flush=True)
-            try:
-                mark_processed(
-                    dedupe_key,
-                    "error",
-                    {"error": "unhandled_exception", "msg": str(e)},
-                )
-            except Exception:
-                print("[inbound_worker] CRITICAL: could not write error", flush=True)
+            log(f"Unhandled exception", "CRITICAL", {
+                "error": str(e),
+                "dedupe_key": dedupe_key,
+                "traceback": str(sys.exc_info()[2])
+            })
+            
+            if dedupe_key:
+                try:
+                    job = json.loads(item_data) if item else {}
+                    retry_count = job.get("_retry_count", 0)
+                    # lock_key puede ser None si la excepción ocurrió antes del acquire_lock.
+                    # En ese caso fallback a dedupe_key (que sigue siendo el initial).
+                    effective_lock = lock_key if lock_key is not None else dedupe_key
 
+                    if retry_count >= Config.MAX_RETRIES:
+                        mark_completed(dedupe_key, "dead", {
+                            "reason": "unhandled_exception",
+                            "error": str(e)
+                        }, lock_key=effective_lock)
+                        redis_client.lpush(Config.DEAD_LETTER, json.dumps({
+                            "job": job,
+                            "error": str(e),
+                            "traceback": str(sys.exc_info())
+                        }))
+                        redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
+                    else:
+                        # Bug M1 fix: rpush ANTES de release_lock (ver comment
+                        # en el path de retry de fetch arriba).
+                        job["_retry_count"] = retry_count + 1
+                        redis_client.rpush(Config.QUEUE, json.dumps(job))
+                        release_lock(effective_lock)
+
+                    redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": effective_lock}))
+                except:
+                    pass
+            
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()

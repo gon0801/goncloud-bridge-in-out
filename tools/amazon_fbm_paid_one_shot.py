@@ -215,22 +215,22 @@ if IS_USD_ORDER:
 # =========================
 display_ref = f"{order_id} | {BUYER_NAME}" if BUYER_NAME else order_id
 
-# Search by display_ref OR order_id-only.
-# Flex MX: on Pending status Amazon does not return buyer info → SO is created with
-# client_order_ref = order_id.  When the order transitions to Unshipped the buyer
-# name becomes available and display_ref changes to "order_id | buyer", so a plain
-# equality check would miss the existing SO and create a duplicate.
+# Search by `client_order_ref =like '<order_id>%'` to handle both shapes:
+#   - "order_id" (Flex MX Pending: no buyer info yet)
+#   - "order_id | BUYER_NAME" (Unshipped/Shipped: buyer enriched)
+# limit=2 + die-multi catches pre-existing duplicates instead of silently
+# picking the first one (would happen if Bug #2 ever produced doubles in past runs).
 existing = exec_kw(uid, "sale.order", "search_read",
-    [["|",
-      ["client_order_ref", "=", display_ref],
-      ["client_order_ref", "=", order_id]]],
-    {"fields": ["id", "name", "state", "client_order_ref"], "limit": 1})
+    [[["client_order_ref", "=like", f"{order_id}%"]]],
+    {"fields": ["id", "name", "state", "client_order_ref"], "limit": 2})
+
+if len(existing) > 1:
+    die(f"multiple SOs match order_id={order_id}: {[s['name'] for s in existing]}", code=1)
 
 if existing:
     so = existing[0]
     so_id = so["id"]
     print(f"[FBM_PAID] SO exists: {so['name']} state={so['state']} — continuing to check invoice/payment")
-    # If SO was created without buyer_name (Flex MX Pending) and we now have it, update the ref
     if so.get("client_order_ref") == order_id and BUYER_NAME and display_ref != order_id:
         exec_kw(uid, "sale.order", "write", [[so_id], {"client_order_ref": display_ref}])
         print(f"[FBM_PAID] client_order_ref updated: {order_id} → {display_ref}")

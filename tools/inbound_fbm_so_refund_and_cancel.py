@@ -57,7 +57,7 @@ order_id = CLIENT_ORDER_REF.rsplit(":", 1)[-1]
 step("input", client_order_ref=CLIENT_ORDER_REF, order_id=order_id)
 
 # 1) Buscar SO
-so_ids = exec_kw(uid, "sale.order", "search", [[["client_order_ref","like",order_id]]], {"limit": 2})
+so_ids = exec_kw(uid, "sale.order", "search", [[["client_order_ref","=like",f"{order_id}%"]]], {"limit": 2})
 if not so_ids:
     die("SO_NOT_FOUND (order not yet created in Odoo)")
 if len(so_ids) > 1:

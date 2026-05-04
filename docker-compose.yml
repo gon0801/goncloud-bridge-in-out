@@ -26,12 +26,13 @@ services:
       - BRIDGE_DB=/data/bridge.db
       - REDIS_URL=redis://bridge-redis:6379/0
     ports:
-      - "127.0.0.1:8099:8099"
+      - "8099:8099"
     depends_on:
       - redis
     restart: unless-stopped
     networks:
       - goncloud-net
+      - odoo_odoo_net
 
   bridge-worker:
     build: ./app
@@ -55,7 +56,47 @@ services:
     restart: unless-stopped
     networks:
       - goncloud-net
+      - odoo_odoo_net
+
+  bridge-inbound-worker:
+    build: ./app
+    container_name: bridge-inbound-worker
+    working_dir: /app
+    volumes:
+      - /mnt/data/appdata/bridge/data:/data
+      - /mnt/data/appdata/bridge/app:/app
+    environment:
+      - BRIDGE_DB=/data/bridge.db
+      - REDIS_URL=redis://bridge-redis:6379/0
+      - MELI_TOKEN_FILE=/data/.meli_tokens.json
+    command: ["python", "/app/inbound_worker.py"]
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - goncloud-net
+      - odoo_odoo_net
+
+  bridge-amazon-inbound-worker:
+    build: ./app
+    container_name: bridge-amazon-inbound-worker
+    working_dir: /app
+    volumes:
+      - /mnt/data/appdata/bridge/data:/data
+      - /mnt/data/appdata/bridge/app:/app
+    environment:
+      - BRIDGE_DB=/data/bridge.db
+      - REDIS_URL=redis://bridge-redis:6379/0
+    command: ["python", "/app/amazon_inbound_worker.py"]
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - goncloud-net
+      - odoo_odoo_net
 
 networks:
   goncloud-net:
+    external: true
+  odoo_odoo_net:
     external: true

@@ -68,10 +68,14 @@ if not order_id:
     die("ORDER_JSON missing id", 2)
 
 def parse_items(order_dict):
+    """Bug M3: items sin seller_sku ya no se silencian; die con rc=1 →
+    worker → manual_review. El operador asigna el SKU en MeLi o en
+    sku_mapping antes de reprocesar."""
     items = order_dict.get("order_items") or []
     if not isinstance(items, list):
         return []
     out = []
+    skipped = []
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -89,6 +93,11 @@ def parse_items(order_dict):
 
         sku = (item.get("seller_sku") or item.get("SELLER_SKU") or "").strip()
         if not sku:
+            skipped.append({
+                "item_id": str(item.get("id") or ""),
+                "variation_id": str(item.get("variation_id") or it.get("variation_id") or ""),
+                "title": str(item.get("title") or ""),
+            })
             continue
 
         unit_price = it.get("unit_price")
@@ -100,6 +109,10 @@ def parse_items(order_dict):
             unit_price = 0.0
 
         out.append({"sku": sku, "qty": qty, "unit_price": unit_price})
+
+    if skipped:
+        die(f"unmapped_items: {len(skipped)} item(s) sin SKU resoluble: {skipped}", code=1)
+
     return out
 
 items = parse_items(order)

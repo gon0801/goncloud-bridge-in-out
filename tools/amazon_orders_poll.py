@@ -93,22 +93,40 @@ def get_access_token(creds: dict) -> str:
 
 
 def _sp_api_get(token: str, url: str, params: dict = None, max_retries: int = 4) -> httpx.Response:
-    """GET a SP-API endpoint con retry exponencial en 429 (rate limit)."""
+    """GET a SP-API endpoint con retry exponencial en 429, 5xx y timeouts.
+
+    Bug #9 fix: antes solo 429 disparaba retry; cualquier 5xx o timeout
+    rompía la corrida del marketplace completo. Ahora reintentamos también
+    503/504/timeouts con el mismo backoff. 4xx no-429 retornan inmediato
+    (errores de cliente, no se resuelven con retry).
+    """
+    last_resp = None
     for attempt in range(max_retries):
-        resp = httpx.get(
-            url,
-            params=params,
-            headers={"x-amz-access-token": token},
-            timeout=30,
-        )
-        if resp.status_code == 429:
+        try:
+            resp = httpx.get(
+                url,
+                params=params,
+                headers={"x-amz-access-token": token},
+                timeout=30,
+            )
+        except (httpx.TimeoutException, httpx.NetworkError) as e:
+            wait = 2 ** attempt
+            print(f"[poll] WARN {type(e).__name__} on {url} — retry {attempt + 1}/{max_retries} in {wait}s")
+            if attempt + 1 == max_retries:
+                raise
+            time.sleep(wait)
+            continue
+
+        last_resp = resp
+        if resp.status_code == 429 or resp.status_code >= 500:
             wait = 2 ** attempt  # 1s, 2s, 4s, 8s
-            print(f"[poll] WARN 429 rate-limited on {url} — retry {attempt + 1}/{max_retries} in {wait}s")
+            print(f"[poll] WARN HTTP {resp.status_code} on {url} — retry {attempt + 1}/{max_retries} in {wait}s")
+            if attempt + 1 == max_retries:
+                return resp
             time.sleep(wait)
             continue
         return resp
-    # Último intento después del último backoff
-    return resp
+    return last_resp
 
 
 def get_orders(token: str, marketplace_id: str, last_updated_after: str) -> list:
@@ -146,15 +164,31 @@ def get_orders(token: str, marketplace_id: str, last_updated_after: str) -> list
 
 
 def get_order_items(token: str, order_id: str) -> list:
-    """Obtiene items de una orden con retry en 429."""
-    resp = _sp_api_get(token, f"{AMAZON_API_BASE}/orders/v0/orders/{order_id}/orderItems")
+    """Obtiene items de una orden con retry en 429/5xx/timeouts y paginación NextToken.
 
-    if resp.status_code != 200:
-        print(f"[poll] ERROR getting items for {order_id}: {resp.status_code}", file=sys.stderr)
-        return []
-
-    data = resp.json()
-    return data.get("payload", {}).get("OrderItems", [])
+    Bug #10 fix: antes solo leía la primera página. SP-API getOrderItems pagina
+    igual que getOrders cuando una orden tiene >100 items (raro pero ocurre en
+    Amazon Business). Sin paginación → factura sub-totalada, diferencia con
+    Settlement.
+    """
+    items = []
+    next_token = None
+    while True:
+        params = {"NextToken": next_token} if next_token else None
+        resp = _sp_api_get(
+            token,
+            f"{AMAZON_API_BASE}/orders/v0/orders/{order_id}/orderItems",
+            params=params,
+        )
+        if resp.status_code != 200:
+            print(f"[poll] ERROR getting items for {order_id}: {resp.status_code}", file=sys.stderr)
+            return items if items else []
+        payload = resp.json().get("payload", {})
+        items.extend(payload.get("OrderItems", []))
+        next_token = payload.get("NextToken")
+        if not next_token:
+            break
+    return items
 
 
 def make_dedupe_key(order: dict, marketplace_id: str) -> str:

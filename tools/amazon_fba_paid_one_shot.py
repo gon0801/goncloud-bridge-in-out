@@ -213,14 +213,27 @@ if IS_USD_ORDER:
 # Check existing SO
 # =========================
 display_ref = f"{order_id} | {BUYER_NAME}" if BUYER_NAME else order_id
+
+# Search by `client_order_ref =like '<order_id>%'` to handle both shapes:
+#   - "order_id" (Pending/SNS pre-enrich: no buyer info yet)
+#   - "order_id | BUYER_NAME" (Unshipped/Shipped: buyer enriched)
+# Without this, a pre-enrich SO with ref=order_id is missed when the second
+# poll arrives with buyer name → duplicate SO + invoice + payment created.
+# limit=2 + die-multi catches pre-existing duplicates explicitly.
 existing = exec_kw(uid, "sale.order", "search_read",
-    [[["client_order_ref", "=", display_ref]]],
-    {"fields": ["id", "name", "state"], "limit": 1})
+    [[["client_order_ref", "=like", f"{order_id}%"]]],
+    {"fields": ["id", "name", "state", "client_order_ref"], "limit": 2})
+
+if len(existing) > 1:
+    die(f"multiple SOs match order_id={order_id}: {[s['name'] for s in existing]}", code=1)
 
 if existing:
     so = existing[0]
     so_id = so["id"]
     print(f"[FBA_PAID] SO exists: {so['name']} state={so['state']}")
+    if so.get("client_order_ref") == order_id and BUYER_NAME and display_ref != order_id:
+        exec_kw(uid, "sale.order", "write", [[so_id], {"client_order_ref": display_ref}])
+        print(f"[FBA_PAID] client_order_ref updated: {order_id} → {display_ref}")
 else:
     so_id = None
 

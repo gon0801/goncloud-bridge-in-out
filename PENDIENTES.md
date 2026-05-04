@@ -18,13 +18,13 @@ Task 5 (Huérfanos):   [░░░] 0/3
 
 ## 🎯 En curso
 
-### 0. Verificar migración del bridge al VPS Hetzner
+### 0. Validar crons del bridge en el VPS Hetzner
 
-> Servidor de producción migrado el 2026-05-03 del LAN viejo (192.168.0.200) al VPS Hetzner (`gonserver` → `100.127.167.103`, user `root`). Solo `competitive-intel` está confirmado en el VPS — falta validar que los containers del bridge ya estén ahí.
+> El 2026-05-02 se completó la migración (gonserver → VPS Hetzner `goncloud`) y los 5 containers del bridge están corriendo (entrada del diario lo confirma). Falta validar que los crons del host también se trasladaron correctamente.
 
-- [ ] `ssh gonserver "docker ps --format '{{.Names}}' | grep -E 'bridge-(api|redis|worker|inbound-worker|amazon-inbound-worker)'"` — confirmar que los 5 containers del bridge corren en el VPS
-- [ ] Verificar que el cron `0 */4 * * * docker exec bridge-api python3 /data/backfill_meli_mappings.py` esté en el crontab del VPS (no del server viejo)
-- [ ] Verificar que `meli_refresh_tokens.sh` (cron `5 */6 * * *`) esté operativo en el VPS — `tail /mnt/data/appdata/bridge/data/meli_token_refresh.log`
+- [ ] `ssh gonserver "crontab -l | grep backfill_meli_mappings"` — confirmar que el cron `0 */4 * * *` está activo en el VPS
+- [ ] `ssh gonserver "ls /etc/cron.d/goncloud_meli_refresh"` + `tail /mnt/data/appdata/bridge/data/meli_token_refresh.log` — confirmar que el refresh `5 */6 * * *` sigue operativo
+- [ ] Si falta alguno: re-aplicar (los comandos están documentados en CLAUDE.md sección 3 "Cron del host")
 
 ### 1. Setup almacenes Odoo FULL/FBA
 
@@ -66,6 +66,17 @@ Task 5 (Huérfanos):   [░░░] 0/3
 - [ ] `MLM2787930515` — asignar `seller_custom_field` real en MeLi vendedor
 - [ ] `MLM2787902225` — asignar `seller_custom_field` real en MeLi vendedor
 - [ ] Correr `backfill_meli_mappings.py` (o esperar al cron automático de 4h)
+
+### 6. AP-5 follow-up — eliminar path-secret en webhooks
+
+C4 (commit `_check_webhook_secret`) ya hace `hmac.compare_digest` y deja de validar contra path/query como dependencia, pero **sigue aceptando** `/webhooks/{meli,amazon}/orders/{secret}` por compatibilidad con suscripciones vivas. uvicorn loggea la URL completa en access log → el secret queda visible en `docker logs bridge-api`.
+
+Plan de migración (cuando se decida ventana):
+- [ ] Generar nuevos `meli_webhook_secret` y `amazon_webhook_secret` en `bridge_settings`.
+- [ ] Actualizar URL en panel MeLi (notifications) a `/webhooks/meli/orders` con header `X-Goncloud-Secret`.
+- [ ] Re-suscribir SNS Amazon Notifications con header `X-Goncloud-Secret` (Amazon SNS soporta extra headers en HTTP subscriptions).
+- [ ] Borrar las rutas con `{secret}` en `app/main.py` y dejar solo header.
+- [ ] Rotar logs nginx/cloudflare/uvicorn que tengan path-secret histórico.
 
 ---
 

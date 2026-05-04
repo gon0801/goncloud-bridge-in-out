@@ -225,6 +225,7 @@
     .tTitle{ font-weight:900; margin-bottom:4px; font-size:13px; }
     .tMsg{ color: var(--muted); font-size:12.5px; line-height:1.35; }
   </style>
+<script src="/static/csrf.js"></script>
 </head>
 
 <body>
@@ -310,6 +311,7 @@
   </div>
 </div>
 
+<script src="/static/app.js"></script>
 <script>
   let odooSkus = [];
   let mappings = [];
@@ -426,12 +428,16 @@
       btn.className = "btn small danger";
       btn.textContent = "Eliminar";
       btn.onclick = async ()=>{
-        if (!confirm(`Eliminar mapping de ${m.odoo_sku}?`)) return;
+        // AMP-3 / AP-24: confirm muestra ambos lados, delete envía seller_sku
+        // como query param para que el backend borre exactamente esa fila.
+        if (!confirm(`Eliminar mapping ${m.amazon_sku} → ${m.odoo_sku}?`)) return;
         try{
-          const resp = await fetch(`/api/amazon/mappings/${encodeURIComponent(m.odoo_sku)}`, { method:"DELETE" });
+          const url = `/api/amazon/mappings/${encodeURIComponent(m.odoo_sku)}` +
+                      `?seller_sku=${encodeURIComponent(m.amazon_sku)}`;
+          const resp = await fetch(url, { method:"DELETE", headers: {"X-Requested-With": "goncloud-mapper"} });
           const data = await resp.json();
           if (!data.ok) throw new Error(data.error || "error");
-          toast(true, "OK", "Eliminado: " + m.odoo_sku);
+          toast(true, "OK", `Eliminado (${data.deleted ?? 1}): ${m.amazon_sku} → ${m.odoo_sku}`);
           await loadMappings();
         }catch(e){
           toast(false, "Error", "No pude eliminar: " + e);
@@ -532,7 +538,8 @@
 
       if (!found){
         verifiedAmazon = null;
-        setVerifyStatus("bad", `❌ No encontré <b>${sku}</b>.`);
+        // AMP-1: el sku viene del input del operador pero podría contener HTML.
+        setVerifyStatus("bad", `❌ No encontré <b>${esc(sku)}</b>.`);
         $("amzPill").textContent = "No encontrado";
         return;
       }
@@ -547,13 +554,14 @@
 
       const name = verifiedAmazon.name ? verifiedAmazon.name : "(sin nombre)";
       const asin = verifiedAmazon.asin ? verifiedAmazon.asin : "(sin ASIN)";
-      setVerifyStatus("ok", `✅ Correcto: <b>${verifiedAmazon.sku}</b><br/>${name}<br/><span style="color:var(--muted2)">ASIN: ${asin}</span>`);
+      // AMP-1: name/sku/asin vienen de la API Amazon — escapar antes de innerHTML.
+      setVerifyStatus("ok", `✅ Correcto: <b>${esc(verifiedAmazon.sku)}</b><br/>${esc(name)}<br/><span style="color:var(--muted2)">ASIN: ${esc(asin)}</span>`);
       $("amzPill").textContent = "Verificado";
       toast(true, "Amazon", "Verificado: " + verifiedAmazon.sku);
     }catch(e){
       verifiedAmazon = null;
       $("amzPill").textContent = "ERROR";
-      setVerifyStatus("bad", "Error verificando: " + e);
+      setVerifyStatus("bad", "Error verificando: " + esc(String(e)));
       toast(false, "Error", "Amazon: " + e);
     }
   }
@@ -573,9 +581,10 @@
     if (!selectedAmazon || !selectedAmazon.sku) return toast(false, "Falta", "Selecciona un SKU de Amazon (Usar).");
 
     try{
+      // MAP-5: X-Requested-With defense-in-depth CSRF.
       const resp = await fetch("/api/amazon/mappings", {
         method:"POST",
-        headers: {"Content-Type":"application/json"},
+        headers: {"Content-Type":"application/json", "X-Requested-With": "goncloud-mapper"},
         body: JSON.stringify({ odoo_sku: selectedOdoo.sku, amazon_sku: selectedAmazon.sku })
       });
       const data = await resp.json();
