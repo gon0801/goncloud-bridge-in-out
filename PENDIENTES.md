@@ -2,10 +2,11 @@
 
 > **Para Claude:** este archivo es la **fuente de verdad única** de qué falta por hacer. Al iniciar sesión revísalo y recuérdaselos al usuario. Cuando termine una subtarea, marca el checkbox (`[ ]` → `[x]`). Cuando surja una nueva, agrégala. Al finalizar sesión: commit + push + PR + merge.
 
-**Última actualización:** 2026-04-24
-**Progreso:** 1/18 subtareas (6%)
+**Última actualización:** 2026-05-03
+**Progreso:** 1/21 subtareas (5%)
 
 ```
+Task 0 (VPS Hetzner): [░░░] 0/3   ← nuevo: migración server
 Task 1 (Odoo):        [█░░░░░░] 1/7
 Task 2 (SP-API):      [░░░] 0/3
 Task 3 (Picking):     [░░░░] 0/4
@@ -16,6 +17,14 @@ Task 5 (Huérfanos):   [░░░] 0/3
 ---
 
 ## 🎯 En curso
+
+### 0. Verificar migración del bridge al VPS Hetzner
+
+> Servidor de producción migrado el 2026-05-03 del LAN viejo (192.168.0.200) al VPS Hetzner (`gonserver` → `100.127.167.103`, user `root`). Solo `competitive-intel` está confirmado en el VPS — falta validar que los containers del bridge ya estén ahí.
+
+- [ ] `ssh gonserver "docker ps --format '{{.Names}}' | grep -E 'bridge-(api|redis|worker|inbound-worker|amazon-inbound-worker)'"` — confirmar que los 5 containers del bridge corren en el VPS
+- [ ] Verificar que el cron `0 */4 * * * docker exec bridge-api python3 /data/backfill_meli_mappings.py` esté en el crontab del VPS (no del server viejo)
+- [ ] Verificar que `meli_refresh_tokens.sh` (cron `5 */6 * * *`) esté operativo en el VPS — `tail /mnt/data/appdata/bridge/data/meli_token_refresh.log`
 
 ### 1. Setup almacenes Odoo FULL/FBA
 

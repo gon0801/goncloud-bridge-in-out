@@ -50,7 +50,7 @@ MercadoLibre y Amazon con Odoo 17 ERP.
 
 - **Inbound:** Órdenes de MeLi/Amazon → crea Sale Orders + facturas pagadas en Odoo
 - **Outbound:** Cambios de stock en Odoo → actualiza listings en MeLi/Amazon
-- **Servidor:** `gonserver` · **URL pública:** `https://meli.goncloud.cc`
+- **Servidor:** VPS Hetzner — alias SSH `gonserver` o `goncloud` (user `root`, IP pública `65.109.4.81`, Tailscale `100.127.167.103`). Migrado del servidor LAN viejo (192.168.0.200, user `gon`) el 2026-05-03. · **URL pública:** `https://meli.goncloud.cc`
 - **DB:** SQLite en `/mnt/data/appdata/bridge/data/bridge.db`
 - **Repo:** `https://github.com/gon0801/goncloud-bridge-in-out.git`
 
@@ -718,6 +718,14 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 ---
 
 ## 11. Diario de cambios
+
+### 2026-05-03 — migración a VPS Hetzner
+- **INFRA:** Servidor de producción migrado del LAN viejo (`192.168.0.200`, user `gon`) al **VPS Hetzner** — IP pública `65.109.4.81`, Tailscale `100.127.167.103`, hostname `goncloud`, user `root`, Ubuntu 24.04.3.
+- **SSH:** alias `gonserver` y `goncloud` apuntan al VPS. Llave: `~/.ssh/goncloud-mexico` (cliente).
+- **Confirmado en VPS:** container `competitive-intel` corriendo en `/mnt/data/appdata/competitive` puerto 8055.
+- **PENDIENTE de verificar:** containers `bridge-*` (api/redis/worker/inbound-worker/amazon-inbound-worker) en VPS antes del próximo deploy. Comando: `ssh gonserver "docker ps | grep bridge"`.
+- **Docs actualizados:** sección 1 de CLAUDE.md y "Datos clave" + sección 26 de MASTER_RUNBOOK.md. Entradas históricas del diario (referencias a `gon@gonserver` o `192.168.0.200` antes del 2026-05-03) NO se modifican — son fieles al momento de la sesión.
+- **Memoria persistente:** guardado en `memory/project_servidor_produccion.md` para sesiones futuras.
 
 ### 2026-04-18 — sesión 5 (cron automation del backfill)
 - **CRON AGREGADO:** `0 */4 * * * docker exec bridge-api python3 /data/backfill_meli_mappings.py >> /mnt/data/appdata/bridge/data/backfill.log 2>&1`

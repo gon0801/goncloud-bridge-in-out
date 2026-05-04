@@ -51,14 +51,20 @@ MercadoLibre y Amazon con el ERP Odoo 17.
 ### Datos clave del entorno de producción
 | Parámetro | Valor |
 |-----------|-------|
-| Servidor | `gonserver` |
-| IP interna | `192.168.0.200` (aprox.) |
+| Servidor | VPS Hetzner — alias `gonserver` o `goncloud` |
+| Hostname | `goncloud` |
+| IP pública | `65.109.4.81` |
+| IP Tailscale | `100.127.167.103` |
+| Usuario SSH | `root` |
+| Llave SSH (cliente) | `~/.ssh/goncloud-mexico` |
+| OS | Ubuntu 24.04.3 LTS |
 | URL pública | `https://meli.goncloud.cc` |
 | Base de datos | SQLite en `/mnt/data/appdata/bridge/data/bridge.db` |
 | Odoo ERP | Base de datos `EHV`, Odoo 17 |
 | Repo | `https://github.com/gon0801/goncloud-bridge-in-out.git` |
 | Ruta en server | `/mnt/data/appdata/bridge/` |
-| Copia de trabajo | `/tmp/goncloud-bridge-in-out/` |
+
+> **Servidor anterior (deprecado 2026-05-03):** `192.168.0.200` con user `gon`. Cualquier referencia histórica en este documento (en secciones de "Diario de cambios" o ejemplos) puede mencionar el servidor antiguo — son registros del momento, no se actualizan retroactivamente.
 
 ---
 
@@ -1773,7 +1779,7 @@ cp /mnt/data/appdata/bridge/data/.meli_tokens.json \
 - **Repositorio:** `https://github.com/gon0801/goncloud-bridge-in-out.git`
 - **Branch activo:** `claude/review-inbound-outbound-G9HeG`
 - **URL producción:** `https://meli.goncloud.cc`
-- **Servidor:** `gonserver` (IP interna: `192.168.0.200`)
+- **Servidor:** VPS Hetzner — alias `gonserver` / `goncloud` (IP pública `65.109.4.81`, Tailscale `100.127.167.103`, user `root`)
 - **Transcripts de sesiones:** `/mnt/transcripts/`
 
 ---
