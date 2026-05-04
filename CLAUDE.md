@@ -515,6 +515,49 @@ sudo docker exec bridge-api python3 /data/sync_split_variants_stock.py \
 
 Después de cualquiera de los anteriores, forzar re-sync outbound encolando stock_jobs o esperando al siguiente tick del `meli-sync.timer`.
 
+### PROBLEMA 10: Órdenes no entran a Odoo — `authentication_failed` tras cambio de contraseña
+
+**Síntoma:** Worker procesa órdenes pero todas terminan en `dead` con `[FBM_PAID] ERROR authentication_failed` (o FBA/FULL). Las colas Redis se llenan de dead.
+
+**Causa raíz:** `amazon_inbound_worker.py` y `inbound_worker.py` leen las credenciales de Odoo (`odoo_url`, `odoo_password`) **una sola vez al arrancar** en `init_db()` y las guardan en `Config`. Si se cambia la contraseña en Odoo sin actualizar `bridge_settings` y reiniciar los workers, el worker sigue usando las credenciales viejas indefinidamente.
+
+**Procedimiento cuando cambias contraseña de Odoo:**
+```bash
+# 1. Actualizar bridge_settings con nueva URL y/o contraseña
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
+UPDATE bridge_settings SET value='http://NUEVA_URL:PUERTO', updated_at=datetime('now') WHERE key='odoo_url';
+UPDATE bridge_settings SET value='NUEVA_PASSWORD', updated_at=datetime('now') WHERE key='odoo_password';
+SELECT key, value FROM bridge_settings WHERE key IN ('odoo_url','odoo_password');
+"
+
+# 2. Verificar que las credenciales funcionan desde el container:
+docker exec bridge-amazon-inbound-worker python3 -c "
+import requests, sqlite3
+conn = sqlite3.connect('/data/bridge.db')
+url = conn.execute(\"SELECT value FROM bridge_settings WHERE key='odoo_url'\").fetchone()[0]
+user = conn.execute(\"SELECT value FROM bridge_settings WHERE key='odoo_user'\").fetchone()[0]
+pw = conn.execute(\"SELECT value FROM bridge_settings WHERE key='odoo_password'\").fetchone()[0]
+db_ = conn.execute(\"SELECT value FROM bridge_settings WHERE key='odoo_db'\").fetchone()[0]
+resp = requests.post(url+'/jsonrpc', json={'jsonrpc':'2.0','method':'call','id':1,'params':{'service':'common','method':'authenticate','args':[db_,user,pw,{}]}}, timeout=10)
+print('uid:', resp.json().get('result'))
+"
+
+# 3. Reiniciar AMBOS workers para que lean las nuevas credenciales
+docker restart bridge-amazon-inbound-worker bridge-inbound-worker
+
+# 4. Reencolar órdenes que murieron durante el outage
+docker exec bridge-amazon-inbound-worker python3 /data/recover_manual_review.py \
+  --channel amazon --hours 168 --include-dead
+
+# 5. Poll de recuperación para cubrir el gap completo
+docker exec bridge-amazon-inbound-worker python3 /data/amazon_orders_poll.py \
+  --days 2 --marketplace BOTH
+```
+
+**Ocurrió:** 2026-05-04. Contraseña cambiada el 2026-05-03 en Odoo. URL también cambió de `http://odoo-odoo-1:8069` a `http://65.109.4.81:8082`. ~22h de outage, ~21 órdenes recuperadas.
+
+---
+
 ### PROBLEMA 5: MeLi `no_valid_items` / órdenes en `manual_review`
 
 ```bash
@@ -723,6 +766,13 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 
 ## 11. Diario de cambios
 
+### 2026-05-04 — fix autenticación Odoo tras cambio de contraseña
+- **BUG:** Todas las órdenes Amazon (y MeLi) fallaban con `authentication_failed`. ~22h de outage (desde 2026-05-03 21:16 UTC).
+- **ROOT CAUSE:** La contraseña de Odoo se cambió el 2026-05-03. Los workers cachean las credenciales al arrancar en `init_db()` → no leen el cambio en bridge_settings hasta reiniciarse.
+- **FIX:** Actualizado `bridge_settings` con nueva URL (`http://65.109.4.81:8082`) y contraseña. Restart de ambos workers. 21 órdenes muertas recuperadas con `recover_manual_review.py`. Poll de 2 días confirmó 0 gaps.
+- **DOCS:** Agregado PROBLEMA 10 en CLAUDE.md con el procedimiento completo para futuros cambios de contraseña.
+- **LECCIÓN:** Cuando cambias la contraseña de Odoo: (1) actualizar bridge_settings, (2) reiniciar workers, (3) recover dead orders.
+
 ### 2026-05-03 — docs/memoria post-migración
 - **DOCS:** Actualizado en CLAUDE.md sección 1 + "Datos clave" de MASTER_RUNBOOK.md con datos del VPS Hetzner (IP pública `65.109.4.81`, Tailscale `100.127.167.103`, hostname `goncloud`, user `root`, Ubuntu 24.04.3 LTS, llave SSH cliente `~/.ssh/goncloud-mexico`). Sin cambios de código.
 - **MEMORIA:** Guardado `memory/project_servidor_produccion.md` para que próximas sesiones reconozcan el VPS desde el primer mensaje.
@@ -826,7 +876,7 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 ### 2026-02-24 — sesión 3
 - **DOCS:** Sesión de soporte sin cambios de código.
 - **SOPORTE:** `scp gon@gonserver:/tmp/FIX_FLEX_MX_BUYER_NAME.md` fallaba porque el archivo fue creado en el entorno Claude, no en gonserver.
-- **SOLUCIÓN:** Provisto comando `cat > ~/FIX_FLEX_MX_BUYER_NAME.md << 'ENDDOC'...` para crear el archivo directamente en gonserver, luego `scp gon@192.168.0.200:~/FIX_FLEX_MX_BUYER_NAME.md ~/Desktop/` desde Mac.
+- **SOLUCIÓN:** Provisto comando `cat > ~/FIX_FLEX_MX_BUYER_NAME.md << 'ENDDOC'...` para crear el archivo directamente en gonserver, luego `scp root@100.127.167.103:~/FIX_FLEX_MX_BUYER_NAME.md ~/Desktop/` desde Mac.
 - Sin cambios pendientes — sistema estable.
 
 ### 2026-02-24 — sesión 2
