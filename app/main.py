@@ -34,6 +34,63 @@ r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 app = FastAPI(title="Stock Bridge", version="0.3")
 logger = logging.getLogger(__name__)
 
+
+# H-07/MI-21 CSRF — double-submit cookie pattern para requests que vienen
+# vía Cloudflare Access cookie. Requests con X-Goncloud-Secret header son
+# scripts/cron (no browser) y pasan sin CSRF. Webhooks (/webhooks/*) y
+# oauth (/oauth/*) tienen sus propios mecanismos de validación. La cookie
+# `csrf_token` se setea en cada respuesta; el JS frontend lee la cookie y
+# manda `X-CSRF-Token` header en mutaciones (ver setup.html → csrf.js).
+import secrets as _bridge_secrets
+
+_BRIDGE_CSRF_COOKIE = "csrf_token"
+_BRIDGE_CSRF_EXEMPT_PREFIX = ("/webhooks/", "/oauth/", "/health", "/static")
+
+
+def _bridge_ensure_csrf(request, response):
+    existing = request.cookies.get(_BRIDGE_CSRF_COOKIE)
+    if existing and len(existing) == 64:
+        return existing
+    token = _bridge_secrets.token_hex(32)
+    response.set_cookie(
+        key=_BRIDGE_CSRF_COOKIE,
+        value=token,
+        max_age=86400 * 30,
+        path="/",
+        samesite="strict",
+        secure=True,
+        httponly=False,
+    )
+    return token
+
+
+@app.middleware("http")
+async def _bridge_csrf_middleware(request: Request, call_next):
+    import hmac as _hmac_local
+    path = request.url.path or ""
+    method = request.method.upper()
+    is_exempt_path = any(path.startswith(p) for p in _BRIDGE_CSRF_EXEMPT_PREFIX)
+    is_mutation = method in ("POST", "PUT", "DELETE", "PATCH")
+    # Solo enforce CSRF cuando es mutación de browser (Cf-Access header presente
+    # implica request via Cloudflare Access SSO) y no es exempt path. Scripts
+    # ops usan X-Goncloud-Secret y nunca llevan cookies del browser.
+    if is_mutation and not is_exempt_path:
+        has_cf_access = bool(request.headers.get("cf-access-authenticated-user-email"))
+        has_secret_header = bool(request.headers.get("x-goncloud-secret"))
+        if has_cf_access and not has_secret_header:
+            cookie_token = request.cookies.get(_BRIDGE_CSRF_COOKIE, "")
+            header_token = request.headers.get("x-csrf-token", "")
+            if not cookie_token or not header_token or \
+               not _hmac_local.compare_digest(cookie_token, header_token):
+                return JSONResponse(status_code=403,
+                    content={"error": "CSRF token missing or invalid"})
+    response = await call_next(request)
+    # Setear cookie en cualquier respuesta que no sea exempt path (incluido
+    # GETs autenticados, así el setup wizard recibe token desde el primer load).
+    if not is_exempt_path:
+        _bridge_ensure_csrf(request, response)
+    return response
+
 # =========================================================
 # MERCADOLIBRE OAUTH — AUTHORIZATION CODE FLOW (SERVER SIDE)
 # =========================================================
