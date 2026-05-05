@@ -351,7 +351,12 @@ _V2026_STATUS_MAP = {
 
 
 def _normalize_item_to_v0(item: dict) -> dict:
-    """Convert a v2026-01-01 orderItem to v0 schema."""
+    """Convert a v2026-01-01 orderItem to v0 schema.
+
+    v2026 nests breakdowns inside item.proceeds.breakdowns (not item.breakdowns).
+    Each breakdown uses 'subtotal' (not 'amount') and TAX detailedBreakdowns
+    use 'subtype'/'value' (not 'type'/'amount').
+    """
     product = item.get("product") or {}
     ip = {"Amount": "0", "CurrencyCode": ""}
     itax = {"Amount": "0", "CurrencyCode": ""}
@@ -361,9 +366,10 @@ def _normalize_item_to_v0(item: dict) -> dict:
     gwtax = {"Amount": "0", "CurrencyCode": ""}
     pdis = {"Amount": "0", "CurrencyCode": ""}
 
-    for bd in item.get("breakdowns") or []:
+    proceeds = item.get("proceeds") or {}
+    for bd in proceeds.get("breakdowns") or []:
         bt = bd.get("type", "")
-        m = bd.get("amount") or {}
+        m = bd.get("subtotal") or {}
         a, c = str(m.get("amount", "0")), m.get("currencyCode", "")
         if bt == "ITEM":
             ip = {"Amount": a, "CurrencyCode": c}
@@ -373,12 +379,12 @@ def _normalize_item_to_v0(item: dict) -> dict:
             pdis = {"Amount": a, "CurrencyCode": c}
         elif bt == "TAX":
             for dbd in bd.get("detailedBreakdowns") or []:
-                dt = dbd.get("type", "")
-                dm = dbd.get("amount") or {}
+                dt = dbd.get("subtype", "")
+                dm = dbd.get("value") or {}
                 da, dc = str(dm.get("amount", "0")), dm.get("currencyCode", c)
-                if dt == "ITEM_TAX":
+                if dt == "ITEM":
                     itax = {"Amount": da, "CurrencyCode": dc}
-                elif dt == "SHIPPING_TAX":
+                elif dt == "SHIPPING":
                     stax = {"Amount": da, "CurrencyCode": dc}
                 elif dt == "GIFT_WRAP_TAX":
                     gwtax = {"Amount": da, "CurrencyCode": dc}
@@ -389,7 +395,7 @@ def _normalize_item_to_v0(item: dict) -> dict:
         "ASIN":             product.get("asin", ""),
         "SellerSKU":        product.get("sellerSku", ""),
         "OrderItemId":      item.get("orderItemId", ""),
-        "Title":            product.get("productName", ""),
+        "Title":            product.get("title", "") or product.get("productName", ""),
         "QuantityOrdered":  item.get("quantityOrdered", 0),
         "QuantityShipped":  item.get("quantityShipped", 0),
         "ItemPrice":        ip,
