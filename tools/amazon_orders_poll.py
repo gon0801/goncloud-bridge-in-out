@@ -428,7 +428,8 @@ def main():
                 continue
 
             items = order.get("OrderItems", [])
-            print(f"[poll]   {order_id}: {status}, {len(items)} items")
+            fc = order.get("FulfillmentChannel", "?")
+            print(f"[poll]   {order_id}: status={status} fc={fc} items={len(items)}")
 
             # Push to Redis
             if args.dry_run:

@@ -549,8 +549,12 @@ def enrich_order_with_items(order_id: str) -> Optional[dict]:
         order_data = normalize_to_v0(raw_order)
         if order_data:
             log("SP-API enrich OK", "INFO", {
-                "order_id": order_id,
-                "items": len(order_data.get("OrderItems", [])),
+                "order_id":           order_id,
+                "items":              len(order_data.get("OrderItems", [])),
+                "fc_inferred":        order_data.get("FulfillmentChannel"),
+                "marketplace":        order_data.get("MarketplaceId"),
+                "status":             order_data.get("OrderStatus"),
+                "easy_ship":          "EasyShipShipmentStatus" in order_data,
             })
             return order_data
         return None
