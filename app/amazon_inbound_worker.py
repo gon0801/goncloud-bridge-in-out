@@ -334,6 +334,135 @@ def is_enabled(key: str) -> bool:
 
 
 # =========================
+# SP-API v2026-01-01 NORMALIZER
+# =========================
+_V2026_INCLUDED_DATA = "BUYER,PROCEEDS,FULFILLMENT,PACKAGES"
+
+_V2026_STATUS_MAP = {
+    "PENDING":              "Pending",
+    "PENDING_AVAILABILITY": "Pending",
+    "UNSHIPPED":            "Unshipped",
+    "PARTIALLY_SHIPPED":    "PartiallyShipped",
+    "SHIPPED":              "Shipped",
+    "INVOICE_UNCONFIRMED":  "InvoiceUnconfirmed",
+    "CANCELLED":            "Canceled",
+    "UNFULFILLABLE":        "Unfulfillable",
+}
+
+
+def _normalize_item_to_v0(item: dict) -> dict:
+    """Convert a v2026-01-01 orderItem to v0 schema."""
+    product = item.get("product") or {}
+    ip = {"Amount": "0", "CurrencyCode": ""}
+    itax = {"Amount": "0", "CurrencyCode": ""}
+    sp = {"Amount": "0", "CurrencyCode": ""}
+    stax = {"Amount": "0", "CurrencyCode": ""}
+    gwp = {"Amount": "0", "CurrencyCode": ""}
+    gwtax = {"Amount": "0", "CurrencyCode": ""}
+    pdis = {"Amount": "0", "CurrencyCode": ""}
+
+    for bd in item.get("breakdowns") or []:
+        bt = bd.get("type", "")
+        m = bd.get("amount") or {}
+        a, c = str(m.get("amount", "0")), m.get("currencyCode", "")
+        if bt == "ITEM":
+            ip = {"Amount": a, "CurrencyCode": c}
+        elif bt == "SHIPPING":
+            sp = {"Amount": a, "CurrencyCode": c}
+        elif bt == "DISCOUNT":
+            pdis = {"Amount": a, "CurrencyCode": c}
+        elif bt == "TAX":
+            for dbd in bd.get("detailedBreakdowns") or []:
+                dt = dbd.get("type", "")
+                dm = dbd.get("amount") or {}
+                da, dc = str(dm.get("amount", "0")), dm.get("currencyCode", c)
+                if dt == "ITEM_TAX":
+                    itax = {"Amount": da, "CurrencyCode": dc}
+                elif dt == "SHIPPING_TAX":
+                    stax = {"Amount": da, "CurrencyCode": dc}
+                elif dt == "GIFT_WRAP_TAX":
+                    gwtax = {"Amount": da, "CurrencyCode": dc}
+                elif dt == "GIFT_WRAP":
+                    gwp = {"Amount": da, "CurrencyCode": dc}
+
+    return {
+        "ASIN":             product.get("asin", ""),
+        "SellerSKU":        product.get("sellerSku", ""),
+        "OrderItemId":      item.get("orderItemId", ""),
+        "Title":            product.get("productName", ""),
+        "QuantityOrdered":  item.get("quantityOrdered", 0),
+        "QuantityShipped":  item.get("quantityShipped", 0),
+        "ItemPrice":        ip,
+        "ItemTax":          itax,
+        "ShippingPrice":    sp,
+        "ShippingTax":      stax,
+        "GiftWrapPrice":    gwp,
+        "GiftWrapTax":      gwtax,
+        "PromotionDiscount": pdis,
+    }
+
+
+def normalize_to_v0(order: dict) -> dict:
+    """Convert a v2026-01-01 order to v0 schema.
+
+    Adapter so detect_order_profile(), extract_buyer_info() and all tools
+    continue reading AmazonOrderId, FulfillmentChannel, OrderItems, etc.
+    """
+    fulfillment = order.get("fulfillment") or {}
+    fc = "AFN" if fulfillment.get("fulfilledBy") == "AMAZON" else "MFN"
+
+    sales_channel = order.get("salesChannel") or {}
+    marketplace_id = sales_channel.get("marketplaceId", "")
+
+    programs = order.get("programs") or []
+    easy_ship = "AMAZON_EASY_SHIP" in programs
+
+    fs = fulfillment.get("fulfillmentStatus", "")
+    order_status = _V2026_STATUS_MAP.get(fs, fs.title() if fs else "")
+
+    proceeds = order.get("proceeds") or {}
+    grand_total = proceeds.get("grandTotal") or {}
+
+    buyer = order.get("buyer") or {}
+    buyer_info: dict = {}
+    if buyer.get("buyerName"):
+        buyer_info["BuyerName"] = buyer["buyerName"]
+    if buyer.get("buyerEmail"):
+        buyer_info["BuyerEmail"] = buyer["buyerEmail"]
+
+    delivery = fulfillment.get("deliveryAddress") or {}
+    shipping_address: dict = {}
+    if delivery:
+        shipping_address = {
+            "Name":          delivery.get("name", ""),
+            "City":          delivery.get("city", ""),
+            "StateOrRegion": delivery.get("stateOrRegion", ""),
+            "PostalCode":    delivery.get("postalCode", ""),
+            "CountryCode":   delivery.get("countryCode", ""),
+        }
+
+    v0 = {
+        "AmazonOrderId":      order.get("orderId", ""),
+        "PurchaseDate":       order.get("purchaseDate", ""),
+        "LastUpdateDate":     order.get("lastUpdatedTime", ""),
+        "OrderStatus":        order_status,
+        "FulfillmentChannel": fc,
+        "MarketplaceId":      marketplace_id,
+        "SalesChannel":       sales_channel.get("channelType", ""),
+        "OrderTotal": {
+            "CurrencyCode": grand_total.get("currencyCode", ""),
+            "Amount":       str(grand_total.get("amount", "0")),
+        },
+        "BuyerInfo":        buyer_info,
+        "ShippingAddress":  shipping_address,
+        "OrderItems":       [_normalize_item_to_v0(i) for i in (order.get("orderItems") or [])],
+    }
+    if easy_ship:
+        v0["EasyShipShipmentStatus"] = "PendingPickUp"
+    return v0
+
+
+# =========================
 # SP-API ENRICHMENT
 # =========================
 _SPAPI_BASE = "https://sellingpartnerapi-na.amazon.com"
@@ -407,31 +536,17 @@ def enrich_order_with_items(order_id: str) -> Optional[dict]:
                     continue
             return None
 
-        # Fetch order header (FulfillmentChannel, MarketplaceId, BuyerInfo, …)
-        order_resp = _spapi_get(f"{_SPAPI_BASE}/orders/v0/orders/{order_id}")
-        order_data: dict = {}
-        if isinstance(order_resp, dict):
-            order_data = order_resp.get("payload", {}) or {}
-
-        # Bug #11: paginar OrderItems con NextToken (igual que poll path).
-        # Sin paginación: órdenes >100 items quedan sub-totalizadas.
-        items_collected = []
-        next_token = None
-        while True:
-            params = {"NextToken": next_token} if next_token else None
-            items_resp = _spapi_get(
-                f"{_SPAPI_BASE}/orders/v0/orders/{order_id}/orderItems",
-                params=params,
-            )
-            if not isinstance(items_resp, dict):
-                break
-            payload = items_resp.get("payload", {}) or {}
-            items_collected.extend(payload.get("OrderItems", []))
-            next_token = payload.get("NextToken")
-            if not next_token:
-                break
-        order_data["OrderItems"] = items_collected
-
+        # v2026-01-01: single call returns header + items (via includedData)
+        order_resp = _spapi_get(
+            f"{_SPAPI_BASE}/orders/2026-01-01/orders/{order_id}",
+            params={"includedData": _V2026_INCLUDED_DATA},
+        )
+        if not isinstance(order_resp, dict):
+            return None
+        raw_order = order_resp.get("order") or {}
+        if not raw_order:
+            return None
+        order_data = normalize_to_v0(raw_order)
         if order_data:
             log("SP-API enrich OK", "INFO", {
                 "order_id": order_id,

@@ -44,6 +44,132 @@ MARKETPLACES = {
     "US": "ATVPDKIKX0DER",
 }
 
+INCLUDED_DATA = "BUYER,PROCEEDS,FULFILLMENT,PACKAGES"
+
+_V2026_STATUS_MAP = {
+    "PENDING":              "Pending",
+    "PENDING_AVAILABILITY": "Pending",
+    "UNSHIPPED":            "Unshipped",
+    "PARTIALLY_SHIPPED":    "PartiallyShipped",
+    "SHIPPED":              "Shipped",
+    "INVOICE_UNCONFIRMED":  "InvoiceUnconfirmed",
+    "CANCELLED":            "Canceled",
+    "UNFULFILLABLE":        "Unfulfillable",
+}
+
+
+def _normalize_item_to_v0(item: dict) -> dict:
+    """Convert a v2026-01-01 orderItem to v0 schema."""
+    product = item.get("product") or {}
+    ip = {"Amount": "0", "CurrencyCode": ""}
+    itax = {"Amount": "0", "CurrencyCode": ""}
+    sp = {"Amount": "0", "CurrencyCode": ""}
+    stax = {"Amount": "0", "CurrencyCode": ""}
+    gwp = {"Amount": "0", "CurrencyCode": ""}
+    gwtax = {"Amount": "0", "CurrencyCode": ""}
+    pdis = {"Amount": "0", "CurrencyCode": ""}
+
+    for bd in item.get("breakdowns") or []:
+        bt = bd.get("type", "")
+        m = bd.get("amount") or {}
+        a, c = str(m.get("amount", "0")), m.get("currencyCode", "")
+        if bt == "ITEM":
+            ip = {"Amount": a, "CurrencyCode": c}
+        elif bt == "SHIPPING":
+            sp = {"Amount": a, "CurrencyCode": c}
+        elif bt == "DISCOUNT":
+            pdis = {"Amount": a, "CurrencyCode": c}
+        elif bt == "TAX":
+            for dbd in bd.get("detailedBreakdowns") or []:
+                dt = dbd.get("type", "")
+                dm = dbd.get("amount") or {}
+                da, dc = str(dm.get("amount", "0")), dm.get("currencyCode", c)
+                if dt == "ITEM_TAX":
+                    itax = {"Amount": da, "CurrencyCode": dc}
+                elif dt == "SHIPPING_TAX":
+                    stax = {"Amount": da, "CurrencyCode": dc}
+                elif dt == "GIFT_WRAP_TAX":
+                    gwtax = {"Amount": da, "CurrencyCode": dc}
+                elif dt == "GIFT_WRAP":
+                    gwp = {"Amount": da, "CurrencyCode": dc}
+
+    return {
+        "ASIN":             product.get("asin", ""),
+        "SellerSKU":        product.get("sellerSku", ""),
+        "OrderItemId":      item.get("orderItemId", ""),
+        "Title":            product.get("productName", ""),
+        "QuantityOrdered":  item.get("quantityOrdered", 0),
+        "QuantityShipped":  item.get("quantityShipped", 0),
+        "ItemPrice":        ip,
+        "ItemTax":          itax,
+        "ShippingPrice":    sp,
+        "ShippingTax":      stax,
+        "GiftWrapPrice":    gwp,
+        "GiftWrapTax":      gwtax,
+        "PromotionDiscount": pdis,
+    }
+
+
+def normalize_to_v0(order: dict) -> dict:
+    """Convert a v2026-01-01 order object to v0 schema.
+
+    Adapter so all downstream tools (amazon_fba_paid_one_shot.py, etc.)
+    continue reading AmazonOrderId, FulfillmentChannel, OrderItems, etc.
+    """
+    fulfillment = order.get("fulfillment") or {}
+    fc = "AFN" if fulfillment.get("fulfilledBy") == "AMAZON" else "MFN"
+
+    sales_channel = order.get("salesChannel") or {}
+    marketplace_id = sales_channel.get("marketplaceId", "")
+
+    programs = order.get("programs") or []
+    easy_ship = "AMAZON_EASY_SHIP" in programs
+
+    fs = fulfillment.get("fulfillmentStatus", "")
+    order_status = _V2026_STATUS_MAP.get(fs, fs.title() if fs else "")
+
+    proceeds = order.get("proceeds") or {}
+    grand_total = proceeds.get("grandTotal") or {}
+
+    buyer = order.get("buyer") or {}
+    buyer_info: dict = {}
+    if buyer.get("buyerName"):
+        buyer_info["BuyerName"] = buyer["buyerName"]
+    if buyer.get("buyerEmail"):
+        buyer_info["BuyerEmail"] = buyer["buyerEmail"]
+
+    delivery = fulfillment.get("deliveryAddress") or {}
+    shipping_address: dict = {}
+    if delivery:
+        shipping_address = {
+            "Name":          delivery.get("name", ""),
+            "City":          delivery.get("city", ""),
+            "StateOrRegion": delivery.get("stateOrRegion", ""),
+            "PostalCode":    delivery.get("postalCode", ""),
+            "CountryCode":   delivery.get("countryCode", ""),
+        }
+
+    v0 = {
+        "AmazonOrderId":    order.get("orderId", ""),
+        "PurchaseDate":     order.get("purchaseDate", ""),
+        "LastUpdateDate":   order.get("lastUpdatedTime", ""),
+        "OrderStatus":      order_status,
+        "FulfillmentChannel": fc,
+        "MarketplaceId":    marketplace_id,
+        "SalesChannel":     sales_channel.get("channelType", ""),
+        "OrderTotal": {
+            "CurrencyCode": grand_total.get("currencyCode", ""),
+            "Amount":       str(grand_total.get("amount", "0")),
+        },
+        "BuyerInfo":        buyer_info,
+        "ShippingAddress":  shipping_address,
+        "OrderItems":       [_normalize_item_to_v0(i) for i in (order.get("orderItems") or [])],
+    }
+    if easy_ship:
+        v0["EasyShipShipmentStatus"] = "PendingPickUp"
+    return v0
+
+
 # ============================================================
 # HELPERS
 # ============================================================
@@ -130,65 +256,37 @@ def _sp_api_get(token: str, url: str, params: dict = None, max_retries: int = 4)
 
 
 def get_orders(token: str, marketplace_id: str, last_updated_after: str) -> list:
-    """Obtiene órdenes de Amazon con paginación y retry en 429.
+    """Obtiene órdenes de Amazon SP-API v2026-01-01 con paginación.
 
-    Usa LastUpdatedAfter para capturar también órdenes antiguas que acaban
-    de cambiar de estado (ej. Pending → Shipped después de varios días).
+    v2026 incluye items embebidos vía includedData, eliminando la necesidad
+    de llamar getOrderItems por separado.
     """
     orders = []
-    next_token = None
+    pagination_token = None
 
     while True:
         params = {
-            "MarketplaceIds": marketplace_id,
-            "LastUpdatedAfter": last_updated_after,
+            "marketplaceIds":  marketplace_id,
+            "lastUpdatedAfter": last_updated_after,
+            "includedData":    INCLUDED_DATA,
         }
-        if next_token:
-            params["NextToken"] = next_token
+        if pagination_token:
+            params["paginationToken"] = pagination_token
 
-        resp = _sp_api_get(token, f"{AMAZON_API_BASE}/orders/v0/orders", params)
+        resp = _sp_api_get(token, f"{AMAZON_API_BASE}/orders/2026-01-01/orders", params)
 
         if resp.status_code != 200:
             print(f"[poll] ERROR getting orders: {resp.status_code} {resp.text[:500]}", file=sys.stderr)
             break
 
         data = resp.json()
-        payload = data.get("payload", {})
-        orders.extend(payload.get("Orders", []))
+        orders.extend(data.get("orders", []))
 
-        next_token = payload.get("NextToken")
-        if not next_token:
+        pagination_token = data.get("paginationToken")
+        if not pagination_token:
             break
 
     return orders
-
-
-def get_order_items(token: str, order_id: str) -> list:
-    """Obtiene items de una orden con retry en 429/5xx/timeouts y paginación NextToken.
-
-    Bug #10 fix: antes solo leía la primera página. SP-API getOrderItems pagina
-    igual que getOrders cuando una orden tiene >100 items (raro pero ocurre en
-    Amazon Business). Sin paginación → factura sub-totalada, diferencia con
-    Settlement.
-    """
-    items = []
-    next_token = None
-    while True:
-        params = {"NextToken": next_token} if next_token else None
-        resp = _sp_api_get(
-            token,
-            f"{AMAZON_API_BASE}/orders/v0/orders/{order_id}/orderItems",
-            params=params,
-        )
-        if resp.status_code != 200:
-            print(f"[poll] ERROR getting items for {order_id}: {resp.status_code}", file=sys.stderr)
-            return items if items else []
-        payload = resp.json().get("payload", {})
-        items.extend(payload.get("OrderItems", []))
-        next_token = payload.get("NextToken")
-        if not next_token:
-            break
-    return items
 
 
 def make_dedupe_key(order: dict, marketplace_id: str) -> str:
@@ -304,11 +402,13 @@ def main():
             print(f"[poll] ERROR fetching {mp_name}: {e}", file=sys.stderr)
             continue
         
-        for order in orders:
+        for order_raw in orders:
+            # Normalize to v0 first so all downstream fields/logic work unchanged
+            order = normalize_to_v0(order_raw)
             total_orders += 1
             order_id = order.get("AmazonOrderId", "unknown")
             status = order.get("OrderStatus", "unknown")
-            
+
             # Skip pending orders — EXCEPTO Flex MX (AFN + marketplace MX)
             # Flex MX necesita SO+picking aunque esté Pending (escáneo de paquetes)
             is_flex_mx = (mp_id == "A1AM78C64UM0Y8" and
@@ -319,30 +419,24 @@ def main():
                 continue
             if status == "Pending" and is_flex_mx:
                 print(f"[poll]   {order_id}: status=Pending (Flex MX), encolando...")
-            
+
             # Check dedupe
             dedupe_key = make_dedupe_key(order, mp_id)
             if already_processed(dedupe_key):
                 print(f"[poll]   {order_id}: already processed, skipping")
                 total_skipped += 1
                 continue
-            
-            # Get order items
-            try:
-                items = get_order_items(token, order_id)
-                order["OrderItems"] = items
-                print(f"[poll]   {order_id}: {status}, {len(items)} items")
-            except Exception as e:
-                print(f"[poll]   {order_id}: ERROR getting items: {e}")
-                order["OrderItems"] = []
-            
+
+            items = order.get("OrderItems", [])
+            print(f"[poll]   {order_id}: {status}, {len(items)} items")
+
             # Push to Redis
             if args.dry_run:
                 print(f"[poll]   {order_id}: DRY RUN - would push")
             else:
                 push_to_redis(r, order, dedupe_key)
                 print(f"[poll]   {order_id}: pushed to Redis")
-            
+
             total_pushed += 1
     
     print(f"[poll] Done. Total: {total_orders}, Pushed: {total_pushed}, Skipped: {total_skipped}")

@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-02-13  
 **Sistema:** GONCLOUD Bridge  
-**Servidor:** gonserver  
+**Servidor:** goncloud  
 **Versión:** 1.0  
 **Estado:** PRODUCCIÓN
 
