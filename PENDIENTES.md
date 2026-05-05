@@ -60,7 +60,7 @@
 - [x] `tools/amazon_orders_poll.py` — URL v2026, params camelCase, paginationToken, normalize_to_v0()
 - [x] `app/amazon_inbound_worker.py` — enrich con includedData, normalize_to_v0(), elimina getOrderItems
 - [x] `app/debug_flex_order.py` — URL v2026, fix credential keys, display campos v2026
-- **Deploy pendiente en VPS** (`git pull` + `cp tools/amazon_orders_poll.py /mnt/data/appdata/bridge/data/` + restart workers)
+- **Deployado y validado en VPS 2026-05-05** — poll corrió limpio a las 06:40 UTC, worker reiniciado sin errores
 
 ### 3. Modificar tools inbound FBA/FULL para picking por canal
 
