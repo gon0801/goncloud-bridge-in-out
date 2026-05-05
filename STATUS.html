@@ -38,8 +38,8 @@
 
 <h1>GONCLOUD Bridge — Pendientes activos</h1>
 <div class="meta">Última actualización: 2026-05-04 &nbsp;·&nbsp; Se refresca cada 30 seg</div>
-<div class="progress-bar"><div class="progress-fill"></div></div>
-<div class="meta" style="margin-top:-18px; margin-bottom:20px;">4 / 21 subtareas completadas (19%)</div>
+<div class="progress-bar"><div class="progress-fill" style="width:33%"></div></div>
+<div class="meta" style="margin-top:-18px; margin-bottom:20px;">7 / 21 subtareas completadas (33%)</div>
 
 <table>
   <thead>
@@ -117,30 +117,30 @@
     <tr class="group-header">
       <td>2</td>
       <td>SP-API v0 → v2026-01-01</td>
-      <td><code>tools/amazon_orders_poll.py</code> — getOrders, getOrderItems</td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><code>tools/amazon_orders_poll.py</code> — normalize_to_v0() adapter</td>
+      <td><span class="badge badge-done">✅ Hecho</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
       <td class="sub">2.1</td>
       <td></td>
-      <td><code>app/amazon_inbound_worker.py</code> — getOrder, getOrderItems</td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><code>app/amazon_inbound_worker.py</code> — enrich vía includedData</td>
+      <td><span class="badge badge-done">✅ Hecho</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
       <td class="sub">2.2</td>
       <td></td>
-      <td><code>app/debug_flex_order.py</code> — getOrder</td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><code>app/debug_flex_order.py</code> — URL v2026 + fix credenciales</td>
+      <td><span class="badge badge-done">✅ Hecho</span></td>
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
     <tr>
       <td class="sub">2.3</td>
       <td></td>
-      <td>📅 <strong>Deadline: 2027-03-27</strong> (recomendado antes de enero 2027)</td>
-      <td><span class="badge badge-info">~11 meses</span></td>
-      <td>—</td>
+      <td>⚡ <strong>Deploy VPS pendiente</strong> — git pull + cp poll.py + restart workers</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
     </tr>
 
     <!-- TASK 3 -->
@@ -220,6 +220,7 @@
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-05-04</strong> — Task 2: SP-API Orders v0 → v2026-01-01 migrado (adapter normalize_to_v0, 3 archivos, pendiente deploy VPS)</li>
     <li><strong>2026-05-04</strong> — Task 0: crons VPS Hetzner validados y re-aplicados</li>
     <li><strong>2026-04-18</strong> — PR #19/20/21: bug split variantes MeLi → oversell potencial (sku_mapping 1:N, backfill SELLER_SKU, cron 4h)</li>
     <li><strong>2026-04-18</strong> — PR #17/18/16: meli_refresh_tokens.sh versionado, deploy snippet, PENDIENTES.md creado</li>

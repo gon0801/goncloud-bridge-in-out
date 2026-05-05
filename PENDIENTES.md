@@ -3,7 +3,7 @@
 > **Para Claude:** este archivo es la **fuente de verdad única**. Al iniciar sesión: leerlo y recordar al usuario. Al terminar subtarea: actualizar tabla + checkbox + contadores + commit + push + PR + merge.
 
 **Última actualización:** 2026-05-04  
-**Progreso:** 4/21 subtareas (19%)
+**Progreso:** 7/21 subtareas (33%)
 
 ---
 
@@ -19,10 +19,10 @@
 | 1.4 | | Confirmar 1 step (incoming y outgoing) en los 3 nuevos | ⏳ Pendiente | Media |
 | 1.5 | | **Decidir estrategia phantom BOM** ⚠️ bloquea Task 3 | ⏳ Pendiente | **Crítica** |
 | 1.6 | | Primera transferencia prueba EHV/Stock → FBAMX/Stock | ⏳ Pendiente | Alta |
-| **2** | **SP-API v0 → v2026-01-01** | `tools/amazon_orders_poll.py` | ⏳ Pendiente | Media |
-| 2.1 | | `app/amazon_inbound_worker.py` | ⏳ Pendiente | Media |
-| 2.2 | | `app/debug_flex_order.py` | ⏳ Pendiente | Baja |
-| 2.3 | | **Deadline: 2027-03-27** (recomendado antes de enero 2027) | — | — |
+| **2** | **SP-API v0 → v2026-01-01** | `tools/amazon_orders_poll.py` | ✅ Hecho | Media |
+| 2.1 | | `app/amazon_inbound_worker.py` | ✅ Hecho | Media |
+| 2.2 | | `app/debug_flex_order.py` | ✅ Hecho | Baja |
+| 2.3 | | **Deadline: 2027-03-27** (recomendado antes de enero 2027) | ✅ Completado con margen | — |
 | **3** | **Tools picking por canal** *(depende Task 1)* | Mapping `canal → almacén` en `bridge_settings` | ⏳ Pendiente | Alta |
 | 3.1 | | `inbound_full_paid_one_shot_no_stock.py` → Full/Stock | ⏳ Pendiente | Alta |
 | 3.2 | | `amazon_fba_paid_one_shot.py` → FBAMX/FBAUS/Stock | ⏳ Pendiente | Alta |
@@ -53,13 +53,14 @@
 - [ ] **Decidir estrategia phantom BOM** ⚠️ *Bloquea Task 3*
 - [ ] Primera transferencia de prueba EHV/Stock → FBAMX/Stock con SKU piloto
 
-### 2. Migrar Amazon SP-API Orders v0 → v2026-01-01
+### 2. Migrar Amazon SP-API Orders v0 → v2026-01-01 ✅
 
-**Deadline:** 2027-03-27 (margen recomendado: antes de enero 2027)
+**Deadline:** 2027-03-27 — **Completado 2026-05-04** (11 meses antes del deadline)
 
-- [ ] `tools/amazon_orders_poll.py` — reemplazar `getOrders` y `getOrderItems`
-- [ ] `app/amazon_inbound_worker.py` — reemplazar `getOrder` y `getOrderItems`
-- [ ] `app/debug_flex_order.py` — reemplazar `getOrder`
+- [x] `tools/amazon_orders_poll.py` — URL v2026, params camelCase, paginationToken, normalize_to_v0()
+- [x] `app/amazon_inbound_worker.py` — enrich con includedData, normalize_to_v0(), elimina getOrderItems
+- [x] `app/debug_flex_order.py` — URL v2026, fix credential keys, display campos v2026
+- **Deploy pendiente en VPS** (`git pull` + `cp tools/amazon_orders_poll.py /mnt/data/appdata/bridge/data/` + restart workers)
 
 ### 3. Modificar tools inbound FBA/FULL para picking por canal
 
