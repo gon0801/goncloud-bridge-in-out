@@ -878,6 +878,7 @@ def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: 
             "ORDER_JSON": json.dumps(order),
             "SITE_ID": site,
             "SO_NOTE": so_note,
+            "WAREHOUSE_NAME": get_setting("warehouse_meli_full"),
         })
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)

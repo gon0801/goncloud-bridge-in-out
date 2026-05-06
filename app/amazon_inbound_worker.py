@@ -1065,12 +1065,14 @@ def process_fba(order: dict, order_id: str, marketplace: str, action: str, dedup
         if not is_enabled("amazon_inbound_fba_paid_enabled"):
             mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"})
             return False
+        _wh_key = "warehouse_amazon_fba_us" if marketplace != AMZ_MX_MARKETPLACE else "warehouse_amazon_fba_mx"
         rc, out, err = run_tool("amazon_fba_paid_one_shot", {
             "CLIENT_ORDER_REF": ref,
             "ORDER_JSON": json.dumps(order),
             "CHANNEL_LABEL": channel_label,
             "BUYER_NAME": buyer_name,
             "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
+            "WAREHOUSE_NAME": get_setting(_wh_key),
         })
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)

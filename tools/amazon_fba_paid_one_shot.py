@@ -33,6 +33,7 @@ CLIENT_ORDER_REF = os.getenv("CLIENT_ORDER_REF") or ""
 CHANNEL_LABEL = (os.getenv("CHANNEL_LABEL") or "Amazon FBA").strip()
 BUYER_NAME = (os.getenv("BUYER_NAME") or "").strip()
 IS_USD_ORDER = os.getenv("IS_USD_ORDER", "0") == "1"
+WAREHOUSE_NAME = (os.getenv("WAREHOUSE_NAME") or "").strip()
 
 def die(msg, code=2):
     print(f"[FBA_PAID] ERROR {msg}", file=sys.stderr)
@@ -165,6 +166,20 @@ if not uid:
     die("authentication_failed")
 print(f"[FBA_PAID] authenticated uid={uid}")
 
+def get_warehouse_id(name: str):
+    if not name:
+        return None
+    whs = exec_kw(uid, "stock.warehouse", "search_read",
+        [[["name", "=", name]]],
+        {"fields": ["id", "name"], "limit": 1})
+    if whs:
+        print(f"[FBA_PAID] warehouse: '{whs[0]['name']}' id={whs[0]['id']}")
+        return whs[0]["id"]
+    print(f"[FBA_PAID] WARN warehouse '{name}' not found in Odoo, using default", file=sys.stderr)
+    return None
+
+warehouse_id = get_warehouse_id(WAREHOUSE_NAME)
+
 # =========================
 # USD → MXN conversion (solo órdenes US)
 # =========================
@@ -286,12 +301,19 @@ print(f"[FBA_PAID] products resolved: {len(sku_to_pid)}")
 # Create SO if needed
 # =========================
 if not so_id:
-    so_id = exec_kw(uid, "sale.order", "create", [{
+    so_vals = {
         "partner_id": partner_id,
         "client_order_ref": display_ref,
         "note": f"{CHANNEL_LABEL} | ORDER={order_id} | {BUYER_NAME or 'N/A'}",
-    }])
-    print(f"[FBA_PAID] SO created id={so_id}")
+    }
+    if warehouse_id:
+        so_vals["warehouse_id"] = warehouse_id
+    so_id = exec_kw(uid, "sale.order", "create", [so_vals])
+    print(f"[FBA_PAID] SO created id={so_id} warehouse_id={warehouse_id or 'default'}")
+    # TODO(Task-3-picking): una vez decidida Task 1.5 (phantom BOM), actualizar la
+    # lógica de picking aquí. Actualmente los pickings se cancelan (FBA = Amazon
+    # gestiona el stock físico). Con warehouses FBA en Odoo puede ser necesario
+    # validar el picking para decrementar stock del warehouse FBA correcto.
 
 # =========================
 # Create SO lines

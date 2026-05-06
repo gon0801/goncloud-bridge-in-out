@@ -11,6 +11,7 @@ USER    = os.getenv("ODOO_USER") or ""
 PW      = os.getenv("ODOO_PASSWORD") or os.getenv("ODOO_PASS") or ""  # compat
 CLIENT_ORDER_REF = (os.getenv("CLIENT_ORDER_REF") or "").strip()
 ORDER_JSON_RAW = os.getenv("ORDER_JSON") or ""
+WAREHOUSE_NAME = (os.getenv("WAREHOUSE_NAME") or "").strip()
 
 AUDIT_DIR = os.getenv("AUDIT_DIR") or "/mnt/data/appdata/bridge/audit/full_paid"
 
@@ -143,6 +144,20 @@ if not uid:
 print(f"[FULL_PAID] AUTH_OK uid={uid}", flush=True)
 step("input", items_count=len(items), client_order_ref=CLIENT_ORDER_REF)
 
+def get_warehouse_id(name: str):
+    if not name:
+        return None
+    whs = exec_kw(uid, "stock.warehouse", "search_read",
+        [[["name", "=", name]]],
+        {"fields": ["id", "name"], "limit": 1})
+    if whs:
+        print(f"[FULL_PAID] warehouse: '{whs[0]['name']}' id={whs[0]['id']}", flush=True)
+        return whs[0]["id"]
+    print(f"[FULL_PAID] WARN warehouse '{name}' not found in Odoo, using default", flush=True)
+    return None
+
+warehouse_id = get_warehouse_id(WAREHOUSE_NAME)
+
 # 1) Partner "MercadoLibre FULL"
 PARTNER_NAME = "MercadoLibre FULL"
 partner_ids = exec_kw(uid, "res.partner", "search", [[["name", "=", PARTNER_NAME], ["active", "=", True]]], {"limit": 1})
@@ -181,12 +196,19 @@ step("products_ok", unique_skus=len(set(skus)))
 
 # 4) Create SO if missing
 if not so_id:
-    so_id = exec_kw(uid, "sale.order", "create", [{
+    so_vals = {
         "partner_id": partner_id,
         "client_order_ref": display_ref,
         "note": f"ML:FULL | STATE=paid | ORDER={order_id}",
-    }])
-    step("so_created", so_id=so_id)
+    }
+    if warehouse_id:
+        so_vals["warehouse_id"] = warehouse_id
+    so_id = exec_kw(uid, "sale.order", "create", [so_vals])
+    step("so_created", so_id=so_id, warehouse_id=warehouse_id or "default")
+    # TODO(Task-3-picking): una vez decidida Task 1.5 (phantom BOM), actualizar
+    # lógica de picking. Actualmente el SO se fuerza a state='sale' sin pickings
+    # (MeLi FULL = MeLi gestiona el stock físico). Con warehouse Meli-Full puede
+    # ser necesario generar y validar un picking para decrementar el stock correcto.
 else:
     step("so_exists", so_id=so_id)
 
