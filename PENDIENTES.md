@@ -3,7 +3,7 @@
 > **Para Claude:** este archivo es la **fuente de verdad única**. Al iniciar sesión: leerlo y recordar al usuario. Al terminar subtarea: actualizar tabla + checkbox + contadores + commit + push + PR + merge.
 
 **Última actualización:** 2026-05-05  
-**Progreso:** 7/21 subtareas (33%)
+**Progreso:** 7/16 subtareas (44%)
 
 ---
 
@@ -31,7 +31,7 @@
 | **5** | **MeLi huérfanos** | `MLM2787930515` — asignar SKU en MeLi vendedor | ⏳ Pendiente | Media |
 | 5.1 | | `MLM2787902225` — asignar SKU en MeLi vendedor | ⏳ Pendiente | Media |
 | 5.2 | | Correr `backfill_meli_mappings.py` (o esperar cron 4h) | ⏳ Pendiente | Baja |
-| **6** | **AP-5 path-secret webhooks** | Rotar secrets + mover a header `X-Goncloud-Secret` | ⏳ Pendiente | Media |
+| **6** | ~~AP-5 path-secret webhooks~~ | ~~Rotar secrets + mover a header `X-Goncloud-Secret`~~ | ❌ Cancelada | — |
 
 ---
 
@@ -81,15 +81,9 @@
 - [ ] `MLM2787902225` — asignar `seller_custom_field` real en MeLi vendedor
 - [ ] Correr `backfill_meli_mappings.py` (o esperar al cron automático de 4h)
 
-### 6. AP-5 follow-up — eliminar path-secret en webhooks
+### 6. ~~AP-5 follow-up — eliminar path-secret en webhooks~~ ❌ Cancelada
 
-uvicorn loggea la URL completa → el secret queda visible en `docker logs bridge-api`.
-
-- [ ] Generar nuevos `meli_webhook_secret` y `amazon_webhook_secret` en `bridge_settings`
-- [ ] Actualizar URL en panel MeLi a `/webhooks/meli/orders` con header `X-Goncloud-Secret`
-- [ ] Re-suscribir SNS Amazon con header `X-Goncloud-Secret`
-- [ ] Borrar rutas con `{secret}` en `app/main.py`
-- [ ] Rotar logs nginx/cloudflare/uvicorn con path-secret histórico
+El flujo completo requiere rotar el secret (cambiar en bridge_settings + actualizar panel MeLi + re-suscribir SNS). Sin rotar el secret, mover la validación al header no aporta seguridad real. Cancelada 2026-05-05.
 
 ---
 
