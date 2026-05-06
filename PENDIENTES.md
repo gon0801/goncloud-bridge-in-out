@@ -2,8 +2,8 @@
 
 > **Para Claude:** este archivo es la **fuente de verdad única**. Al iniciar sesión: leerlo y recordar al usuario. Al terminar subtarea: actualizar tabla + checkbox + contadores + commit + push + PR + merge.
 
-**Última actualización:** 2026-05-05  
-**Progreso:** 8/16 subtareas (50%)
+**Última actualización:** 2026-05-06  
+**Progreso:** 9/16 subtareas (56%)
 
 ---
 
@@ -23,13 +23,14 @@
 | 2.1 | | `app/amazon_inbound_worker.py` | ✅ Hecho | Media |
 | 2.2 | | `app/debug_flex_order.py` | ✅ Hecho | Baja |
 | 2.3 | | **Deadline: 2027-03-27** (recomendado antes de enero 2027) | ✅ Completado con margen | — |
-| **3** | **Tools picking por canal** *(depende Task 1)* | Mapping `canal → almacén` en `bridge_settings` | ⏳ Pendiente | Alta |
-| 3.1 | | `inbound_full_paid_one_shot_no_stock.py` → Full/Stock | ⏳ Pendiente | Alta |
-| 3.2 | | `amazon_fba_paid_one_shot.py` → FBAMX/FBAUS/Stock | ⏳ Pendiente | Alta |
-| 3.3 | | Probar flujo completo con orden real en cada canal | ⏳ Pendiente | Alta |
+| **3** | **Tools picking por canal** *(depende Task 1)* | Mapping `canal → almacén` en `bridge_settings` | ✅ Pre-codeado | Alta |
+| 3.1 | | `inbound_full_paid_one_shot_no_stock.py` → Full/Stock | ✅ Pre-codeado | Alta |
+| 3.2 | | `amazon_fba_paid_one_shot.py` → FBAMX/FBAUS/Stock | ✅ Pre-codeado | Alta |
+| 3.3 | | Lógica de picking (⚠️ espera Task 1.5 phantom BOM) | ⏳ Bloqueada | **Crítica** |
+| 3.4 | | Probar flujo completo con orden real en cada canal | ⏳ Pendiente | Alta |
 | **4** | **Limpieza `manual_review` antiguos** | Automatizar script existente (cron o background) | ✅ Hecho | Baja |
-| **5** | **MeLi huérfanos** | `MLM2787930515` — asignar SKU en MeLi vendedor | ⏳ Pendiente | Media |
-| 5.1 | | `MLM2787902225` — asignar SKU en MeLi vendedor | ⏳ Pendiente | Media |
+| **5** | **MeLi huérfanos** | `MLM2787930515` — verificar si listing sigue activo en MeLi | ⏳ Pendiente | Baja |
+| 5.1 | | `MLM2787902225` — verificar si listing sigue activo en MeLi | ⏳ Pendiente | Baja |
 | 5.2 | | Correr `backfill_meli_mappings.py` (o esperar cron 4h) | ⏳ Pendiente | Baja |
 | **6** | ~~AP-5 path-secret webhooks~~ | ~~Rotar secrets + mover a header `X-Goncloud-Secret`~~ | ❌ Cancelada | — |
 
@@ -64,12 +65,21 @@
 
 ### 3. Modificar tools inbound FBA/FULL para picking por canal
 
-*Depende de que la tarea 1 esté terminada.*
+*Depende de que la tarea 1 esté terminada. Código pre-codeado 2026-05-06 — listo para activar.*
 
-- [ ] Agregar mapping `canal → almacén` en `bridge_settings`
-- [ ] Modificar `tools/inbound_full_paid_one_shot_no_stock.py` para generar picking desde `Full/Stock`
-- [ ] Modificar `tools/amazon_fba_paid_one_shot.py` para generar picking desde `FBAMX/Stock` o `FBAUS/Stock`
+- [x] Settings `warehouse_meli_full`, `warehouse_amazon_fba_mx`, `warehouse_amazon_fba_us` agregados en `bridge_settings` (vacíos hasta configurar Odoo)
+- [x] Workers pasan `WAREHOUSE_NAME` como env var al tool según perfil (`FBA_US` → `warehouse_amazon_fba_us`, etc.)
+- [x] Tools leen `WAREHOUSE_NAME`, buscan `warehouse_id` en Odoo por nombre, lo pasan al `sale.order` create. Si vacío → comportamiento actual sin cambios.
+- [ ] **Activar:** correr los 3 UPDATEs en bridge_settings con nombres exactos de Odoo (sin restart ni redeploy)
+- [ ] **Lógica de picking** ⚠️ *Bloqueada por Task 1.5 (phantom BOM)* — actualmente FBA cancela pickings, FULL no los genera
 - [ ] Probar flujo completo con orden real en cada canal
+
+**Para activar cuando Task 1 esté lista:**
+```sql
+UPDATE bridge_settings SET value='Meli-Full' WHERE key='warehouse_meli_full';
+UPDATE bridge_settings SET value='FBA-MX'    WHERE key='warehouse_amazon_fba_mx';
+UPDATE bridge_settings SET value='FBA-US'    WHERE key='warehouse_amazon_fba_us';
+```
 
 ### 4. Limpieza periódica de `manual_review` antiguos ✅
 
@@ -77,10 +87,13 @@
 - [x] `tools/cron/goncloud_bridge_cleanup` — cron domingos 03:00 UTC, `docker exec bridge-amazon-inbound-worker`
 - **Deploy:** `sudo cp tools/cron/goncloud_bridge_cleanup /etc/cron.d/ && sudo cp tools/cleanup_old_records.py /mnt/data/appdata/bridge/data/`
 
-### 5. Asignar SKU a listings MeLi huérfanos
+### 5. MeLi huérfanos
 
-- [ ] `MLM2787930515` — asignar `seller_custom_field` real en MeLi vendedor
-- [ ] `MLM2787902225` — asignar `seller_custom_field` real en MeLi vendedor
+Revisado 2026-05-06: ambos listings tienen SKU `NH-ITA-CEN-DOR` en `sku_mapping` desde 2026-04-18, pero el cron de backfill (cada 4h) no los ha visto desde esa fecha → probablemente pausados o eliminados en MeLi.
+
+- [ ] Verificar en panel MeLi si `MLM2787930515` sigue activo
+- [ ] Verificar en panel MeLi si `MLM2787902225` sigue activo
+- [ ] Si están activos y sin SKU real → asignar `SELLER_SKU` en atributos del listing en MeLi vendedor
 - [ ] Correr `backfill_meli_mappings.py` (o esperar al cron automático de 4h)
 
 ### 6. ~~AP-5 follow-up — eliminar path-secret en webhooks~~ ❌ Cancelada
@@ -90,6 +103,12 @@ El flujo completo requiere rotar el secret (cambiar en bridge_settings + actuali
 ---
 
 ## ✅ Cerrados recientemente
+
+**2026-05-06** — Task 3 pre-codeada: canal→almacén
+- Workers pasan `WAREHOUSE_NAME` al tool según perfil; tools setean `warehouse_id` en SO create
+- Settings vacíos en `bridge_settings` listos para activar con 3 UPDATEs SQL
+- Lógica de picking pendiente de decisión Task 1.5 (phantom BOM)
+- Redis dead queue limpiado (1,439 jobs históricos eliminados)
 
 **2026-05-05** — Task 4: Limpieza `manual_review` antiguos
 - `cleanup_old_records.py` (success=90d, stuck=30d, dry-run incluido)

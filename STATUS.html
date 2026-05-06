@@ -37,9 +37,9 @@
 <body>
 
 <h1>GONCLOUD Bridge — Pendientes activos</h1>
-<div class="meta">Última actualización: 2026-05-05 &nbsp;·&nbsp; Se refresca cada 30 seg</div>
-<div class="progress-bar"><div class="progress-fill" style="width:50%"></div></div>
-<div class="meta" style="margin-top:-18px; margin-bottom:20px;">8 / 16 subtareas completadas (50%)</div>
+<div class="meta">Última actualización: 2026-05-06 &nbsp;·&nbsp; Se refresca cada 30 seg</div>
+<div class="progress-bar"><div class="progress-fill" style="width:56%"></div></div>
+<div class="meta" style="margin-top:-18px; margin-bottom:20px;">9 / 16 subtareas completadas (56%)</div>
 
 <table>
   <thead>
@@ -148,25 +148,32 @@
       <td>3</td>
       <td>Tools picking por canal <span class="sub">(depende Task 1)</span></td>
       <td>Mapping <code>canal → almacén</code> en <code>bridge_settings</code></td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Pre-codeado</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">3.1</td>
       <td></td>
-      <td><code>inbound_full_paid_one_shot_no_stock.py</code> → Full/Stock</td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><code>inbound_full_paid_one_shot_no_stock.py</code> — <code>warehouse_id</code> en SO</td>
+      <td><span class="badge badge-done">✅ Pre-codeado</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">3.2</td>
       <td></td>
-      <td><code>amazon_fba_paid_one_shot.py</code> → FBAMX/Stock o FBAUS/Stock</td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><code>amazon_fba_paid_one_shot.py</code> — <code>warehouse_id</code> en SO</td>
+      <td><span class="badge badge-done">✅ Pre-codeado</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">3.3</td>
+      <td></td>
+      <td>Lógica de picking ⚠️ espera Task 1.5 phantom BOM</td>
+      <td><span class="badge badge-blocker">🔴 Bloqueada</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">3.4</td>
       <td></td>
       <td>Probar flujo completo con orden real en cada canal</td>
       <td><span class="badge badge-pending">⏳ Pendiente</span></td>
@@ -186,16 +193,16 @@
     <tr class="group-header">
       <td>5</td>
       <td>MeLi huérfanos</td>
-      <td><code>MLM2787930515</code> — asignar SKU en MeLi vendedor</td>
+      <td><code>MLM2787930515</code> — verificar si sigue activo en MeLi</td>
       <td><span class="badge badge-pending">⏳ Pendiente</span></td>
-      <td><span class="pri pri-media">Media</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
     </tr>
     <tr>
       <td class="sub">5.1</td>
       <td></td>
-      <td><code>MLM2787902225</code> — asignar SKU en MeLi vendedor</td>
+      <td><code>MLM2787902225</code> — verificar si sigue activo en MeLi</td>
       <td><span class="badge badge-pending">⏳ Pendiente</span></td>
-      <td><span class="pri pri-media">Media</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
     </tr>
     <tr>
       <td class="sub">5.2</td>
@@ -220,7 +227,8 @@
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
-    <li><strong>2026-05-05</strong> — Task 4: Limpieza manual_review — <code>cleanup_old_records.py</code> (success=90d, stuck=30d) + cron domingos 03:00 UTC; pendiente deploy en VPS</li>
+    <li><strong>2026-05-06</strong> — Task 3 pre-codeada: workers pasan <code>WAREHOUSE_NAME</code> al tool; tools setean <code>warehouse_id</code> en SO. Activar con 3 UPDATEs SQL. Lógica de picking pendiente Task 1.5</li>
+    <li><strong>2026-05-05</strong> — Task 4: Limpieza manual_review — <code>cleanup_old_records.py</code> (success=90d, stuck=30d) + cron domingos 03:00 UTC; 119K filas eliminadas en primera corrida</li>
     <li><strong>2026-05-05</strong> — Task 6: AP-5 path-secret webhooks — cancelada; requiere rotar secret en MeLi/SNS para tener valor real</li>
     <li><strong>2026-05-05</strong> — Task 2: SP-API Orders v0 → v2026-01-01 — deploy VPS completo, poll 06:40 UTC limpio, worker reiniciado OK, 4 perfiles validados (FLEX_MX/FBM_MX/FBM_US/FBA_US), 2 órdenes $0 recuperadas (INV/2026/00983-984)</li>
     <li><strong>2026-05-04</strong> — Task 0: crons VPS Hetzner validados y re-aplicados</li>
