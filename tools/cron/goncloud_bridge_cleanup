@@ -1,0 +1,14 @@
+# GONCLOUD Bridge — Limpieza semanal de bridge.db
+# Copia este archivo a /etc/cron.d/goncloud_bridge_cleanup en el VPS
+# Ejecuta domingos a las 03:00 UTC dentro del container amazon-inbound-worker
+# (tiene acceso a /data/bridge.db y a las dependencias Python del bridge)
+#
+# Deploy:
+#   sudo cp /tmp/goncloud-bridge-in-out/tools/cron/goncloud_bridge_cleanup /etc/cron.d/
+#   sudo chmod 644 /etc/cron.d/goncloud_bridge_cleanup
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# min  hour  dom  month  dow   user  command
+0      3     *    *      0     root  docker exec bridge-amazon-inbound-worker python3 /data/cleanup_old_records.py >> /mnt/data/appdata/bridge/data/bridge_cleanup.log 2>&1

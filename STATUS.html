@@ -38,8 +38,8 @@
 
 <h1>GONCLOUD Bridge — Pendientes activos</h1>
 <div class="meta">Última actualización: 2026-05-05 &nbsp;·&nbsp; Se refresca cada 30 seg</div>
-<div class="progress-bar"><div class="progress-fill" style="width:44%"></div></div>
-<div class="meta" style="margin-top:-18px; margin-bottom:20px;">7 / 16 subtareas completadas (44%)</div>
+<div class="progress-bar"><div class="progress-fill" style="width:50%"></div></div>
+<div class="meta" style="margin-top:-18px; margin-bottom:20px;">8 / 16 subtareas completadas (50%)</div>
 
 <table>
   <thead>
@@ -177,8 +177,8 @@
     <tr class="group-header">
       <td>4</td>
       <td>Limpieza <code>manual_review</code></td>
-      <td>Automatizar script existente (cron o background task)</td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><code>cleanup_old_records.py</code> + cron domingos 03:00 UTC</td>
+      <td><span class="badge badge-done">✅ Hecho</span></td>
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
 
@@ -220,6 +220,7 @@
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-05-05</strong> — Task 4: Limpieza manual_review — <code>cleanup_old_records.py</code> (success=90d, stuck=30d) + cron domingos 03:00 UTC; pendiente deploy en VPS</li>
     <li><strong>2026-05-05</strong> — Task 6: AP-5 path-secret webhooks — cancelada; requiere rotar secret en MeLi/SNS para tener valor real</li>
     <li><strong>2026-05-05</strong> — Task 2: SP-API Orders v0 → v2026-01-01 — deploy VPS completo, poll 06:40 UTC limpio, worker reiniciado OK, 4 perfiles validados (FLEX_MX/FBM_MX/FBM_US/FBA_US), 2 órdenes $0 recuperadas (INV/2026/00983-984)</li>
     <li><strong>2026-05-04</strong> — Task 0: crons VPS Hetzner validados y re-aplicados</li>

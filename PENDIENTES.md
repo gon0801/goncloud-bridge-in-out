@@ -3,7 +3,7 @@
 > **Para Claude:** este archivo es la **fuente de verdad única**. Al iniciar sesión: leerlo y recordar al usuario. Al terminar subtarea: actualizar tabla + checkbox + contadores + commit + push + PR + merge.
 
 **Última actualización:** 2026-05-05  
-**Progreso:** 7/16 subtareas (44%)
+**Progreso:** 8/16 subtareas (50%)
 
 ---
 
@@ -27,7 +27,7 @@
 | 3.1 | | `inbound_full_paid_one_shot_no_stock.py` → Full/Stock | ⏳ Pendiente | Alta |
 | 3.2 | | `amazon_fba_paid_one_shot.py` → FBAMX/FBAUS/Stock | ⏳ Pendiente | Alta |
 | 3.3 | | Probar flujo completo con orden real en cada canal | ⏳ Pendiente | Alta |
-| **4** | **Limpieza `manual_review` antiguos** | Automatizar script existente (cron o background) | ⏳ Pendiente | Baja |
+| **4** | **Limpieza `manual_review` antiguos** | Automatizar script existente (cron o background) | ✅ Hecho | Baja |
 | **5** | **MeLi huérfanos** | `MLM2787930515` — asignar SKU en MeLi vendedor | ⏳ Pendiente | Media |
 | 5.1 | | `MLM2787902225` — asignar SKU en MeLi vendedor | ⏳ Pendiente | Media |
 | 5.2 | | Correr `backfill_meli_mappings.py` (o esperar cron 4h) | ⏳ Pendiente | Baja |
@@ -71,9 +71,11 @@
 - [ ] Modificar `tools/amazon_fba_paid_one_shot.py` para generar picking desde `FBAMX/Stock` o `FBAUS/Stock`
 - [ ] Probar flujo completo con orden real en cada canal
 
-### 4. Limpieza periódica de `manual_review` antiguos
+### 4. Limpieza periódica de `manual_review` antiguos ✅
 
-- [ ] Automatizar script existente (cron o background task)
+- [x] `tools/cleanup_old_records.py` — limpieza con dry-run, retenciones configurables (success=90d, stuck=30d)
+- [x] `tools/cron/goncloud_bridge_cleanup` — cron domingos 03:00 UTC, `docker exec bridge-amazon-inbound-worker`
+- **Deploy:** `sudo cp tools/cron/goncloud_bridge_cleanup /etc/cron.d/ && sudo cp tools/cleanup_old_records.py /mnt/data/appdata/bridge/data/`
 
 ### 5. Asignar SKU a listings MeLi huérfanos
 
@@ -88,6 +90,11 @@ El flujo completo requiere rotar el secret (cambiar en bridge_settings + actuali
 ---
 
 ## ✅ Cerrados recientemente
+
+**2026-05-05** — Task 4: Limpieza `manual_review` antiguos
+- `cleanup_old_records.py` (success=90d, stuck=30d, dry-run incluido)
+- Cron semanal domingos 03:00 UTC vía `docker exec bridge-amazon-inbound-worker`
+- Deploy pendiente: copiar script a `/data/` y cron a `/etc/cron.d/`
 
 **2026-05-04** — Task 0: Validar crons VPS Hetzner
 - Backfill cron faltaba en el VPS nuevo → re-aplicado manualmente
