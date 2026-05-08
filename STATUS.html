@@ -37,9 +37,9 @@
 <body>
 
 <h1>GONCLOUD Bridge — Pendientes activos</h1>
-<div class="meta">Última actualización: 2026-05-06 &nbsp;·&nbsp; Se refresca cada 30 seg</div>
-<div class="progress-bar"><div class="progress-fill" style="width:56%"></div></div>
-<div class="meta" style="margin-top:-18px; margin-bottom:20px;">9 / 16 subtareas completadas (56%)</div>
+<div class="meta">Última actualización: 2026-05-08 (auditoría D4 Redis & Queue Health) &nbsp;·&nbsp; Se refresca cada 30 seg</div>
+<div class="progress-bar"><div class="progress-fill" style="width:62%"></div></div>
+<div class="meta" style="margin-top:-18px; margin-bottom:20px;">10 / 16 subtareas completadas (62%)</div>
 
 <table>
   <thead>
@@ -52,6 +52,149 @@
     </tr>
   </thead>
   <tbody>
+
+    <!-- AUDIT 2026-05-07 — AUDITORÍA PROFUNDA S1–S14 -->
+    <tr class="group-header">
+      <td>🔍</td>
+      <td>Auditoría profunda <span class="sub">2026-05-07</span></td>
+      <td><strong>S1–S14</strong> — 191 hallazgos: 44 Críticos, 68 Altos, 56 Medios, 23 Bajos</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td class="sub">Σ</td>
+      <td></td>
+      <td><strong>Resumen ejecutivo:</strong> Secrets hardcodeados (MeLi OAuth), SQLite sin busy_timeout, 7 tablas nunca creadas en init_db, reaper ignora heartbeat, locks stale sin graceful shutdown, drift crítico app↔tools, refund_moves obsoleto (Odoo 17), normalización SP-API v2026 con bugs, token refresh MeLi sin lock, idempotencia rota en stock worker, PII en logs, 0 tests automatizados.</td>
+      <td><span class="badge badge-blocker">🔴 Ver abajo</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S1 Infra -->
+    <tr>
+      <td class="sub">S1</td>
+      <td>Infra</td>
+      <td>1 Crítica / 5 Alta / 5 Media / 1 Baja — <code>redis==7.1.0</code> no existe en PyPI; puerto expuesto en <code>0.0.0.0</code>; sin <code>.dockerignore</code>; sin healthchecks; sin log rotation</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S2 API -->
+    <tr>
+      <td class="sub">S2</td>
+      <td>API</td>
+      <td>3 Críticos / 5 Altos / 8 Medios / 5 Bajos — <code>db_conn()</code> sin <code>busy_timeout</code>; fugas SQLite sin <code>finally</code>; Amazon webhook encola aunque INSERT falle; path-secret AP-5 sigue activo; SSRF en <code>/setup/api/test-odoo</code></td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S3 Workers -->
+    <tr>
+      <td class="sub">S3</td>
+      <td>Workers</td>
+      <td>6 Críticos / 7 Altos / 2 Medios / 1 Bajo — Reaper MeLi ignora <code>heartbeat_at</code> (roba locks de jobs vivos); heartbeat nunca se lee (infra muerta); Amazon worker libera lock antes de <code>rpush</code> (pérdida permanente de job); reaper bloquea DB con Redis adentro; <code>ORDER_JSON</code> por ENV puede truncarse (<code>E2BIG</code>); sin SIGTERM graceful</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S4 Database -->
+    <tr>
+      <td class="sub">S4</td>
+      <td>Database</td>
+      <td>7 Críticos / 8 Altos / 4 Medios / 2 Bajos — <code>init_db()</code> no crea <code>bridge_settings</code>, <code>inbound_events</code>, <code>amazon_inbound_events</code>, <code>amazon_inventory_cache</code>, <code>meli_sku_mapping</code>, <code>meli_listings_cache</code>; <code>processed_events</code> columna <code>processed_at</code> inexistente; schema drift worker vs migrator; sin índices en locks; WAL sin checkpoint</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S5 Amazon -->
+    <tr>
+      <td class="sub">S5</td>
+      <td>Amazon</td>
+      <td>6 Críticos / 4 Altos / 3 Medios / 2 Bajos — <code>app/amazon_fba_paid_one_shot.py</code> duplica SOs (exact match); <code>refund_moves</code> → método inexistente en Odoo 17; <code>PromotionDiscount</code> no resta del total; 401 no reintenta; <code>break</code> en HTTP != 200 devuelve datos parciales; normalización <code>GIFT_WRAP</code> rota</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S6 MeLi -->
+    <tr>
+      <td class="sub">S6</td>
+      <td>MeLi</td>
+      <td>4 Críticos / 5 Altos / 4 Medios / 1 Bajo — <code>meli_refresh_tokens.sh</code> sin <code>flock</code> ni TTL; worker 401 no refresca inline; <code>sync_meli_listings.py</code> DELETE no atómico; <code>debug_meli_order.py</code> consulta columna inexistente; <code>seller_custom_field</code> usado en vez de <code>SELLER_SKU</code></td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S7 Odoo -->
+    <tr>
+      <td class="sub">S7</td>
+      <td>Odoo</td>
+      <td>6 Críticos / 10 Altos / 7 Medios / 3 Bajos — <code>refund_moves</code> obsoleto (2 tools); <code>app/apply_one_delta.py</code> usa <code>ODOO_PASS</code> en vez de <code>ODOO_PASSWORD</code>; <code>limit=1</code> en quants con lotes; write directo <code>state="sale"</code>; wizard delivered sin pickings validados; SO duplicados por exact match buyer nick</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S8 Stock -->
+    <tr>
+      <td class="sub">S8</td>
+      <td>Stock</td>
+      <td>3 Críticos / 3 Altos / 4 Medios / 2 Bajos — Idempotencia rota (<code>claimed</code> forever); errores de push marcan evento como "ok" sin retry; snapshotter Amazon sin verificación consistencia; stock global sin contexto warehouse; hardcode SKU <code>NH-CAR-AZU-CEN-DOR</code></td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S9 SKU -->
+    <tr>
+      <td class="sub">S9</td>
+      <td>SKU Mapping</td>
+      <td>1 Crítico / 2 Altos / 4 Medios / 1 Bajo — <code>meli_sku_mapping</code> usada pero nunca creada en schema; regex inconsistente entre <code>main.py</code> y <code>worker.py</code>; stale mappings nunca purgados; Amazon outbound solo <code>fetchone()</code> (sin 1:N)</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S10 Security -->
+    <tr>
+      <td class="sub">S10</td>
+      <td>Security</td>
+      <td>1 Crítico / 4 Altos / 5 Medios / 2 Bajos — MeLi OAuth secrets hardcodeados en <code>main.py</code>; Cloudflare JWT no validado; PII (buyer_name, ship_city) loggeado en plaintext; <code>auth_middleware.py</code> bypass por header spoofing; credenciales Amazon en SQLite sin encriptar</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S11 Ops -->
+    <tr>
+      <td class="sub">S11</td>
+      <td>Ops</td>
+      <td>1 Crítico / 4 Altos / 5 Medios — <code>recover_manual_review.py</code> COMMIT dentro del loop rompe transacciones; backup no incluye tokens ni credenciales; scripts sin <code>set -euo pipefail</code> ni flock; <code>chown gon:gon</code> usuario obsoleto</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S12 Tests -->
+    <tr>
+      <td class="sub">S12</td>
+      <td>Tests</td>
+      <td>1 Crítico / 5 Altos / 2 Medios / 1 Bajo — <code>app/worker.py</code> desactualizado afecta producción (outbound worker corre desde <code>app/</code>); no hay suite pytest; <code>inbound_so_dry_run.py</code> escribe en DB a pesar de docstring; <code>test_v2026_normalize.py</code> sin asserts</td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
+    <!-- S13 Docs -->
+    <tr>
+      <td class="sub">S13</td>
+      <td>Docs</td>
+      <td>4 Altos / 3 Medios / 1 Bajo — <code>RUNBOOK.md</code> obsoleto (sku_meli_map, sin Amazon inbound); <code>RECOVERY_CHECKLIST.txt</code> pre-migración; <code>MASTER_RUNBOOK.md</code> branch y puerto desactualizados; <code>PENDIENTES.md</code> vs <code>STATUS.html</code> desfasados</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+
+    <!-- S14 Drift -->
+    <tr>
+      <td class="sub">S14</td>
+      <td>App↔Tools</td>
+      <td>3 Críticos / 2 Altos / 2 Medios / 1 Bajo — <code>amazon_fba_paid_one_shot.py</code> app/ desactualizado (+35L fixes); <code>apply_one_delta.py</code> app/ usa <code>stock.scrap</code> (basura) vs ajuste real en tools/; <code>worker.py</code> divergencia bidireccional (cada lado tiene fixes que el otro no); drift check no compara <code>app/</code></td>
+      <td><span class="badge badge-blocker">🔴 Crítico</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <!-- /AUDIT -->
 
     <!-- TASK 0 -->
     <tr class="group-header">
@@ -221,12 +364,61 @@
       <td>—</td>
     </tr>
 
+    <!-- AUDITORÍAS PROGRAMADAS -->
+    <tr class="group-header">
+      <td>📋</td>
+      <td>Auditorías programadas</td>
+      <td>Deep-dive pendientes del repo y producción</td>
+      <td><span class="badge badge-pending">⏳ En cola</span></td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td class="sub">D1</td>
+      <td>Data Integrity Producción</td>
+      <td><strong>16</strong> eventos stock claimed forever; <strong>266K</strong> errores outbound (140K 403 MeLi, 26K 429, 38K variations not updatable); <strong>2,758</strong> eventos MeLi queued &gt;7 días; <strong>97%</strong> SKU mappings stale; <strong>479</strong> registros PII Amazon &gt;30 días; 1 SO duplicado</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D2</td>
+      <td>Frontend Security</td>
+      <td><strong>28</strong> hallazgos: 2 Altos, 8 Medios, 11 Bajos, 7 INFO — XSS en <code>setup.html</code> (<code>data.error</code> sin escape, F1.1); contraseña Odoo en <code>state</code> global (F5.1); <code>/mapper</code>, <code>/setup</code>, <code>/oauth/start</code> sin auth (F3.1–3.3); SSRF en <code>/setup/api/test-odoo</code> cuando <code>ODOO_URL</code> vacío (F4.1); sin CSP ni clickjacking protection (F8.1+F8.3); <code>/api/meli/listings/refresh</code> sin lock de concurrencia (F9.2)</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D3</td>
+      <td>Supply Chain</td>
+      <td><strong>63+</strong> hallazgos: 2 Críticos, 5 Altos, 12 Medios, 36 Bajos, 8 INFO — <code>redis==7.1.0</code> no existe en PyPI (typosquatting risk); <code>starlette 0.36.3</code> 2 CVEs DoS (CVE-2024-47874, CVE-2025-54121); <code>requests 2.32.3</code> netrc leak + temp file hijack (CVE-2024-47081, CVE-2026-25645); <code>cryptography>=42.0.0</code> 10 CVEs ignorados; Bandit SAST: 10 HIGH (<code>xmlrpc.client</code> sin <code>defusedxml</code>), 11 MEDIUM (SQLi f-string, urllib sin scheme validation)</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4</td>
+      <td>Redis &amp; Queue Health</td>
+      <td><strong>12</strong> hallazgos: 4 Críticos, 4 Altos, 3 Medios, 1 Bajo — <code>ml_orders_processing</code> crece monotónicamente (<strong>230 items</strong>, 200 únicos, 10 duplicados) porque <code>LREM</code> busca JSON de 1 campo pero los items tienen 4 campos → nunca coincide; <strong>9 dead</strong> en DLQ (100% <code>token_expired</code>); cron de refresh bloqueado por <code>/tmp/refresh_resp.json</code> con owner <code>root</code> (corre como <code>gon</code>) → <code>Permission denied</code> desde 2026-05-08 01:07 UTC; <strong>521</strong> stock_jobs acumulados (144 amazon_fbm + 373 meli); 544 dead events en SQLite vs 9 en Redis; 20 items huérfanos de contenedor anterior; cola principal <code>ml_orders_jobs</code> = 0 (vacía)</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5</td>
+      <td>Observability &amp; Monitoring</td>
+      <td>Alerting gaps, trace-id, correlación logs, métricas de pipeline</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+
   </tbody>
 </table>
 
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-05-08</strong> — <strong>Auditoría D4 Redis &amp; Queue Health completada:</strong> 12 hallazgos (4 Críticos, 4 Altos, 3 Medios, 1 Bajo). Top: <code>LREM</code> en <code>inbound_worker.py</code> roto por mismatch de serialización JSON (inserta 4 campos, busca 1) → <code>ml_orders_processing</code> crece monotónicamente con 230 items (20 huérfanos de contenedor anterior); cron <code>meli_refresh_tokens.sh</code> bloqueado desde 01:07 UTC porque <code>/tmp/refresh_resp.json</code> es propiedad de <code>root</code> y el cron corre como <code>gon</code> → todos los jobs MeLi fallan con <code>token_expired</code> (36 en 48h); 544 dead events en SQLite vs 9 en Redis DLQ; 521 stock_jobs acumulados. Timeline: token refrescó OK el 7/may 18:05 → expiró ~6h después → MeLi 503/429/500 en reintentos → archivo <code>/tmp</code> quedó con owner root → cron permanentemente bloqueado.</li>
+    <li><strong>2026-05-08</strong> — <strong>Auditoría D3 Supply Chain completada:</strong> 63+ hallazgos (2 Críticos, 5 Altos, 12 Medios, 36 Bajos, 8 INFO). Top: <code>redis==7.1.0</code> en <code>requirements.inbound.txt</code> NO EXISTE en PyPI (riesgo typosquatting, CRÍTICO); <code>starlette 0.36.3</code> (traído por fastapi 0.110.0) vulnerable a DoS sin límite de memoria (CVE-2024-47874) y bloqueo de thread en multipart (CVE-2025-54121); <code>requests 2.32.3</code> filtra credenciales .netrc (CVE-2024-47081) y reusa archivos temporales maliciosos (CVE-2026-25645); <code>cryptography>=42.0.0</code> tiene 10 CVEs activos ignorados por unpinned; Bandit SAST detectó 10 HIGH por uso de <code>xmlrpc.client</code> sin <code>defusedxml</code>, 11 MEDIUM por SQLi vía f-string y <code>urllib.request.urlopen</code> sin validación de scheme.</li>
+    <li><strong>2026-05-08</strong> — <strong>Auditoría D2 Frontend Security completada:</strong> 28 hallazgos (2 Altos, 8 Medios, 11 Bajos, 7 INFO). Top: XSS en <code>setup.html</code> <code>data.error</code> sin escape (F1.1 ALTO), contraseña Odoo en <code>state</code> global durante todo el wizard (F5.1 ALTO), <code>/mapper</code>+<code>/setup</code>+<code>/oauth/start</code> sin auth (F3.1–3.3 MEDIO), SSRF en <code>/setup/api/test-odoo</code> cuando <code>ODOO_URL</code> vacío (F4.1 MEDIO), sin CSP/clickjacking protection (F8.1+F8.3 MEDIO), <code>/api/meli/listings/refresh</code> sin lock de concurrencia (F9.2 MEDIO). <code>sku_mapper.html</code> usa <code>esc()</code> correctamente; <code>amazon_mapper.html</code> usa <code>createElement</code>+<code>textContent</code> (patrón gold standard).</li>
+    <li><strong>2026-05-07</strong> — <strong>Auditoría profunda S1–S14 completada:</strong> 191 hallazgos (44 Críticos, 68 Altos, 56 Medios, 23 Bajos). Top críticos: secrets MeLi hardcodeados, 7 tablas no creadas en init_db, reaper ignora heartbeat, SQLite sin busy_timeout, refund_moves obsoleto en Odoo 17, app/↔tools/ drift con riesgo de duplicar SOs. S3+S4 timed out pero recuperados parcialmente.</li>
+    <li><strong>2026-05-07</strong> — Auditoría S12 + S14: 3 archivos duplicados app/↔tools/ con drift detectados. Syntax OK en todo el repo. Fixes pendientes: sync <code>amazon_fba_paid_one_shot.py</code>, <code>apply_one_delta.py</code>, <code>worker.py</code> desde <code>tools/</code> hacia <code>app/</code></li>
     <li><strong>2026-05-06</strong> — Task 3 pre-codeada: workers pasan <code>WAREHOUSE_NAME</code> al tool; tools setean <code>warehouse_id</code> en SO. Activar con 3 UPDATEs SQL. Lógica de picking pendiente Task 1.5</li>
     <li><strong>2026-05-05</strong> — Task 4: Limpieza manual_review — <code>cleanup_old_records.py</code> (success=90d, stuck=30d) + cron domingos 03:00 UTC; 119K filas eliminadas en primera corrida</li>
     <li><strong>2026-05-05</strong> — Task 6: AP-5 path-secret webhooks — cancelada; requiere rotar secret en MeLi/SNS para tener valor real</li>
