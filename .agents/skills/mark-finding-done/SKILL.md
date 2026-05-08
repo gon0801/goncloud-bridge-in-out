@@ -46,18 +46,10 @@ grep -A3 "<ID>" status-bridge.html
 
 Confirm the badge shows `badge-done`.
 
-### Step 3 — Commit, push, deploy
+### Step 3 — Deploy
 
-```bash
-git add status-bridge.html
-git commit -m "fix(audit): mark <IDS> as corregido in status-bridge.html"
-git push origin main
-scp status-bridge.html gonserver:/tmp/
-ssh gonserver "sudo cp /tmp/status-bridge.html /mnt/data/appdata/bridge/app/static/status-bridge.html"
-```
-
-> The `status-bridge.html` in repo root is what gets deployed. The `app/static/` path is
-> the bind-mounted location served by bridge-api at `/static/status-bridge.html`.
+Invoke the `deploy-bridge` skill to commit, push, and deploy to production.
+The `status-bridge.html` in repo root is served at `/static/status-bridge.html` on bridge-api.
 
 ## Rules
 
