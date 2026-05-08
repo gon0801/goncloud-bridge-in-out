@@ -37,9 +37,9 @@
 <body>
 
 <h1>GONCLOUD Bridge — Pendientes activos</h1>
-<div class="meta">Última actualización: 2026-05-08 (auditoría D5 Observability & Monitoring) &nbsp;·&nbsp; Se refresca cada 30 seg</div>
-<div class="progress-bar"><div class="progress-fill" style="width:65%"></div></div>
-<div class="meta" style="margin-top:-18px; margin-bottom:20px;">11 / 17 subtareas completadas (65%)</div>
+<div class="meta">Última actualización: 2026-05-08 (auditoría D6 Infra & Backup) &nbsp;·&nbsp; Se refresca cada 30 seg</div>
+<div class="progress-bar"><div class="progress-fill" style="width:71%"></div></div>
+<div class="meta" style="margin-top:-18px; margin-bottom:20px;">12 / 17 subtareas completadas (71%)</div>
 
 <table>
   <thead>
@@ -410,9 +410,9 @@
     <tr>
       <td class="sub">D6</td>
       <td>Infra &amp; Backup</td>
-      <td><strong>Pendiente</strong> — Validar backup automatizado de <code>bridge.db</code> + tokens; verificar estrategia de recovery; revisar log rotation; verificar <code>.dockerignore</code></td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
-      <td><span class="pri pri-media">Media</span></td>
+      <td><strong>10 hallazgos</strong>: 2 Críticos, 3 Altos, 3 Medios, 2 Bajos — Backup script sin cron (dir vacío); 314 backups de tokens acumulados; sin <code>.dockerignore</code>; Dockerfile sin patch-pin; sin log rotation; RECOVERY_CHECKLIST obsoleto; permisos de secrets mixtos; secrets en capas Docker; sin backup offsite</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
       <td class="sub">D7</td>
@@ -680,12 +680,79 @@
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
 
+    <!-- D6 Infra & Backup -->
+    <tr class="group-header">
+      <td>D6</td>
+      <td colspan="4">Infra &amp; Backup <span class="sub">10 puntos a corregir</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.1</td>
+      <td colspan="2"><code>bridge_backup.sh</code> existe y es robusto (integrity check, 7-day rotation) pero <strong>no hay cron configurado</strong>; <code>/mnt/data/backups/bridge/</code> está vacío → agregar cron diario</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.2</td>
+      <td colspan="2"><code>meli_refresh_tokens.sh</code> crea <code>.BK.*</code> cada 6h sin limpieza → <strong>314 archivos acumulados</strong> (~1.2MB) desde febrero; agregar rotación de backups de tokens</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.3</td>
+      <td colspan="2">Sin <code>.dockerignore</code>; Dockerfile hace <code>COPY . /app</code> incluyendo <code>.env</code>, <code>.git</code>, tokens, secrets → agregar <code>.dockerignore</code> y usar multi-stage build</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.4</td>
+      <td colspan="2"><code>FROM python:3.11-slim</code> sin patch-level pin → builds no reproducibles; usar <code>python:3.11.15-slim</code> o SHA digest</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.5</td>
+      <td colspan="2">Sin log rotation para contenedores Docker; <code>/var/lib/docker/containers/</code> = 213MB y creciendo; sin <code>logrotate</code> ni <code>max-size</code> en docker-compose → agregar <code>logging options</code></td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.6</td>
+      <td colspan="2"><code>RECOVERY_CHECKLIST.txt</code> obsoleto (2026-01-29); menciona tablas inexistentes (<code>events</code>, <code>snapshot_items</code>); usa password hardcodeado "odoo"; referencia <code>restic-server-backup.sh</code> inexistente → reescribir checklist</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.7</td>
+      <td colspan="2">Permisos de secrets mixtos: <code>.env</code> raíz = <code>664</code> (grupo writable); <code>.env.before_*</code> = <code>644</code> (world readable); tokens principales sí están bien (<code>600</code>) → unificar a <code>600</code></td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.8</td>
+      <td colspan="2">Secrets embebidos en capas de imagen Docker: <code>COPY . /app</code> incluye <code>.env*</code> y tokens; aunque se borren en <code>RUN</code>, quedan en historial de capas → usar multi-stage build o build args</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.9</td>
+      <td colspan="2">Sin backup offsite — <code>bridge_backup.sh</code> solo guarda en <code>/mnt/data/backups/</code> (mismo disco); si falla el disco, se pierde todo → agregar sync a S3/B2/u otro destino</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6.10</td>
+      <td colspan="2">Sin restore tests — no hay verificación periódica de que los backups de <code>bridge.db</code> son restaurables → agregar restore test mensual</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+
   </tbody>
 </table>
 
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-05-08</strong> — <strong>Auditoría D6 Infra &amp; Backup completada:</strong> 10 hallazgos (2 Críticos, 3 Altos, 3 Medios, 2 Bajos). Top: <code>bridge_backup.sh</code> existe y es robusto pero <strong>no hay cron</strong> configurado y el directorio de backups está vacío (D6.1 CRÍTICO); <code>meli_refresh_tokens.sh</code> acumula <strong>314 archivos de backup</strong> de tokens sin limpieza desde febrero (D6.2 CRÍTICO); sin <code>.dockerignore</code> + <code>COPY . /app</code> = secrets embebidos en imagen Docker (D6.3 ALTO); Dockerfile usa <code>python:3.11-slim</code> sin patch-pin → builds no reproducibles (D6.4 ALTO); sin log rotation para contenedores → 213MB y creciendo (D6.5 ALTO); <code>RECOVERY_CHECKLIST.txt</code> obsoleto con tablas inexistentes y password hardcodeado (D6.6 MEDIO).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D5 Observability &amp; Monitoring completada:</strong> 8 hallazgos (2 Críticos, 3 Altos, 2 Medios, 1 Bajo). Top: ningún contenedor tiene <code>HEALTHCHECK</code> en Docker y <code>/v1/health</code> es un stub que no verifica dependencias (D5.1 CRÍTICO); sin <code>trace_id</code> ni correlación de logs entre workers — cada uno usa formato diferente (uvicorn texto, inbound JSON, worker texto plano) haciendo imposible el debug end-to-end (D5.2 CRÍTICO); métricas solo contadores totales en <code>bridge_metrics</code> (SQLite) sin dimensión temporal, latency, ni error rate (D5.3 ALTO); sin sistema de alerting externo — <code>token_expired</code> y queue creciendo pasan completamente desapercibidos (D5.4 ALTO); <code>bridge.db</code> = 3.4GB sin monitoreo de crecimiento (D5.6 MEDIO).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D4 Redis &amp; Queue Health completada:</strong> 12 hallazgos (4 Críticos, 4 Altos, 3 Medios, 1 Bajo). Top: <code>LREM</code> en <code>inbound_worker.py</code> roto por mismatch de serialización JSON (inserta 4 campos, busca 1) → <code>ml_orders_processing</code> crece monotónicamente con 230 items (20 huérfanos de contenedor anterior); cron <code>meli_refresh_tokens.sh</code> bloqueado desde 01:07 UTC porque <code>/tmp/refresh_resp.json</code> es propiedad de <code>root</code> y el cron corre como <code>gon</code> → todos los jobs MeLi fallan con <code>token_expired</code> (36 en 48h); 544 dead events en SQLite vs 9 en Redis DLQ; 521 stock_jobs acumulados. Timeline: token refrescó OK el 7/may 18:05 → expiró ~6h después → MeLi 503/429/500 en reintentos → archivo <code>/tmp</code> quedó con owner root → cron permanentemente bloqueado.</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D3 Supply Chain completada:</strong> 63+ hallazgos (2 Críticos, 5 Altos, 12 Medios, 36 Bajos, 8 INFO). Top: <code>redis==7.1.0</code> en <code>requirements.inbound.txt</code> NO EXISTE en PyPI (riesgo typosquatting, CRÍTICO); <code>starlette 0.36.3</code> (traído por fastapi 0.110.0) vulnerable a DoS sin límite de memoria (CVE-2024-47874) y bloqueo de thread en multipart (CVE-2025-54121); <code>requests 2.32.3</code> filtra credenciales .netrc (CVE-2024-47081) y reusa archivos temporales maliciosos (CVE-2026-25645); <code>cryptography>=42.0.0</code> tiene 10 CVEs activos ignorados por unpinned; Bandit SAST detectó 10 HIGH por uso de <code>xmlrpc.client</code> sin <code>defusedxml</code>, 11 MEDIUM por SQLi vía f-string y <code>urllib.request.urlopen</code> sin validación de scheme.</li>
