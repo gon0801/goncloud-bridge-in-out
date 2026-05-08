@@ -15,9 +15,14 @@ services:
     build: ./app
     container_name: bridge-api
     working_dir: /app
-    dns:                           # ← AGREGAR ESTAS 3 LÍNEAS
-      - 8.8.8.8                    # ← 
-      - 1.1.1.1   
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     volumes:
       - /mnt/data/appdata/bridge/data:/data
       - /mnt/data/appdata/bridge/app:/app
@@ -38,6 +43,11 @@ services:
     build: ./app
     container_name: bridge-worker
     working_dir: /app
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     volumes:
       - /mnt/data/appdata/bridge/data:/data
       - /mnt/data/appdata/bridge/app:/app
@@ -62,6 +72,11 @@ services:
     build: ./app
     container_name: bridge-inbound-worker
     working_dir: /app
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     volumes:
       - /mnt/data/appdata/bridge/data:/data
       - /mnt/data/appdata/bridge/app:/app
@@ -81,6 +96,11 @@ services:
     build: ./app
     container_name: bridge-amazon-inbound-worker
     working_dir: /app
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     volumes:
       - /mnt/data/appdata/bridge/data:/data
       - /mnt/data/appdata/bridge/app:/app
