@@ -37,7 +37,7 @@
 <body>
 
 <h1>GONCLOUD Bridge — Pendientes activos</h1>
-<div class="meta">Última actualización: 2026-05-08 (auditoría D6 Infra & Backup) &nbsp;·&nbsp; Se refresca cada 30 seg</div>
+<div class="meta">Última actualización: 2026-05-08 (auditoría D7 MeLi OAuth & API) &nbsp;·&nbsp; Se refresca cada 30 seg</div>
 <div class="progress-bar"><div class="progress-fill" style="width:71%"></div></div>
 <div class="meta" style="margin-top:-18px; margin-bottom:20px;">12 / 17 subtareas completadas (71%)</div>
 
@@ -417,8 +417,8 @@
     <tr>
       <td class="sub">D7</td>
       <td>MeLi OAuth &amp; API</td>
-      <td><strong>Pendiente</strong> — Revisar flujo completo de OAuth (refresh inline vs cron); validar scopes del token; revisar manejo de <code>token_expired</code>; verificar idempotencia en reintentos</td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><strong>7 hallazgos</strong> (1 Alto, 3 Medios, 3 Bajos) — Worker sin refresh inline: depende 100% del cron cada 6h; token expiró ~6h el 8/may causando 36 dead orders antes del refresh manual; "circuit breaker" es solo comentario sin implementación; rate limit 429 sin tracking de headers X-Rate-Limit-Remaining; refresh token no tiene detección de expiración ni re-auth forzada; OAuth flow sin PKCE</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
 
@@ -442,7 +442,7 @@
     <tr>
       <td class="sub">D1.2</td>
       <td colspan="2">16 eventos stock <code>claimed</code> forever (10 amazon_fbm, 5 meli, 1 otro) → liberar locks o marcar error</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
@@ -490,7 +490,7 @@
     <tr>
       <td class="sub">F1.1</td>
       <td colspan="2"><code>setup.html:487</code> — <code>result.innerHTML = `❌ Error: ${data.error}`</code> sin escape → usar <code>textContent</code> o <code>esc()</code></td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
@@ -532,7 +532,7 @@
     <tr>
       <td class="sub">D3.1</td>
       <td colspan="2"><code>requirements.inbound.txt</code>: <code>redis==7.1.0</code> no existe en PyPI → eliminar o corregir a <code>redis==5.0.1</code></td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
@@ -580,7 +580,7 @@
     <tr>
       <td class="sub">D4.1</td>
       <td colspan="2"><code>inbound_worker.py</code>: <code>LREM</code> busca <code>{"dedupe_key":...}</code> (1 campo) pero items insertados tienen 4 campos → nunca coincide; <code>ml_orders_processing</code> crece monotónicamente (230 items)</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
@@ -598,7 +598,7 @@
     <tr>
       <td class="sub">D4.7</td>
       <td colspan="2">20 items huérfanos en <code>ml_orders_processing</code> de contenedor anterior (<code>1@0b845dde788c</code>) → limpiar lista + fix D4.1</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
@@ -688,13 +688,13 @@
     <tr>
       <td class="sub">D6.1</td>
       <td colspan="2"><code>bridge_backup.sh</code> existe y es robusto (integrity check, 7-day rotation) pero <strong>no hay cron configurado</strong>; <code>/mnt/data/backups/bridge/</code> está vacío → agregar cron diario</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
       <td class="sub">D6.2</td>
       <td colspan="2"><code>meli_refresh_tokens.sh</code> crea <code>.BK.*</code> cada 6h sin limpieza → <strong>314 archivos acumulados</strong> (~1.2MB) desde febrero; agregar rotación de backups de tokens</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
@@ -746,12 +746,61 @@
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
 
+    <!-- D7 MeLi OAuth & API -->
+    <tr class="group-header">
+      <td>D7</td>
+      <td colspan="4">MeLi OAuth &amp; API — 7 hallazgos (1 Alto, 3 Medios, 3 Bajos)</td>
+    </tr>
+    <tr>
+      <td class="sub">D7.1</td>
+      <td colspan="2"><strong>Worker sin refresh inline de token:</strong> <code>ml_get()</code> en <code>inbound_worker.py</code> lanza <code>RuntimeError("token_expired")</code> en HTTP 401 pero NUNCA intenta refrescar el token. Depende 100% del cron cada 6h. Si el cron falla (como pasó el 8/may 01:07 UTC por permisos en <code>/tmp</code>), todas las órdenes MeLi fallan durante horas hasta intervención manual. El refresh exitoso fue a las 07:15 UTC, pero para entonces ya había 36 dead orders. <strong>Mitigación inmediata:</strong> agregar inline refresh en <code>ml_get()</code> cuando recibe 401, usando <code>/oauth/refresh</code> o llamando al refresh script.</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D7.2</td>
+      <td colspan="2"><strong>"Circuit breaker" es solo un comentario:</strong> El header en <code>inbound_worker.py</code> dice "Con retry y circuit breaker pattern" pero no existe ninguna implementación de circuit breaker. Si MeLi API está caída o el token es inválido, el worker sigue golpeando la API indefinidamente con cada job de la cola, sin backoff global ni ventana de apertura. Esto agrava rate limiting y genera carga innecesaria.</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D7.3</td>
+      <td colspan="2"><strong>No hay detección de refresh token expirado / revocado:</strong> Si el usuario revoca la aplicación en MeLi o el refresh token expira, <code>meli_refresh_tokens.sh</code> falla con <code>invalid_grant</code> y el worker sigue reportando <code>token_expired</code> indefinidamente. No hay mecanismo para detectar este caso especial ni forzar re-autenticación OAuth (redirigir a <code>/oauth/start</code>). El script de refresh tampoco notifica vía webhook/email/alerta.</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D7.4</td>
+      <td colspan="2"><strong>Rate limit 429 sin tracking de headers:</strong> MeLi API devuelve <code>X-Rate-Limit-Limit</code>, <code>X-Rate-Limit-Remaining</code> y <code>X-Rate-Limit-Reset</code>. El worker solo hace retry ciego exponencial (base 2s) sin leer estos headers. El 8/may 01:02 UTC MeLi respondió <code>429 local_rate_limited</code>; el retry ciego puede empeorar la situación. Se debería leer <code>Retry-After</code> o <code>X-Rate-Limit-Reset</code> para backoff adaptativo.</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D7.5</td>
+      <td colspan="2"><strong>OAuth Authorization Code flow sin PKCE:</strong> Aunque es server-side, OAuth 2.0 BCP (RFC 7636) recomienda PKCE para todos los clients. El endpoint <code>/oauth/start</code> no genera ni envía <code>code_challenge</code>/<code>code_verifier</code>. Mitigación parcial: el state CSRF está bien implementado con Redis GETDEL.</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D7.6</td>
+      <td colspan="2"><strong>Callback no requiere <code>refresh_token</code> obligatoriamente:</strong> Si MeLi no devuelve <code>refresh_token</code> (ej. usuario ya autorizó antes y MeLi no lo reemite), <code>/oauth/callback</code> guarda igual el <code>access_token</code> y solo emite un warning. Esto resulta en un token que expira en 6h y nunca se puede refrescar. Debería requerir <code>refresh_token</code> para considerar el callback exitoso, o al menos enviar alerta.</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D7.7</td>
+      <td colspan="2"><strong>Lectura de token file sin manejo de corrupto:</strong> <code>ml_token()</code> lee <code>/data/.meli_tokens.json</code> directamente con <code>json.load()</code>. Si el archivo está medio escrito (crash durante <code>cp</code> en el refresh script) o corrupto, el worker crashea con <code>json.JSONDecodeError</code> en vez de manejar el error gracefulmente (ej. loggear y tratar como token_expired).</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+
   </tbody>
 </table>
 
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-05-08</strong> — <strong>Auditoría D7 MeLi OAuth &amp; API completada:</strong> 7 hallazgos (1 Alto, 3 Medios, 3 Bajos). Top: worker <code>ml_get()</code> en <code>inbound_worker.py</code> no refresca token inline ante HTTP 401 — depende 100% del cron cada 6h; cuando el cron falló el 8/may 01:07 UTC (archivo <code>/tmp</code> con owner <code>root</code>), el worker generó <strong>36 dead orders</strong> con <code>token_expired</code> antes del refresh manual a las 07:15 UTC (D7.1 ALTO); el comentario "circuit breaker pattern" en <code>ml_get()</code> es pura documentación — no existe implementación real (D7.2 MEDIO); rate limit 429 sin lectura de headers <code>X-Rate-Limit-Remaining/Reset</code> → retry ciego que puede empeorar throttling (D7.4 MEDIO); OAuth flow sin PKCE (D7.5 BAJO); callback no exige <code>refresh_token</code> obligatorio (D7.6 BAJO). Token actual verificado: válido (user_id 135734858), 17 scopes incluyendo <code>offline_access</code>.</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D6 Infra &amp; Backup completada:</strong> 10 hallazgos (2 Críticos, 3 Altos, 3 Medios, 2 Bajos). Top: <code>bridge_backup.sh</code> existe y es robusto pero <strong>no hay cron</strong> configurado y el directorio de backups está vacío (D6.1 CRÍTICO); <code>meli_refresh_tokens.sh</code> acumula <strong>314 archivos de backup</strong> de tokens sin limpieza desde febrero (D6.2 CRÍTICO); sin <code>.dockerignore</code> + <code>COPY . /app</code> = secrets embebidos en imagen Docker (D6.3 ALTO); Dockerfile usa <code>python:3.11-slim</code> sin patch-pin → builds no reproducibles (D6.4 ALTO); sin log rotation para contenedores → 213MB y creciendo (D6.5 ALTO); <code>RECOVERY_CHECKLIST.txt</code> obsoleto con tablas inexistentes y password hardcodeado (D6.6 MEDIO).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D5 Observability &amp; Monitoring completada:</strong> 8 hallazgos (2 Críticos, 3 Altos, 2 Medios, 1 Bajo). Top: ningún contenedor tiene <code>HEALTHCHECK</code> en Docker y <code>/v1/health</code> es un stub que no verifica dependencias (D5.1 CRÍTICO); sin <code>trace_id</code> ni correlación de logs entre workers — cada uno usa formato diferente (uvicorn texto, inbound JSON, worker texto plano) haciendo imposible el debug end-to-end (D5.2 CRÍTICO); métricas solo contadores totales en <code>bridge_metrics</code> (SQLite) sin dimensión temporal, latency, ni error rate (D5.3 ALTO); sin sistema de alerting externo — <code>token_expired</code> y queue creciendo pasan completamente desapercibidos (D5.4 ALTO); <code>bridge.db</code> = 3.4GB sin monitoreo de crecimiento (D5.6 MEDIO).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D4 Redis &amp; Queue Health completada:</strong> 12 hallazgos (4 Críticos, 4 Altos, 3 Medios, 1 Bajo). Top: <code>LREM</code> en <code>inbound_worker.py</code> roto por mismatch de serialización JSON (inserta 4 campos, busca 1) → <code>ml_orders_processing</code> crece monotónicamente con 230 items (20 huérfanos de contenedor anterior); cron <code>meli_refresh_tokens.sh</code> bloqueado desde 01:07 UTC porque <code>/tmp/refresh_resp.json</code> es propiedad de <code>root</code> y el cron corre como <code>gon</code> → todos los jobs MeLi fallan con <code>token_expired</code> (36 en 48h); 544 dead events en SQLite vs 9 en Redis DLQ; 521 stock_jobs acumulados. Timeline: token refrescó OK el 7/may 18:05 → expiró ~6h después → MeLi 503/429/500 en reintentos → archivo <code>/tmp</code> quedó con owner root → cron permanentemente bloqueado.</li>
