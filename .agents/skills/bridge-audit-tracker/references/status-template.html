@@ -1,0 +1,31 @@
+<!-- EXAMPLE ROW TEMPLATES for status-bridge.html -->
+
+<!-- Group header for a new audit -->
+<tr class="group-header">
+  <td>D4</td>
+  <td colspan="4">Redis &amp; Queue Health <span class="sub">8 puntos a corregir</span></td>
+</tr>
+
+<!-- Critical finding -->
+<tr>
+  <td class="sub">D4.1</td>
+  <td colspan="2"><code>inbound_worker.py</code> — <code>LREM</code> busca JSON de 1 campo pero items tienen 4 campos → nunca coincide; <code>ml_orders_processing</code> crece monotónicamente (230 items)</td>
+  <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+  <td><span class="pri pri-critica">Crítica</span></td>
+</tr>
+
+<!-- High finding -->
+<tr>
+  <td class="sub">D4.3</td>
+  <td colspan="2">521 <code>stock_jobs</code> acumulados (144 amazon_fbm + 373 meli) → escalar worker o reducir frecuencia snapshotter</td>
+  <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+  <td><span class="pri pri-alta">Alta</span></td>
+</tr>
+
+<!-- Fixed finding -->
+<tr>
+  <td class="sub">D4.6</td>
+  <td colspan="2"><code>meli_refresh_tokens.sh</code> escribe en <code>/tmp/refresh_resp.json</code> sin <code>mktemp</code>; archivo quedó con owner <code>root</code> bloqueando cron → usar <code>mktemp</code> en dir propio</td>
+  <td><span class="badge badge-done">✅ Corregido</span></td>
+  <td><span class="pri pri-critica">Crítica</span></td>
+</tr>
