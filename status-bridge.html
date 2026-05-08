@@ -448,7 +448,7 @@
     <tr>
       <td class="sub">D1.3</td>
       <td colspan="2">2,758 eventos MeLi <code>queued</code> &gt;7 días → procesar backlog o purgar</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
@@ -544,13 +544,13 @@
     <tr>
       <td class="sub">D3.3</td>
       <td colspan="2"><code>requests==2.32.3</code> → CVE-2024-47081 (netrc leak) + CVE-2026-25645 (temp file reuse) → upgrade a ≥2.32.4</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">D3.4</td>
       <td colspan="2"><code>cryptography>=42.0.0</code> unpinned → 10 CVEs activos ignorados → pin a versión segura (≥43.0.0)</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
@@ -700,19 +700,19 @@
     <tr>
       <td class="sub">D6.3</td>
       <td colspan="2">Sin <code>.dockerignore</code>; Dockerfile hace <code>COPY . /app</code> incluyendo <code>.env</code>, <code>.git</code>, tokens, secrets → agregar <code>.dockerignore</code> y usar multi-stage build</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">D6.4</td>
       <td colspan="2"><code>FROM python:3.11-slim</code> sin patch-level pin → builds no reproducibles; usar <code>python:3.11.15-slim</code> o SHA digest</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">D6.5</td>
       <td colspan="2">Sin log rotation para contenedores Docker; <code>/var/lib/docker/containers/</code> = 213MB y creciendo; sin <code>logrotate</code> ni <code>max-size</code> en docker-compose → agregar <code>logging options</code></td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
