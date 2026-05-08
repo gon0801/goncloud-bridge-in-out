@@ -460,9 +460,9 @@
             state.odoo.url = document.getElementById('odoo_url').value.trim();
             state.odoo.db = document.getElementById('odoo_db').value.trim();
             state.odoo.user = document.getElementById('odoo_user').value.trim();
-            state.odoo.password = document.getElementById('odoo_password').value;
+            const _odoo_pw = document.getElementById('odoo_password').value;
 
-            if (!state.odoo.url || !state.odoo.db || !state.odoo.user || !state.odoo.password) {
+            if (!state.odoo.url || !state.odoo.db || !state.odoo.user || !_odoo_pw) {
                 result.className = 'rounded-lg p-4 bg-red-50 text-red-700';
                 result.innerHTML = '⚠️ Completa todos los campos';
                 result.classList.remove('hidden');
@@ -477,7 +477,7 @@
                 const resp = await fetch('/setup/api/test-odoo', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(state.odoo)
+                    body: JSON.stringify({ ...state.odoo, password: _odoo_pw })
                 });
                 const data = await resp.json();
 

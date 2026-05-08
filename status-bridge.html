@@ -496,7 +496,7 @@
     <tr>
       <td class="sub">F3.1-3.3</td>
       <td colspan="2"><code>/mapper</code>, <code>/setup</code>, <code>/oauth/start</code> no usan <code>Depends(require_secret)</code> → agregar auth</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
@@ -508,13 +508,13 @@
     <tr>
       <td class="sub">F5.1</td>
       <td colspan="2"><code>setup.html</code> almacena <code>state.odoo.password</code> en global DOM → no persistir password; usar input efímero</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">F8.1+8.3</td>
       <td colspan="2">Sin CSP ni <code>X-Frame-Options</code> → agregar headers de seguridad en FastAPI</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
@@ -718,7 +718,7 @@
     <tr>
       <td class="sub">D6.6</td>
       <td colspan="2"><code>RECOVERY_CHECKLIST.txt</code> obsoleto (2026-01-29); menciona tablas inexistentes (<code>events</code>, <code>snapshot_items</code>); usa password hardcodeado "odoo"; referencia <code>restic-server-backup.sh</code> inexistente → reescribir checklist</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
@@ -800,6 +800,7 @@
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-05-08</strong> — <strong>Quick wins seguridad F3.1+F5.1+F8.1+D6.6:</strong> <code>/mapper</code>, <code>/setup</code>, <code>/amazon/mapper</code> protegidos con <code>Depends(require_secret)</code> (F3.1-3.3); contraseña Odoo no persiste en <code>state.odoo</code> — se lee del DOM inline y se descarta tras la llamada (F5.1); middleware de seguridad HTTP agregado: CSP, <code>X-Frame-Options: DENY</code>, <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy</code> (F8.1+8.3); <code>RECOVERY_CHECKLIST.txt</code> reescrito — comandos actuales, tablas reales, credenciales referenciadas correctamente (D6.6).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D7 MeLi OAuth &amp; API completada:</strong> 7 hallazgos (1 Alto, 3 Medios, 3 Bajos). Top: worker <code>ml_get()</code> en <code>inbound_worker.py</code> no refresca token inline ante HTTP 401 — depende 100% del cron cada 6h; cuando el cron falló el 8/may 01:07 UTC (archivo <code>/tmp</code> con owner <code>root</code>), el worker generó <strong>36 dead orders</strong> con <code>token_expired</code> antes del refresh manual a las 07:15 UTC (D7.1 ALTO); el comentario "circuit breaker pattern" en <code>ml_get()</code> es pura documentación — no existe implementación real (D7.2 MEDIO); rate limit 429 sin lectura de headers <code>X-Rate-Limit-Remaining/Reset</code> → retry ciego que puede empeorar throttling (D7.4 MEDIO); OAuth flow sin PKCE (D7.5 BAJO); callback no exige <code>refresh_token</code> obligatorio (D7.6 BAJO). Token actual verificado: válido (user_id 135734858), 17 scopes incluyendo <code>offline_access</code>.</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D6 Infra &amp; Backup completada:</strong> 10 hallazgos (2 Críticos, 3 Altos, 3 Medios, 2 Bajos). Top: <code>bridge_backup.sh</code> existe y es robusto pero <strong>no hay cron</strong> configurado y el directorio de backups está vacío (D6.1 CRÍTICO); <code>meli_refresh_tokens.sh</code> acumula <strong>314 archivos de backup</strong> de tokens sin limpieza desde febrero (D6.2 CRÍTICO); sin <code>.dockerignore</code> + <code>COPY . /app</code> = secrets embebidos en imagen Docker (D6.3 ALTO); Dockerfile usa <code>python:3.11-slim</code> sin patch-pin → builds no reproducibles (D6.4 ALTO); sin log rotation para contenedores → 213MB y creciendo (D6.5 ALTO); <code>RECOVERY_CHECKLIST.txt</code> obsoleto con tablas inexistentes y password hardcodeado (D6.6 MEDIO).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D5 Observability &amp; Monitoring completada:</strong> 8 hallazgos (2 Críticos, 3 Altos, 2 Medios, 1 Bajo). Top: ningún contenedor tiene <code>HEALTHCHECK</code> en Docker y <code>/v1/health</code> es un stub que no verifica dependencias (D5.1 CRÍTICO); sin <code>trace_id</code> ni correlación de logs entre workers — cada uno usa formato diferente (uvicorn texto, inbound JSON, worker texto plano) haciendo imposible el debug end-to-end (D5.2 CRÍTICO); métricas solo contadores totales en <code>bridge_metrics</code> (SQLite) sin dimensión temporal, latency, ni error rate (D5.3 ALTO); sin sistema de alerting externo — <code>token_expired</code> y queue creciendo pasan completamente desapercibidos (D5.4 ALTO); <code>bridge.db</code> = 3.4GB sin monitoreo de crecimiento (D5.6 MEDIO).</li>

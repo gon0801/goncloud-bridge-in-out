@@ -1,100 +1,147 @@
-GONCLOUD — BRIDGE STOCK
-RECOVERY CHECKLIST (ULTRA CORTA)
-================================
-Última revisión: 2026-01-29
-Objetivo: Recuperar sincronización Odoo → Bridge → Canales en < 15 min
+GONCLOUD — BRIDGE INBOUND/OUTBOUND
+RECOVERY CHECKLIST
+==========================================
+Última revisión: 2026-05-08
+Objetivo: Recuperar sincronización en < 15 min
+Servidor: goncloud (65.109.4.81) — ssh root@65.109.4.81
+DB: /mnt/data/appdata/bridge/data/bridge.db
 
---------------------------------------------------
+==========================================
 1) VERIFICAR SERVICIOS
---------------------------------------------------
-docker ps | grep -E "bridge-api|bridge-worker|bridge-redis"
-docker ps | grep odoo
+==========================================
+sudo docker ps | grep bridge
+# Esperado: bridge-redis, bridge-api, bridge-worker,
+#           bridge-inbound-worker, bridge-amazon-inbound-worker — todos "Up"
 
-Todos deben estar en estado "Up".
+Reiniciar uno:
+  sudo docker restart bridge-amazon-inbound-worker
+  sudo docker restart bridge-inbound-worker
 
---------------------------------------------------
-2) HEALTH CHECK BRIDGE
---------------------------------------------------
-Desde host:
-curl http://127.0.0.1:8099/v1/health
+Reinicio completo:
+  cd /mnt/data/appdata/bridge && sudo docker compose restart
 
-Desde Odoo:
-docker exec -it odoo-odoo-1 curl http://bridge-api:8099/v1/health
+==========================================
+2) HEALTH CHECK
+==========================================
+curl -H "X-Goncloud-Secret: $(cat /mnt/data/appdata/bridge/data/.bridge_secret)" \
+     http://127.0.0.1:8099/v1/health
+# Esperado: {"ok": true, "checks": {"db": "ok", "redis": "ok"}}
 
-Debe responder: {"ok": true}
+==========================================
+3) ESTADO INBOUND — ÚLTIMAS 24h
+==========================================
+# Amazon:
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
+SELECT result, COUNT(*) FROM amazon_processed_events
+WHERE processed_at >= datetime('now','-24 hours')
+GROUP BY result;"
 
---------------------------------------------------
-3) ÚLTIMOS SNAPSHOTS RECIBIDOS
---------------------------------------------------
+# MeLi:
+sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
+SELECT result, COUNT(*) FROM processed_inbound_events
+WHERE processed_at >= datetime('now','-24 hours')
+GROUP BY result;"
+
+# Esperado: principalmente 'success'. Si hay 'manual_review' o 'dead' → ver sección 6.
+
+==========================================
+4) COLAS REDIS
+==========================================
+sudo docker exec bridge-inbound-worker python3 -c "
+import redis; r = redis.Redis(host='bridge-redis', port=6379, decode_responses=True)
+for q in ['amazon_orders_jobs','amazon_orders_dead','ml_orders_jobs','ml_orders_dead']:
+    print(q, r.llen(q))"
+
+# Esperado: *_jobs bajo (<50), *_dead en 0.
+# Si *_dead > 0: ver sección 6.
+
+==========================================
+5) OUTBOUND — ÚLTIMAS SNAPSHOTS
+==========================================
 sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
 SELECT id, created_at, channel, item_count
-FROM events
-ORDER BY id DESC LIMIT 5;
-"
+FROM events ORDER BY id DESC LIMIT 5;"
 
-Debe haber eventos recientes por canal.
+# Esperado: registros recientes por canal (meli, amazon).
 
---------------------------------------------------
-4) MÉTRICAS CRÍTICAS
---------------------------------------------------
+Timers activos:
+  systemctl status meli-sync.timer amazon-poll.timer amazon-prices-sync.timer
+
+==========================================
+6) RECUPERAR ÓRDENES ATASCADAS
+==========================================
+# Diagnóstico completo:
+sudo docker exec bridge-inbound-worker python3 /data/diagnose_inbound.py --hours 48
+
+# Re-encolar manual_review + dead:
+sudo docker exec bridge-amazon-inbound-worker python3 /data/recover_manual_review.py \
+  --channel amazon --hours 168 --include-dead
+
+sudo docker exec bridge-inbound-worker python3 /data/recover_manual_review.py \
+  --channel meli --hours 168 --include-dead
+
+# Poll manual para cubrir gap:
+sudo docker exec bridge-amazon-inbound-worker python3 /data/amazon_orders_poll.py \
+  --days 2 --marketplace BOTH
+
+==========================================
+7) CREDENCIALES ODOO CAMBIADAS
+==========================================
+# 1. Actualizar bridge_settings:
 sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
-SELECT key,value FROM bridge_metrics
-WHERE key LIKE 'skus_rejected_total%';
+UPDATE bridge_settings SET value='http://IP:PUERTO', updated_at=datetime('now')
+  WHERE key='odoo_url';
+UPDATE bridge_settings SET value='NUEVA_PASSWORD', updated_at=datetime('now')
+  WHERE key='odoo_password';"
+
+# 2. Reiniciar workers:
+sudo docker restart bridge-amazon-inbound-worker bridge-inbound-worker
+
+# 3. Recuperar órdenes muertas (ver sección 6).
+
+==========================================
+8) TIPO DE CAMBIO USD/MXN (Amazon US)
+==========================================
+# Verificar que Odoo tiene rates:
+sudo docker exec bridge-amazon-inbound-worker python3 -c "
+import requests, sqlite3
+db = sqlite3.connect('/data/bridge.db')
+def gs(k): return db.execute('SELECT value FROM bridge_settings WHERE key=?',(k,)).fetchone()[0]
+url,db_,user,pw = gs('odoo_url'),gs('odoo_db'),gs('odoo_user'),gs('odoo_password')
+uid = requests.post(url+'/jsonrpc',json={'jsonrpc':'2.0','method':'call','id':1,'params':{'service':'common','method':'authenticate','args':[db_,user,pw,{}]}},timeout=10).json()['result']
+rates = requests.post(url+'/jsonrpc',json={'jsonrpc':'2.0','method':'call','id':2,'params':{'service':'object','method':'execute_kw','args':[db_,uid,pw,'res.currency.rate','search_read',[[['currency_id.name','=','USD']]],{'fields':['rate','name'],'order':'name desc','limit':3}]}},timeout=10).json()['result']
+for r in (rates or []): print(r['name'], round(1.0/r['rate'],4),'MXN/USD')
 "
 
-Valores esperados: 0
+# Si no hay rates: python3 /mnt/data/appdata/bridge/data/push_fx_to_odoo.py
 
---------------------------------------------------
-5) DERIVED ZERO (missing=0)
---------------------------------------------------
-sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
-SELECT channel, COUNT(*) 
-FROM snapshot_items
-WHERE derived_zero=1
-AND event_id = (SELECT MAX(id) FROM events)
-GROUP BY channel;
-"
+==========================================
+9) DEPLOY DESDE REPO (POST-FIX)
+==========================================
+cd /tmp/goncloud-bridge-in-out && sudo git fetch && sudo git pull
+sudo cp tools/amazon_fba_paid_one_shot.py   /mnt/data/appdata/bridge/data/
+sudo cp tools/amazon_fbm_paid_one_shot.py   /mnt/data/appdata/bridge/data/
+sudo cp tools/recover_manual_review.py      /mnt/data/appdata/bridge/data/
+sudo cp tools/amazon_orders_poll.py         /mnt/data/appdata/bridge/data/
+# Ver CLAUDE.md sección 6 para lista completa.
 
-Solo valores esperados (no explosión).
+==========================================
+10) TOKENS MELI EXPIRADOS
+==========================================
+# Refresh manual:
+/mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh
 
---------------------------------------------------
-6) CRON ODOO (FUENTE)
---------------------------------------------------
-docker exec -it odoo-odoo-1 bash -lc "
-odoo shell -d EHV --db_host db --db_user odoo --db_password odoo <<'PY'
-c = env['ir.cron'].search([('name','=','Bridge: Stock Snapshot (Primary Channels)')])
-print(c.id, c.active)
-PY
-"
+# Verificar log:
+tail -20 /mnt/data/appdata/bridge/data/meli_token_refresh.log
 
-Debe estar activo.
+# Cron auto-refresh: /etc/cron.d/goncloud_meli_refresh (cada 6h)
 
---------------------------------------------------
-7) FORZAR SNAPSHOT MANUAL
---------------------------------------------------
-docker exec -it odoo-odoo-1 bash -lc "
-odoo shell -d EHV --db_host db --db_user odoo --db_password odoo <<'PY'
-env['ir.cron'].browse(39).method_direct_trigger()
-print('SNAPSHOT OK')
-PY
-"
-
---------------------------------------------------
-8) REINICIO LIMPIO (SI TODO FALLA)
---------------------------------------------------
-cd /mnt/data/appdata/bridge
-docker compose restart
-
---------------------------------------------------
-9) BACKUP (ÚLTIMO RECURSO)
---------------------------------------------------
-/usr/local/bin/restic-server-backup.sh
-
---------------------------------------------------
+==========================================
 ESTADO OK SI:
-- Health OK
-- Eventos recientes
-- skus_rejected_total = 0
-- Cron activo
-- Snapshot manual funciona
---------------------------------------------------
+- docker ps: 5 containers bridge "Up"
+- /v1/health: {"ok": true}
+- processed_events: mayoría 'success' en últimas 24h
+- *_dead queues: 0
+- events: registros recientes
+- timers: active (running)
+==========================================

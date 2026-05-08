@@ -92,6 +92,24 @@ async def _bridge_csrf_middleware(request: Request, call_next):
         _bridge_ensure_csrf(request, response)
     return response
 
+_CSP_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; "
+    "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none';"
+)
+
+@app.middleware("http")
+async def _security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = _CSP_POLICY
+    return response
+
 # =========================================================
 # MERCADOLIBRE OAUTH — AUTHORIZATION CODE FLOW (SERVER SIDE)
 # =========================================================
@@ -1030,12 +1048,12 @@ def get_settings():
 from fastapi.responses import HTMLResponse
 
 
-@app.get("/mapper", response_class=HTMLResponse)
+@app.get("/mapper", response_class=HTMLResponse, dependencies=[Depends(require_secret)])
 async def sku_mapper_ui():
     html = open("/app/sku_mapper.html").read()
     return HTMLResponse(content=html)
 
-@app.get("/amazon/mapper", response_class=HTMLResponse)
+@app.get("/amazon/mapper", response_class=HTMLResponse, dependencies=[Depends(require_secret)])
 async def amazon_mapper_ui():
     html = open("/app/amazon_mapper.html").read()
     return HTMLResponse(content=html)
@@ -1502,7 +1520,7 @@ import xmlrpc.client
 # Servir archivos estáticos
 app.mount("/static", StaticFiles(directory="/app/static"), name="static")
 
-@app.get("/setup")
+@app.get("/setup", dependencies=[Depends(require_secret)])
 async def setup_wizard():
     """Sirve el wizard de setup (solo si no está configurado)"""
     conn = sqlite3.connect(DB_PATH)
