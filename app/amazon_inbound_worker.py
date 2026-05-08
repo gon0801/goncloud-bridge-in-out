@@ -584,23 +584,24 @@ def init_db():
 # =========================
 # METRICS
 # =========================
+_AMAZON_METRIC_SQL = {
+    "processed":     "INSERT INTO amazon_metrics (hour, processed) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET processed = processed + 1",
+    "deferred":      "INSERT INTO amazon_metrics (hour, deferred) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET deferred = deferred + 1",
+    "manual_review": "INSERT INTO amazon_metrics (hour, manual_review) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET manual_review = manual_review + 1",
+    "dead":          "INSERT INTO amazon_metrics (hour, dead) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET dead = dead + 1",
+    "errors":        "INSERT INTO amazon_metrics (hour, errors) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET errors = errors + 1",
+    "skipped":       "INSERT INTO amazon_metrics (hour, skipped) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET skipped = skipped + 1",
+}
+
 def record_metric(result_type: str):
     hour = datetime.now().strftime("%Y-%m-%d-%H")
     column_map = {
-        "success": "processed",
-        "deferred": "deferred",
-        "manual_review": "manual_review",
-        "dead": "dead",
-        "error": "errors",
-        "skipped": "skipped",
+        "success": "processed", "deferred": "deferred", "manual_review": "manual_review",
+        "dead": "dead", "error": "errors", "skipped": "skipped",
     }
     column = column_map.get(result_type, "processed")
-
     try:
-        db.execute(f"""
-            INSERT INTO amazon_metrics (hour, {column}) VALUES (?, 1)
-            ON CONFLICT(hour) DO UPDATE SET {column} = {column} + 1
-        """, (hour,))
+        db.execute(_AMAZON_METRIC_SQL[column], (hour,))
     except Exception as e:
         log("Metric error", "ERROR", {"error": str(e)})
 

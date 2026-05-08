@@ -688,7 +688,34 @@ class StockSnapshot(BaseModel):
 
 @app.get("/v1/health")
 def health():
-    return {"ok": True, "time": utc_now_iso()}
+    checks = {}
+    ok = True
+
+    # DB check
+    try:
+        with closing(db_conn()) as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+        ok = False
+
+    # Redis check
+    try:
+        import redis as _redis
+        r = _redis.Redis.from_url(os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"), socket_connect_timeout=2)
+        r.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+        ok = False
+
+    status_code = 200 if ok else 503
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        {"ok": ok, "time": utc_now_iso(), "checks": checks},
+        status_code=status_code,
+    )
 
 
 @app.get("/v1/debug/rejected-skus")

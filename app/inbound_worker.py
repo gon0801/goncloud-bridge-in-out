@@ -302,15 +302,20 @@ def is_enabled(key: str) -> bool:
 # =========================
 # MÉTRICAS — Agregación eficiente
 # =========================
+_INBOUND_METRIC_SQL = {
+    "processed":     "INSERT INTO inbound_metrics (hour, processed) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET processed = processed + 1",
+    "manual_review": "INSERT INTO inbound_metrics (hour, manual_review) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET manual_review = manual_review + 1",
+    "dead":          "INSERT INTO inbound_metrics (hour, dead) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET dead = dead + 1",
+    "errors":        "INSERT INTO inbound_metrics (hour, errors) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET errors = errors + 1",
+    "retries":       "INSERT INTO inbound_metrics (hour, retries) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET retries = retries + 1",
+}
+
 def record_metric(result_type: str, processing_time_ms: Optional[int] = None):
     hour = datetime.now().strftime("%Y-%m-%d-%H")
-    column = result_type if result_type in ("processed", "manual_review", "dead", "errors", "retries") else "processed"
-    
+    column = result_type if result_type in _INBOUND_METRIC_SQL else "processed"
+
     try:
-        db.execute(f"""
-            INSERT INTO inbound_metrics (hour, {column}) VALUES (?, 1)
-            ON CONFLICT(hour) DO UPDATE SET {column} = {column} + 1
-        """, (hour,))
+        db.execute(_INBOUND_METRIC_SQL[column], (hour,))
         
         if processing_time_ms and column == "processed":
             # Podríamos trackear percentiles en tabla separada si se necesita
