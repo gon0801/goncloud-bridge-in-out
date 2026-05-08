@@ -25,19 +25,33 @@ if [ -z "$REFRESH" ] || [ "$REFRESH" = "null" ]; then
   exit 1
 fi
 
-TMP="/tmp/refresh_resp.json"
-curl -sS -X POST "https://api.mercadolibre.com/oauth/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "grant_type=refresh_token" \
-  --data-urlencode "client_id=${MELI_CLIENT_ID}" \
-  --data-urlencode "client_secret=${MELI_CLIENT_SECRET}" \
-  --data-urlencode "refresh_token=${REFRESH}" \
-  > "$TMP"
+TMP="$(mktemp /mnt/data/appdata/bridge/data/.meli_refresh_XXXXXX.json)"
+trap 'rm -f "$TMP"' EXIT
 
-AT="$(jq -r '.access_token // empty' "$TMP" 2>/dev/null || true)"
-RT="$(jq -r '.refresh_token // empty' "$TMP" 2>/dev/null || true)"
+AT=""
+RT=""
+for attempt in 1 2 3; do
+  curl -sS -X POST "https://api.mercadolibre.com/oauth/token" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "grant_type=refresh_token" \
+    --data-urlencode "client_id=${MELI_CLIENT_ID}" \
+    --data-urlencode "client_secret=${MELI_CLIENT_SECRET}" \
+    --data-urlencode "refresh_token=${REFRESH}" \
+    > "$TMP" 2>/dev/null
+  AT="$(jq -r '.access_token // empty' "$TMP" 2>/dev/null || true)"
+  if [ -n "$AT" ]; then
+    RT="$(jq -r '.refresh_token // empty' "$TMP" 2>/dev/null || true)"
+    break
+  fi
+  HTTP_STATUS="$(jq -r '.status // empty' "$TMP" 2>/dev/null || true)"
+  if [ "$attempt" -lt 3 ] && { [ "$HTTP_STATUS" = "500" ] || [ "$HTTP_STATUS" = "503" ] || [ -z "$HTTP_STATUS" ]; }; then
+    echo "$(ts) WARN attempt=$attempt status=${HTTP_STATUS:-?} retrying in $((attempt * 30))s" >>"$LOG_FILE"
+    sleep $((attempt * 30))
+  fi
+done
+
 if [ -z "$AT" ]; then
-  echo "$(ts) ERROR refresh_failed resp=$(cat "$TMP" | tr -d "\n" | head -c 220)" >>"$LOG_FILE"
+  echo "$(ts) ERROR refresh_failed resp=$(tr -d '\n' < "$TMP" | head -c 220)" >>"$LOG_FILE"
   exit 1
 fi
 
