@@ -408,6 +408,210 @@
       <td><span class="pri pri-media">Media</span></td>
     </tr>
 
+    <!-- PUNTOS A CORREGIR — D1-D4 -->
+    <tr class="group-header">
+      <td>🔧</td>
+      <td colspan="4">Puntos a corregir — Auditorías D1-D4</td>
+    </tr>
+
+    <!-- D1 Data Integrity -->
+    <tr class="group-header">
+      <td>D1</td>
+      <td colspan="4">Data Integrity Producción <span class="sub">8 puntos críticos</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D1.1</td>
+      <td colspan="2">266,688 errores outbound stock → investigar causa raíz (140K 403 MeLi, 26K 429, 38K variations not updatable)</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D1.2</td>
+      <td colspan="2">16 eventos stock <code>claimed</code> forever (10 amazon_fbm, 5 meli, 1 otro) → liberar locks o marcar error</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D1.3</td>
+      <td colspan="2">2,758 eventos MeLi <code>queued</code> &gt;7 días → procesar backlog o purgar</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D1.4</td>
+      <td colspan="2">97% SKU mappings stale (&gt;90 días sin update) → ejecutar backfill o purgar obsoletos</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D1.5</td>
+      <td colspan="2">479 registros PII Amazon &gt;30 días en <code>amazon_inbound_events</code> → anonimizar o eliminar</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D1.6</td>
+      <td colspan="2">Secrets en plaintext en <code>bridge_settings</code> (MELI_CLIENT_SECRET, ODOO_PASSWORD) → migrar a env vars</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D1.7</td>
+      <td colspan="2">1 SO duplicado detectado → eliminar duplicado y agregar constraint UNIQUE</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D1.8</td>
+      <td colspan="2">Schema drift: <code>processed_inbound_events</code> sin <code>status</code>, <code>inbound_events</code> sin <code>rawsha</code>, <code>amazon_orders_state</code> sin <code>created_at</code> → migrar schema</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+
+    <!-- D2 Frontend Security -->
+    <tr class="group-header">
+      <td>D2</td>
+      <td colspan="4">Frontend Security <span class="sub">6 puntos a corregir</span></td>
+    </tr>
+    <tr>
+      <td class="sub">F1.1</td>
+      <td colspan="2"><code>setup.html:487</code> — <code>result.innerHTML = `❌ Error: ${data.error}`</code> sin escape → usar <code>textContent</code> o <code>esc()</code></td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">F3.1-3.3</td>
+      <td colspan="2"><code>/mapper</code>, <code>/setup</code>, <code>/oauth/start</code> no usan <code>Depends(require_secret)</code> → agregar auth</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">F4.1</td>
+      <td colspan="2"><code>/setup/api/test-odoo</code> SSRF cuando <code>ODOO_URL</code> vacío (fail-open) → validar allowlist o rechazar si vacío</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">F5.1</td>
+      <td colspan="2"><code>setup.html</code> almacena <code>state.odoo.password</code> en global DOM → no persistir password; usar input efímero</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">F8.1+8.3</td>
+      <td colspan="2">Sin CSP ni <code>X-Frame-Options</code> → agregar headers de seguridad en FastAPI</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">F9.2</td>
+      <td colspan="2"><code>/api/meli/listings/refresh</code> lanza <code>subprocess.Popen</code> sin lock de concurrencia → agregar Redis/file lock</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+
+    <!-- D3 Supply Chain / CVE -->
+    <tr class="group-header">
+      <td>D3</td>
+      <td colspan="4">Supply Chain / CVE Scan <span class="sub">7 puntos a corregir</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D3.1</td>
+      <td colspan="2"><code>requirements.inbound.txt</code>: <code>redis==7.1.0</code> no existe en PyPI → eliminar o corregir a <code>redis==5.0.1</code></td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D3.2</td>
+      <td colspan="2"><code>fastapi==0.110.0</code> pin <code>starlette==0.36.3</code> → CVE-2024-47874 (DoS/OOM) + CVE-2025-54121 (thread block) → upgrade a ≥0.40.0</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D3.3</td>
+      <td colspan="2"><code>requests==2.32.3</code> → CVE-2024-47081 (netrc leak) + CVE-2026-25645 (temp file reuse) → upgrade a ≥2.32.4</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D3.4</td>
+      <td colspan="2"><code>cryptography>=42.0.0</code> unpinned → 10 CVEs activos ignorados → pin a versión segura (≥43.0.0)</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">B411</td>
+      <td colspan="2">Bandit HIGH: 8 archivos usan <code>xmlrpc.client</code> sin <code>defusedxml</code> → monkey-patch o migrar a <code>defusedxml.xmlrpc</code></td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">B608</td>
+      <td colspan="2">Bandit MEDIUM: f-string SQL injection en métricas (main.py ~600, worker.py ~310) → usar parámetros <code>?</code></td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">SNS</td>
+      <td colspan="2">SHA1 usado para firma SNS webhook (main.py:509) → migrar a SHA256</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+
+    <!-- D4 Redis & Queue Health -->
+    <tr class="group-header">
+      <td>D4</td>
+      <td colspan="4">Redis &amp; Queue Health <span class="sub">8 puntos a corregir</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4.1</td>
+      <td colspan="2"><code>inbound_worker.py</code>: <code>LREM</code> busca <code>{"dedupe_key":...}</code> (1 campo) pero items insertados tienen 4 campos → nunca coincide; <code>ml_orders_processing</code> crece monotónicamente (230 items)</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4.2</td>
+      <td colspan="2">Worker no refresca token MeLi en HTTP 401; depende únicamente de cron externo → agregar refresh inline con backoff</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4.6</td>
+      <td colspan="2"><code>meli_refresh_tokens.sh</code> escribe en <code>/tmp/refresh_resp.json</code> sin <code>mktemp</code>; archivo quedó con owner <code>root</code> bloqueando cron → usar <code>mktemp</code> en dir propio</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4.7</td>
+      <td colspan="2">20 items huérfanos en <code>ml_orders_processing</code> de contenedor anterior (<code>1@0b845dde788c</code>) → limpiar lista + fix D4.1</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4.3</td>
+      <td colspan="2">521 <code>stock_jobs</code> acumulados (144 amazon_fbm + 373 meli) → escalar worker o reducir frecuencia snapshotter</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4.8</td>
+      <td colspan="2">544 dead events en SQLite <code>processed_inbound_events</code> vs 9 en Redis DLQ → reconciliar tablas o agregar alerta</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4.9</td>
+      <td colspan="2">Sin auto-recovery ante <code>token_expired</code>: si cron falla, sistema nunca se recupera solo → circuit breaker o healthcheck que alerte</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D4.10</td>
+      <td colspan="2">Keys Redis <code>ml_orders_processing</code> y <code>ml_orders_dead</code> sin TTL → agregar <code>EXPIRE</code> o política de limpieza</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+
   </tbody>
 </table>
 
