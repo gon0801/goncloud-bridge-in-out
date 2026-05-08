@@ -1064,12 +1064,14 @@ def main():
             lock_key = dedupe_key
 
             # Tenemos el lock — agregar a processing list para observabilidad
-            redis_client.lpush(Config.PROCESSING, json.dumps({
+            # _proc_entry se reutiliza en todos los lrem para que el string coincida exactamente
+            _proc_entry = json.dumps({
                 "dedupe_key": dedupe_key,
                 "worker": Config.WORKER_ID,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "payload_hash": payload_hash[:16]
-            }))
+            })
+            redis_client.lpush(Config.PROCESSING, _proc_entry)
             
             log(f"Processing started", "INFO", {
                 "dedupe_key": dedupe_key,
@@ -1087,7 +1089,7 @@ def main():
                 
                 if not m:
                     mark_completed(dedupe_key, "dead", {"reason": "bad_resource", "resource": resource})
-                    redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": dedupe_key}))
+                    redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                     continue
                 
                 try:
@@ -1130,9 +1132,9 @@ def main():
                             "error": error_msg
                         })
                     
-                    redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": dedupe_key}))
+                    redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                     continue
-            
+
             # 5. Procesar orden
             order_id = str(order.get("id", "UNKNOWN"))
             site = str(order.get("site_id", "MLM"))
@@ -1156,7 +1158,7 @@ def main():
             if is_already_completed(dedupe_key):
                 log(f"Dedupe action: already completed", "DEBUG", {"dedupe_key": dedupe_key})
                 release_lock(lock_key)
-                redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
+                redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                 continue
 
             # Guardar estado
@@ -1191,7 +1193,7 @@ def main():
                     "reason": "unknown_logistic_type",
                     "logistic_type": order.get("logistic_type")
                 }, lock_key=lock_key)
-                redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
+                redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                 continue
 
             # Ejecutar lógica de negocio
@@ -1201,7 +1203,7 @@ def main():
                 process_fbm(order, order_id, site, state, dedupe_key, visible_ref, lock_key)
 
             # Limpiar de processing list
-            redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": lock_key}))
+            redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
             
         except Exception as e:
             log(f"Unhandled exception", "CRITICAL", {
@@ -1236,7 +1238,7 @@ def main():
                         redis_client.rpush(Config.QUEUE, json.dumps(job))
                         release_lock(effective_lock)
 
-                    redis_client.lrem(Config.PROCESSING, 0, json.dumps({"dedupe_key": effective_lock}))
+                    redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                 except:
                     pass
             

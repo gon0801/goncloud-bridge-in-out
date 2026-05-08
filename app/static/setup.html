@@ -392,6 +392,11 @@
     </div>
 
     <script>
+        // Escape HTML to prevent XSS when inserting dynamic content via innerHTML
+        function esc(s) {
+            return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
         // State
         const state = {
             odoo: { connected: false, url: '', db: '', user: '', password: '', products: 0 },
@@ -484,11 +489,11 @@
                     document.getElementById('btn-step1-next').disabled = false;
                 } else {
                     result.className = 'rounded-lg p-4 bg-red-50 text-red-700';
-                    result.innerHTML = `❌ Error: ${data.error || 'No se pudo conectar'}`;
+                    result.innerHTML = `❌ Error: ${esc(data.error) || 'No se pudo conectar'}`;
                 }
             } catch (e) {
                 result.className = 'rounded-lg p-4 bg-red-50 text-red-700';
-                result.innerHTML = `❌ Error de conexión: ${e.message}`;
+                result.innerHTML = `❌ Error de conexión: ${esc(e.message)}`;
             }
 
             result.classList.remove('hidden');
@@ -545,7 +550,7 @@
         // Step 5: Update summary
         function updateStep5() {
             const summary = document.getElementById('config-summary');
-            let html = `<div class="flex items-center"><span class="text-green-500 mr-2">✓</span> Odoo: ${state.odoo.url}</div>`;
+            let html = `<div class="flex items-center"><span class="text-green-500 mr-2">✓</span> Odoo: ${esc(state.odoo.url)}</div>`;
             
             if (state.amazon.enabled) {
                 html += `<div class="flex items-center"><span class="text-green-500 mr-2">✓</span> Amazon habilitado</div>`;

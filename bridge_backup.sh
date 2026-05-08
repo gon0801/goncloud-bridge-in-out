@@ -18,6 +18,12 @@ sqlite3 "$BRIDGE_PATH/data/bridge.db" "PRAGMA integrity_check;" | grep -q "ok"
 cp "$BRIDGE_PATH/data/bridge.db" \
    "$BACKUP_PATH/bridge_db_$DATE.db"
 
+# 2b) Backup tokens y credenciales (permisos 600 en destino)
+for f in .meli_tokens.json amazon_credentials.json .env.meli; do
+  src="$BRIDGE_PATH/data/$f"
+  [ -f "$src" ] && install -m 600 "$src" "$BACKUP_PATH/${f//\//_}_$DATE"
+done
+
 # 3) Backup código limpio (sin secretos ni runtime)
 tar -czf "$BACKUP_PATH/bridge_CODE_$DATE.tar.gz" \
   --ignore-failed-read \

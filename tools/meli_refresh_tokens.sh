@@ -63,3 +63,7 @@ chown gon:gon "$TOK_FILE"
 chmod 600 "$TOK_FILE"
 
 echo "$(ts) OK access_prefix=${AT:0:12} refresh_prefix=${RT:0:12} backup=$(basename "$BK")" >>"$LOG_FILE"
+
+# Retener solo los últimos 5 backups; eliminar los más viejos
+find "$(dirname "$TOK_FILE")" -maxdepth 1 -name "$(basename "$TOK_FILE").BK.*" \
+  | sort | head -n -5 | xargs -r rm -f

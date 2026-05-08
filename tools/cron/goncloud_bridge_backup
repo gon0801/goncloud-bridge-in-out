@@ -1,0 +1,15 @@
+# GONCLOUD Bridge — Backup diario de bridge.db + tokens + código
+# Copia este archivo a /etc/cron.d/goncloud_bridge_backup en el VPS
+# Ejecuta todos los días a las 02:00 UTC como root en el host
+#
+# Deploy:
+#   sudo cp /tmp/goncloud-bridge-in-out/tools/cron/goncloud_bridge_backup /etc/cron.d/
+#   sudo chmod 644 /etc/cron.d/goncloud_bridge_backup
+#   sudo cp /tmp/goncloud-bridge-in-out/bridge_backup.sh /mnt/data/appdata/bridge/
+#   sudo chmod +x /mnt/data/appdata/bridge/bridge_backup.sh
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# min  hour  dom  month  dow   user  command
+0      2     *    *      *     root  /mnt/data/appdata/bridge/bridge_backup.sh >> /mnt/data/appdata/bridge/data/bridge_backup.log 2>&1
