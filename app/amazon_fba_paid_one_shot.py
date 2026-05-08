@@ -33,6 +33,7 @@ CLIENT_ORDER_REF = os.getenv("CLIENT_ORDER_REF") or ""
 CHANNEL_LABEL = (os.getenv("CHANNEL_LABEL") or "Amazon FBA").strip()
 BUYER_NAME = (os.getenv("BUYER_NAME") or "").strip()
 IS_USD_ORDER = os.getenv("IS_USD_ORDER", "0") == "1"
+WAREHOUSE_NAME = (os.getenv("WAREHOUSE_NAME") or "").strip()
 
 def die(msg, code=2):
     print(f"[FBA_PAID] ERROR {msg}", file=sys.stderr)
@@ -165,6 +166,20 @@ if not uid:
     die("authentication_failed")
 print(f"[FBA_PAID] authenticated uid={uid}")
 
+def get_warehouse_id(name: str):
+    if not name:
+        return None
+    whs = exec_kw(uid, "stock.warehouse", "search_read",
+        [[["name", "=", name]]],
+        {"fields": ["id", "name"], "limit": 1})
+    if whs:
+        print(f"[FBA_PAID] warehouse: '{whs[0]['name']}' id={whs[0]['id']}")
+        return whs[0]["id"]
+    print(f"[FBA_PAID] WARN warehouse '{name}' not found in Odoo, using default", file=sys.stderr)
+    return None
+
+warehouse_id = get_warehouse_id(WAREHOUSE_NAME)
+
 # =========================
 # USD → MXN conversion (solo órdenes US)
 # =========================
@@ -213,14 +228,27 @@ if IS_USD_ORDER:
 # Check existing SO
 # =========================
 display_ref = f"{order_id} | {BUYER_NAME}" if BUYER_NAME else order_id
+
+# Search by `client_order_ref =like '<order_id>%'` to handle both shapes:
+#   - "order_id" (Pending/SNS pre-enrich: no buyer info yet)
+#   - "order_id | BUYER_NAME" (Unshipped/Shipped: buyer enriched)
+# Without this, a pre-enrich SO with ref=order_id is missed when the second
+# poll arrives with buyer name → duplicate SO + invoice + payment created.
+# limit=2 + die-multi catches pre-existing duplicates explicitly.
 existing = exec_kw(uid, "sale.order", "search_read",
-    [[["client_order_ref", "=", display_ref]]],
-    {"fields": ["id", "name", "state"], "limit": 1})
+    [[["client_order_ref", "=like", f"{order_id}%"]]],
+    {"fields": ["id", "name", "state", "client_order_ref"], "limit": 2})
+
+if len(existing) > 1:
+    die(f"multiple SOs match order_id={order_id}: {[s['name'] for s in existing]}", code=1)
 
 if existing:
     so = existing[0]
     so_id = so["id"]
     print(f"[FBA_PAID] SO exists: {so['name']} state={so['state']}")
+    if so.get("client_order_ref") == order_id and BUYER_NAME and display_ref != order_id:
+        exec_kw(uid, "sale.order", "write", [[so_id], {"client_order_ref": display_ref}])
+        print(f"[FBA_PAID] client_order_ref updated: {order_id} → {display_ref}")
 else:
     so_id = None
 
@@ -273,12 +301,19 @@ print(f"[FBA_PAID] products resolved: {len(sku_to_pid)}")
 # Create SO if needed
 # =========================
 if not so_id:
-    so_id = exec_kw(uid, "sale.order", "create", [{
+    so_vals = {
         "partner_id": partner_id,
         "client_order_ref": display_ref,
         "note": f"{CHANNEL_LABEL} | ORDER={order_id} | {BUYER_NAME or 'N/A'}",
-    }])
-    print(f"[FBA_PAID] SO created id={so_id}")
+    }
+    if warehouse_id:
+        so_vals["warehouse_id"] = warehouse_id
+    so_id = exec_kw(uid, "sale.order", "create", [so_vals])
+    print(f"[FBA_PAID] SO created id={so_id} warehouse_id={warehouse_id or 'default'}")
+    # TODO(Task-3-picking): una vez decidida Task 1.5 (phantom BOM), actualizar la
+    # lógica de picking aquí. Actualmente los pickings se cancelan (FBA = Amazon
+    # gestiona el stock físico). Con warehouses FBA en Odoo puede ser necesario
+    # validar el picking para decrementar stock del warehouse FBA correcto.
 
 # =========================
 # Create SO lines
@@ -385,18 +420,18 @@ if not invoice:
 # =========================
 if invoice and invoice.get("payment_state") != "paid":
     invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "state", "payment_state", "amount_residual"]])[0]
-
+    
     if invoice["payment_state"] != "paid" and invoice["state"] == "posted":
         journals = exec_kw(uid, "account.journal", "search_read",
             [[["type", "=", "bank"]]],
             {"fields": ["id", "name"], "limit": 1})
-
+        
         if journals:
             ctx = {"active_model": "account.move", "active_ids": [invoice["id"]], "active_id": invoice["id"]}
             pay_wiz = exec_kw(uid, "account.payment.register", "create",
                 [{"journal_id": journals[0]["id"]}], {"context": ctx})
             exec_kw(uid, "account.payment.register", "action_create_payments", [[pay_wiz]], {"context": ctx})
-
+            
             invoice = exec_kw(uid, "account.move", "read", [[invoice["id"]], ["id", "payment_state"]])[0]
             print(f"[FBA_PAID] invoice paid: payment_state={invoice['payment_state']}")
 

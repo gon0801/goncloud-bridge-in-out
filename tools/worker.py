@@ -6,7 +6,9 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 import urllib.error
+import urllib.parse
 import urllib.request
+import time
 
 import redis
 
@@ -224,20 +226,12 @@ def mark_event_done(event_id: str, status: str, details: str = "") -> None:
         conn.commit()
 
 
-def _event_row_id_from_snap_event_id(event_id: str) -> int | None:
-    """
-    event_id esperado: snap-<ROWID>-<SKU>
-    Devuelve el <ROWID> como int, o None si no se puede.
-    """
+def _event_row_id_from_snap_event_id(event_id: str):
+    """event_id = snap-<ROWID>-<SKU> → devuelve ROWID int o None."""
     if not event_id:
         return None
-    s = str(event_id).strip()
-    if not s.startswith("snap-"):
-        return None
-    parts = s.split("-", 2)  # ["snap", "<id>", "<rest>"]
-    if len(parts) < 3:
-        return None
-    if not parts[1].isdigit():
+    parts = str(event_id).split("-", 2)
+    if len(parts) < 3 or parts[0] != "snap" or not parts[1].isdigit():
         return None
     try:
         return int(parts[1])
@@ -245,12 +239,8 @@ def _event_row_id_from_snap_event_id(event_id: str) -> int | None:
         return None
 
 
-def _is_complete_snapshot_event(conn: sqlite3.Connection, event_id: str) -> bool:
-    """
-    Lee events.payload (JSON) para el rowid del evento (snap-<id>-<sku>)
-    y detecta si tiene complete=true.
-    Si no existe / no parsea, asume False (no rompe).
-    """
+def _is_complete_snapshot_event(conn, event_id: str) -> bool:
+    """Devuelve True si el snapshot tiene complete=true en su payload."""
     rid = _event_row_id_from_snap_event_id(event_id)
     if rid is None:
         return False
@@ -258,8 +248,8 @@ def _is_complete_snapshot_event(conn: sqlite3.Connection, event_id: str) -> bool
         row = conn.execute("SELECT payload FROM events WHERE id=? LIMIT 1", (rid,)).fetchone()
         if not row or not row[0]:
             return False
-        payload = json.loads(row[0])
-        return bool(payload.get("complete") is True)
+        import json as _json
+        return bool(_json.loads(row[0]).get("complete") is True)
     except Exception:
         return False
 
@@ -297,51 +287,57 @@ def meli_api_json(url: str, tok: str, method="GET", body=None):
 
 
 def meli_set_qty_from_mapping(sku: str, qty: int) -> str:
-    # lookup mapping
+    # Lookup TODOS los listings mapeados a este SKU.
+    # (Un mismo SKU puede estar en N listings tras separacion de variantes en MeLi).
     with closing(db_conn()) as conn:
         sql_init_conn(conn)
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT remote_item_id, remote_variation_id FROM sku_mapping WHERE channel='meli' AND sku=?",
             (str(sku),),
-        ).fetchone()
+        ).fetchall()
 
-    if not row:
+    if not rows:
         return f"meli_skip_no_mapping sku={sku}"
 
-    item_id, var_id = row[0], row[1]
     tok = meli_get_token()
     qty_int = int(qty)
+    results: list[str] = []
+    ok_count = 0
+    err_count = 0
 
-    # PUT variation
-    if var_id:
-        url = f"https://api.mercadolibre.com/items/{item_id}/variations/{var_id}"
-        code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
-        qty_put_echo = None
-        if isinstance(resp_put, list) and resp_put:
-            qty_put_echo = resp_put[0].get("available_quantity")
-        elif isinstance(resp_put, dict):
-            qty_put_echo = resp_put.get("available_quantity")
+    for item_id, var_id in rows:
+        try:
+            if var_id:
+                url = f"https://api.mercadolibre.com/items/{item_id}/variations/{var_id}"
+                code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
+                qty_put_echo = None
+                if isinstance(resp_put, list) and resp_put:
+                    qty_put_echo = resp_put[0].get("available_quantity")
+                elif isinstance(resp_put, dict):
+                    qty_put_echo = resp_put.get("available_quantity")
+                code_get, resp_get = meli_api_json(url, tok, method="GET")
+                qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
+                results.append(
+                    f"var[{item_id}:{var_id}] put={code_put} get={code_get} "
+                    f"echo={qty_put_echo} real={qty_real}"
+                )
+            else:
+                url = f"https://api.mercadolibre.com/items/{item_id}"
+                code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
+                qty_put_echo = resp_put.get("available_quantity") if isinstance(resp_put, dict) else None
+                code_get, resp_get = meli_api_json(url, tok, method="GET")
+                qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
+                results.append(
+                    f"item[{item_id}] put={code_put} get={code_get} "
+                    f"echo={qty_put_echo} real={qty_real}"
+                )
+            ok_count += 1
+        except Exception as e:
+            err_count += 1
+            results.append(f"FAIL[{item_id}:{var_id or '-'}] {type(e).__name__}: {str(e)[:120]}")
 
-        code_get, resp_get = meli_api_json(url, tok, method="GET")
-        qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
-
-        return (
-            f"meli_put_variation http_put={code_put} http_get={code_get} "
-            f"item={item_id} var={var_id} qty_requested={qty_int} "
-            f"qty_put_echo={qty_put_echo} qty_real_final={qty_real}"
-        )
-
-    # PUT item (sin variaciones)
-    url = f"https://api.mercadolibre.com/items/{item_id}"
-    code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
-    qty_put_echo = resp_put.get("available_quantity") if isinstance(resp_put, dict) else None
-    code_get, resp_get = meli_api_json(url, tok, method="GET")
-    qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
-
-    return (
-        f"meli_put_item http_put={code_put} http_get={code_get} "
-        f"item={item_id} qty_requested={qty_int} qty_put_echo={qty_put_echo} qty_real_final={qty_real}"
-    )
+    summary = f"meli_multi_put sku={sku} listings={len(rows)} ok={ok_count} err={err_count} qty={qty_int}"
+    return summary + " | " + " | ".join(results)
 
 
 # =========================
@@ -396,7 +392,13 @@ def main():
     print(f"[{utc_now_iso()}] worker started. queue={QUEUE}")
 
     while True:
-        item = r.blpop(QUEUE, timeout=10)
+        try:
+            item = r.blpop(QUEUE, timeout=10)
+        except (redis.exceptions.BusyLoadingError, redis.exceptions.ConnectionError):
+            # Redis está cargando dataset o reinició: no morir, solo esperar y reintentar
+            time.sleep(2)
+            continue
+
         if not item:
             continue
 
@@ -484,9 +486,9 @@ def main():
                     )
                     continue
 
-                # 3.5) Guardrail: NO aplicar snapshots complete=true (ruido)
-                # - MELI complete=true nos pisó stock (ej NH-CAR-AZU-CEN-DOR -> 0)
-                # - AMAZON_FBM complete=true es ruido mientras no haya mapeos
+                # Guardrail: NO aplicar snapshots complete=true.
+                # complete=true pisó stock a 0 (ej NH-CAR-AZU-CEN-DOR → 0).
+                # amazon_fbm complete=true también es ruido hasta tener mapeos.
                 if channel.lower() in ("meli", "amazon_fbm") and _is_complete_snapshot_event(conn, str(event_id)):
                     reason = "skip_complete_snapshot"
                     mark_event_done(str(event_id), "ok", reason)

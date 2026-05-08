@@ -226,6 +226,34 @@ def mark_event_done(event_id: str, status: str, details: str = "") -> None:
         conn.commit()
 
 
+def _event_row_id_from_snap_event_id(event_id: str):
+    """event_id = snap-<ROWID>-<SKU> → devuelve ROWID int o None."""
+    if not event_id:
+        return None
+    parts = str(event_id).split("-", 2)
+    if len(parts) < 3 or parts[0] != "snap" or not parts[1].isdigit():
+        return None
+    try:
+        return int(parts[1])
+    except Exception:
+        return None
+
+
+def _is_complete_snapshot_event(conn, event_id: str) -> bool:
+    """Devuelve True si el snapshot tiene complete=true en su payload."""
+    rid = _event_row_id_from_snap_event_id(event_id)
+    if rid is None:
+        return False
+    try:
+        row = conn.execute("SELECT payload FROM events WHERE id=? LIMIT 1", (rid,)).fetchone()
+        if not row or not row[0]:
+            return False
+        import json as _json
+        return bool(_json.loads(row[0]).get("complete") is True)
+    except Exception:
+        return False
+
+
 def meli_get_token() -> str:
     with open(MELI_TOKENS_PATH, "r") as f:
         j = json.load(f)
@@ -458,16 +486,20 @@ def main():
                     )
                     continue
 
-                # FIX SOLO ESTE SKU (no afecta a los demás)
-                if (
-                    channel.lower() == "meli"
-                    and str(sku) == "NH-CAR-AZU-CEN-DOR"
-                    and int(qty) == 0
-                ):
-                    mark_event_done(str(event_id), "ok", "skip_zero_special_sku")
+                # Guardrail: NO aplicar snapshots complete=true.
+                # complete=true pisó stock a 0 (ej NH-CAR-AZU-CEN-DOR → 0).
+                # amazon_fbm complete=true también es ruido hasta tener mapeos.
+                if channel.lower() in ("meli", "amazon_fbm") and _is_complete_snapshot_event(conn, str(event_id)):
+                    reason = "skip_complete_snapshot"
+                    mark_event_done(str(event_id), "ok", reason)
                     bump_metric("events_blocked_total", 1)
+                    bump_metric(f"events_blocked_total_{channel}", 1)
                     bump_metric("events_processed_ok_total", 1)
-                    print(f"[{utc_now_iso()}] skip_zero_special_sku {sku} event_id={event_id}")
+                    set_metric("last_success_at", utc_now_iso())
+                    print(
+                        f"[{utc_now_iso()}] job(skipped): reason={reason} "
+                        f"channel={channel} sku={sku} qty={qty} event_id={event_id}"
+                    )
                     continue
 
             # 4) apply MELI si está habilitado
