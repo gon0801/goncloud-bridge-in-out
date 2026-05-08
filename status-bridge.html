@@ -37,9 +37,9 @@
 <body>
 
 <h1>GONCLOUD Bridge — Pendientes activos</h1>
-<div class="meta">Última actualización: 2026-05-08 (auditoría D4 Redis & Queue Health) &nbsp;·&nbsp; Se refresca cada 30 seg</div>
-<div class="progress-bar"><div class="progress-fill" style="width:62%"></div></div>
-<div class="meta" style="margin-top:-18px; margin-bottom:20px;">10 / 16 subtareas completadas (62%)</div>
+<div class="meta">Última actualización: 2026-05-08 (auditoría D5 Observability & Monitoring) &nbsp;·&nbsp; Se refresca cada 30 seg</div>
+<div class="progress-bar"><div class="progress-fill" style="width:65%"></div></div>
+<div class="meta" style="margin-top:-18px; margin-bottom:20px;">11 / 17 subtareas completadas (65%)</div>
 
 <table>
   <thead>
@@ -403,9 +403,9 @@
     <tr>
       <td class="sub">D5</td>
       <td>Observability &amp; Monitoring</td>
-      <td><strong>Próxima auditoría programada</strong> — Alerting gaps, trace-id, correlación logs, métricas de pipeline; verificar healthchecks de contenedores, alertas por token_expired, métricas de throughput por canal, correlación de logs entre workers</td>
-      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
-      <td><span class="pri pri-media">Media</span></td>
+      <td><strong>8 hallazgos</strong>: 2 Críticos, 3 Altos, 2 Medios, 1 Bajo — Sin healthchecks Docker; <code>/v1/health</code> no verifica dependencias; sin trace IDs ni correlación de logs; métricas solo contadores totales sin temporalidad; sin sistema de alerting; logs de error no unificados; <code>bridge.db</code> 3.4GB sin monitoreo de crecimiento</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
       <td class="sub">D6</td>
@@ -626,12 +626,67 @@
       <td><span class="pri pri-media">Media</span></td>
     </tr>
 
+    <!-- D5 Observability & Monitoring -->
+    <tr class="group-header">
+      <td>D5</td>
+      <td colspan="4">Observability &amp; Monitoring <span class="sub">8 puntos a corregir</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5.1</td>
+      <td colspan="2">Ningún contenedor del bridge tiene <code>HEALTHCHECK</code> en Docker; <code>/v1/health</code> solo retorna <code>{ok:true}</code> sin verificar DB ni Redis → agregar healthcheck real</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5.2</td>
+      <td colspan="2">Sin <code>trace_id</code> / <code>request_id</code> / <code>correlation_id</code> común entre workers; cada uno usa formato de log diferente (uvicorn texto, inbound JSON, worker texto plano) → imposible seguir flujo end-to-end</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5.3</td>
+      <td colspan="2">Métricas solo contadores totales en <code>bridge_metrics</code> (SQLite) sin dimensión temporal; no hay latency, error rate, throughput por hora → agregar Prometheus/métricas estructuradas</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5.4</td>
+      <td colspan="2">Sin sistema de alerting (no Slack, email, PagerDuty, Alertmanager); <code>token_expired</code> y queue creciendo pasan desapercibidos → agregar alertas mínimas</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5.5</td>
+      <td colspan="2">Logs de error no unificados: bridge-worker loguea errores MeLi como INFO con texto "FAIL"; inbound-worker loguea <code>token_expired</code> como WARN → unificar niveles y usar ERROR para fallos reales</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5.6</td>
+      <td colspan="2"><code>bridge.db</code> = 3.4GB (863K páginas) sin monitoreo de crecimiento, WAL size, ni query performance → agregar métricas de DB size y slow queries</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5.7</td>
+      <td colspan="2">Redis sin <code>SLOWLOG</code> configurado ni métricas de ops/sec, hit rate, memory pressure → habilitar slowlog y exponer métricas Redis</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D5.8</td>
+      <td colspan="2">Sin métricas de infraestructura del host (CPU, memoria, disco I/O de contenedores) → agregar <code>docker stats</code> o node-exporter básico</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+
   </tbody>
 </table>
 
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-05-08</strong> — <strong>Auditoría D5 Observability &amp; Monitoring completada:</strong> 8 hallazgos (2 Críticos, 3 Altos, 2 Medios, 1 Bajo). Top: ningún contenedor tiene <code>HEALTHCHECK</code> en Docker y <code>/v1/health</code> es un stub que no verifica dependencias (D5.1 CRÍTICO); sin <code>trace_id</code> ni correlación de logs entre workers — cada uno usa formato diferente (uvicorn texto, inbound JSON, worker texto plano) haciendo imposible el debug end-to-end (D5.2 CRÍTICO); métricas solo contadores totales en <code>bridge_metrics</code> (SQLite) sin dimensión temporal, latency, ni error rate (D5.3 ALTO); sin sistema de alerting externo — <code>token_expired</code> y queue creciendo pasan completamente desapercibidos (D5.4 ALTO); <code>bridge.db</code> = 3.4GB sin monitoreo de crecimiento (D5.6 MEDIO).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D4 Redis &amp; Queue Health completada:</strong> 12 hallazgos (4 Críticos, 4 Altos, 3 Medios, 1 Bajo). Top: <code>LREM</code> en <code>inbound_worker.py</code> roto por mismatch de serialización JSON (inserta 4 campos, busca 1) → <code>ml_orders_processing</code> crece monotónicamente con 230 items (20 huérfanos de contenedor anterior); cron <code>meli_refresh_tokens.sh</code> bloqueado desde 01:07 UTC porque <code>/tmp/refresh_resp.json</code> es propiedad de <code>root</code> y el cron corre como <code>gon</code> → todos los jobs MeLi fallan con <code>token_expired</code> (36 en 48h); 544 dead events en SQLite vs 9 en Redis DLQ; 521 stock_jobs acumulados. Timeline: token refrescó OK el 7/may 18:05 → expiró ~6h después → MeLi 503/429/500 en reintentos → archivo <code>/tmp</code> quedó con owner root → cron permanentemente bloqueado.</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D3 Supply Chain completada:</strong> 63+ hallazgos (2 Críticos, 5 Altos, 12 Medios, 36 Bajos, 8 INFO). Top: <code>redis==7.1.0</code> en <code>requirements.inbound.txt</code> NO EXISTE en PyPI (riesgo typosquatting, CRÍTICO); <code>starlette 0.36.3</code> (traído por fastapi 0.110.0) vulnerable a DoS sin límite de memoria (CVE-2024-47874) y bloqueo de thread en multipart (CVE-2025-54121); <code>requests 2.32.3</code> filtra credenciales .netrc (CVE-2024-47081) y reusa archivos temporales maliciosos (CVE-2026-25645); <code>cryptography>=42.0.0</code> tiene 10 CVEs activos ignorados por unpinned; Bandit SAST detectó 10 HIGH por uso de <code>xmlrpc.client</code> sin <code>defusedxml</code>, 11 MEDIUM por SQLi vía f-string y <code>urllib.request.urlopen</code> sin validación de scheme.</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D2 Frontend Security completada:</strong> 28 hallazgos (2 Altos, 8 Medios, 11 Bajos, 7 INFO). Top: XSS en <code>setup.html</code> <code>data.error</code> sin escape (F1.1 ALTO), contraseña Odoo en <code>state</code> global durante todo el wizard (F5.1 ALTO), <code>/mapper</code>+<code>/setup</code>+<code>/oauth/start</code> sin auth (F3.1–3.3 MEDIO), SSRF en <code>/setup/api/test-odoo</code> cuando <code>ODOO_URL</code> vacío (F4.1 MEDIO), sin CSP/clickjacking protection (F8.1+F8.3 MEDIO), <code>/api/meli/listings/refresh</code> sin lock de concurrencia (F9.2 MEDIO). <code>sku_mapper.html</code> usa <code>esc()</code> correctamente; <code>amazon_mapper.html</code> usa <code>createElement</code>+<code>textContent</code> (patrón gold standard).</li>
