@@ -403,9 +403,23 @@
     <tr>
       <td class="sub">D5</td>
       <td>Observability &amp; Monitoring</td>
-      <td>Alerting gaps, trace-id, correlación logs, métricas de pipeline</td>
+      <td><strong>Próxima auditoría programada</strong> — Alerting gaps, trace-id, correlación logs, métricas de pipeline; verificar healthchecks de contenedores, alertas por token_expired, métricas de throughput por canal, correlación de logs entre workers</td>
       <td><span class="badge badge-pending">⏳ Pendiente</span></td>
       <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D6</td>
+      <td>Infra &amp; Backup</td>
+      <td><strong>Pendiente</strong> — Validar backup automatizado de <code>bridge.db</code> + tokens; verificar estrategia de recovery; revisar log rotation; verificar <code>.dockerignore</code></td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D7</td>
+      <td>MeLi OAuth &amp; API</td>
+      <td><strong>Pendiente</strong> — Revisar flujo completo de OAuth (refresh inline vs cron); validar scopes del token; revisar manejo de <code>token_expired</code>; verificar idempotencia en reintentos</td>
+      <td><span class="badge badge-pending">⏳ Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
     </tr>
 
     <!-- PUNTOS A CORREGIR — D1-D4 -->
