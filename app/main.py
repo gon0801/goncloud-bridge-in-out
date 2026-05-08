@@ -723,11 +723,24 @@ def health():
         checks["db"] = f"error: {e}"
         ok = False
 
+    # DB size check (D5.6) — warn at 4GB, error at 8GB
+    try:
+        db_bytes = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        db_mb = round(db_bytes / 1024 / 1024, 1)
+        checks["db_size_mb"] = db_mb
+        if db_bytes > 8 * 1024 ** 3:
+            checks["db_size_warn"] = "exceeds_8gb"
+            ok = False
+        elif db_bytes > 4 * 1024 ** 3:
+            checks["db_size_warn"] = "exceeds_4gb"
+    except Exception as e:
+        checks["db_size_mb"] = f"error: {e}"
+
     # Redis check
     try:
         import redis as _redis
-        r = _redis.Redis.from_url(os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"), socket_connect_timeout=2)
-        r.ping()
+        _r = _redis.Redis.from_url(os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"), socket_connect_timeout=2)
+        _r.ping()
         checks["redis"] = "ok"
     except Exception as e:
         checks["redis"] = f"error: {e}"

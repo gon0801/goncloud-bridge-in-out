@@ -646,7 +646,16 @@ def reaper_loop(redis_client: redis.Redis):
             
             # 2. Cleanup de payloads expirados
             cleanup_expired_payloads()
-            
+
+            # 3. D4.10: cap processing list — entries should be removed by lrem;
+            # if the list grows large it means entries are leaking (old bug or crash).
+            proc_len = redis_client.llen(Config.PROCESSING)
+            if proc_len > 500:
+                log(f"ml_orders_processing suspiciously large ({proc_len}), trimming to 200", "WARN")
+                redis_client.ltrim(Config.PROCESSING, 0, 199)
+            # Keep dead letter capped (already done inline but also enforce here)
+            redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
+
         except Exception as e:
             log(f"Reaper fatal error: {e}", "ERROR")
             time.sleep(5)
@@ -655,8 +664,17 @@ def reaper_loop(redis_client: redis.Redis):
 # MERCADOLIBRE API — Con retry y circuit breaker pattern
 # =========================
 def ml_token() -> str:
-    with open(Config.TOKEN_FILE) as f:
-        return json.load(f)["access_token"]
+    try:
+        with open(Config.TOKEN_FILE) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        raise RuntimeError("token_file_not_found")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"token_file_corrupt: {e}")
+    token = data.get("access_token")
+    if not token:
+        raise RuntimeError("token_file_missing_access_token")
+    return token
 
 _ML_REFRESH_LOCK_FILE = Config.TOKEN_FILE + ".refresh.lock"
 
@@ -740,8 +758,16 @@ def ml_get(path: str, retries: int = 0) -> dict:
 
             if r.status_code in (429, 500, 502, 503, 504):
                 if attempt < retries:
-                    sleep_time = Config.RETRY_DELAY_BASE * (2 ** attempt)
-                    log(f"ML API retry: {r.status_code} attempt {attempt+1}/{retries}", "WARN")
+                    if r.status_code == 429:
+                        reset_ts = int(r.headers.get("X-RateLimit-Reset", "0") or "0")
+                        now_ts = int(time.time())
+                        sleep_time = max(reset_ts - now_ts, 1) if reset_ts > now_ts else Config.RETRY_DELAY_BASE * (2 ** attempt)
+                        sleep_time = min(sleep_time, 300)  # cap 5 min
+                        remaining = r.headers.get("X-RateLimit-Remaining", "?")
+                        log(f"ML API 429 rate-limited remaining={remaining} sleeping={sleep_time}s", "WARN")
+                    else:
+                        sleep_time = Config.RETRY_DELAY_BASE * (2 ** attempt)
+                        log(f"ML API retry: {r.status_code} attempt {attempt+1}/{retries}", "WARN")
                     time.sleep(sleep_time)
                     continue
 
