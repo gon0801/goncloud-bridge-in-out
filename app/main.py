@@ -7,6 +7,7 @@ import time
 import urllib.parse
 import hashlib
 from datetime import datetime, timezone
+from contextlib import closing
 from typing import List, Optional
 
 import redis
