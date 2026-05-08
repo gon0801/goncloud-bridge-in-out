@@ -252,6 +252,10 @@ def on_startup():
 def _save_tokens(data: dict):
     data["obtained_at"] = int(time.time())
     data["expires_at"] = data["obtained_at"] + int(data.get("expires_in", 0))
+    # Persist app credentials alongside tokens so workers can do inline refresh
+    # without needing a separate env var or bridge_settings key.
+    data["client_id"] = MELI_CLIENT_ID
+    data["client_secret"] = MELI_CLIENT_SECRET
     with open(TOKEN_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -1434,12 +1438,17 @@ async def get_meli_listings():
 async def refresh_meli_listings():
     """Trigger manual refresh of MeLi listings cache"""
     import subprocess
+    # F9.2: SETNX lock — prevent concurrent runs consuming double MeLi rate-limit.
+    # TTL=600s acts as max expected runtime; no explicit release needed for Popen.
+    lock_key = "bridge:lock:meli_listings_refresh"
+    if not r.set(lock_key, "1", nx=True, ex=600):
+        return {"ok": False, "message": "Refresh ya en progreso, espera unos minutos"}
     try:
         subprocess.Popen([
-            "python3", 
+            "python3",
             "/data/sync_meli_listings.py"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
+
         return {
             "ok": True,
             "message": "Refresh iniciado en background"
@@ -1577,6 +1586,10 @@ async def test_odoo_connection(request: Request):
 
     if not all([url, db, user, password]):
         return {"ok": False, "error": "Todos los campos son requeridos"}
+
+    # F4.1: reject non-HTTP schemes regardless of env allowlist state.
+    if not url.lower().startswith(("http://", "https://")):
+        return {"ok": False, "error": "URL must start with http:// or https://"}
 
     # AP-9: URL DEBE coincidir con la que el operador ya configuró por env.
     # Esto evita que el wizard se use como SSRF probe contra hosts internos.

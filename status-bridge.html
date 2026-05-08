@@ -502,7 +502,7 @@
     <tr>
       <td class="sub">F4.1</td>
       <td colspan="2"><code>/setup/api/test-odoo</code> SSRF cuando <code>ODOO_URL</code> vacío (fail-open) → validar allowlist o rechazar si vacío</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
@@ -520,7 +520,7 @@
     <tr>
       <td class="sub">F9.2</td>
       <td colspan="2"><code>/api/meli/listings/refresh</code> lanza <code>subprocess.Popen</code> sin lock de concurrencia → agregar Redis/file lock</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
 
@@ -754,7 +754,7 @@
     <tr>
       <td class="sub">D7.1</td>
       <td colspan="2"><strong>Worker sin refresh inline de token:</strong> <code>ml_get()</code> en <code>inbound_worker.py</code> lanza <code>RuntimeError("token_expired")</code> en HTTP 401 pero NUNCA intenta refrescar el token. Depende 100% del cron cada 6h. Si el cron falla (como pasó el 8/may 01:07 UTC por permisos en <code>/tmp</code>), todas las órdenes MeLi fallan durante horas hasta intervención manual. El refresh exitoso fue a las 07:15 UTC, pero para entonces ya había 36 dead orders. <strong>Mitigación inmediata:</strong> agregar inline refresh en <code>ml_get()</code> cuando recibe 401, usando <code>/oauth/refresh</code> o llamando al refresh script.</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>

@@ -658,37 +658,101 @@ def ml_token() -> str:
     with open(Config.TOKEN_FILE) as f:
         return json.load(f)["access_token"]
 
+_ML_REFRESH_LOCK_FILE = Config.TOKEN_FILE + ".refresh.lock"
+
+def ml_refresh_token() -> str:
+    """Inline token refresh using credentials stored in the token file.
+    Uses a file lock so concurrent calls from the same process don't
+    double-refresh (MeLi rotates refresh_token on each call).
+    Returns the new access_token, raises RuntimeError on failure.
+    """
+    import fcntl
+    import requests as _req
+
+    lock_fd = open(_ML_REFRESH_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        # Re-read token file inside lock — another call may have already refreshed.
+        with open(Config.TOKEN_FILE) as f:
+            tok = json.load(f)
+        refresh_token = tok.get("refresh_token")
+        client_id = tok.get("client_id")
+        client_secret = tok.get("client_secret")
+        if not refresh_token or not client_id or not client_secret:
+            raise RuntimeError("token_refresh_skipped: missing credentials in token file")
+
+        resp = _req.post(
+            "https://api.mercadolibre.com/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+            },
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"token_refresh_failed: HTTP {resp.status_code}")
+
+        new_tok = resp.json()
+        if not new_tok.get("access_token"):
+            raise RuntimeError(f"token_refresh_failed: no access_token in response")
+
+        # Persist — carry forward fields not returned by MeLi (client_id/secret, user_id)
+        new_tok.setdefault("client_id", client_id)
+        new_tok.setdefault("client_secret", client_secret)
+        new_tok.setdefault("user_id", tok.get("user_id"))
+        now = int(time.time())
+        new_tok["obtained_at"] = now
+        new_tok["expires_at"] = now + int(new_tok.get("expires_in", 0))
+        with open(Config.TOKEN_FILE, "w") as f:
+            json.dump(new_tok, f, indent=2)
+        log(f"ML token refreshed inline access_prefix={new_tok['access_token'][:12]}", "INFO")
+        return new_tok["access_token"]
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
 def ml_get(path: str, retries: int = 0) -> dict:
     import requests  # Import local para no fallar si no está disponible al inicio
-    
+
     token = ml_token()
     url = f"https://api.mercadolibre.com{path}"
-    
+
+    def _call(tok: str):
+        return requests.get(url, headers={"Authorization": f"Bearer {tok}"}, timeout=20)
+
     for attempt in range(retries + 1):
         try:
-            r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
-            
+            r = _call(token)
+
             if r.status_code == 200:
                 return r.json()
-            
+
             if r.status_code == 401:
+                # Inline refresh — one immediate retry; independent of the retries counter.
+                log("ML API 401 — attempting inline token refresh", "WARN")
+                token = ml_refresh_token()
+                r2 = _call(token)
+                if r2.status_code == 200:
+                    return r2.json()
                 raise RuntimeError("token_expired")
-            
+
             if r.status_code in (429, 500, 502, 503, 504):
                 if attempt < retries:
                     sleep_time = Config.RETRY_DELAY_BASE * (2 ** attempt)
                     log(f"ML API retry: {r.status_code} attempt {attempt+1}/{retries}", "WARN")
                     time.sleep(sleep_time)
                     continue
-            
+
             raise RuntimeError(f"ML API error: {path} = {r.status_code}")
-            
+
         except requests.exceptions.Timeout:
             if attempt < retries:
                 time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
                 continue
             raise RuntimeError(f"ML API timeout after {retries} retries")
-        
+
         except requests.exceptions.RequestException as e:
             if attempt < retries:
                 time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
