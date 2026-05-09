@@ -478,7 +478,7 @@
     <tr>
       <td class="sub">D1.8</td>
       <td colspan="2">Schema drift: <code>processed_inbound_events</code> sin <code>status</code>, <code>inbound_events</code> sin <code>rawsha</code>, <code>amazon_orders_state</code> sin <code>created_at</code> → migrar schema</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
 
@@ -568,7 +568,7 @@
     <tr>
       <td class="sub">SNS</td>
       <td colspan="2">SHA1 usado para firma SNS webhook (main.py:509) → migrar a SHA256</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
 
@@ -586,13 +586,13 @@
     <tr>
       <td class="sub">D4.2</td>
       <td colspan="2">Worker no refresca token MeLi en HTTP 401; depende únicamente de cron externo → agregar refresh inline con backoff</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
       <td class="sub">D4.6</td>
       <td colspan="2"><code>meli_refresh_tokens.sh</code> escribe en <code>/tmp/refresh_resp.json</code> sin <code>mktemp</code>; archivo quedó con owner <code>root</code> bloqueando cron → usar <code>mktemp</code> en dir propio</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
