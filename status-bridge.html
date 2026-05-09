@@ -760,13 +760,13 @@
     <tr>
       <td class="sub">D7.2</td>
       <td colspan="2"><strong>"Circuit breaker" es solo un comentario:</strong> El header en <code>inbound_worker.py</code> dice "Con retry y circuit breaker pattern" pero no existe ninguna implementación de circuit breaker. Si MeLi API está caída o el token es inválido, el worker sigue golpeando la API indefinidamente con cada job de la cola, sin backoff global ni ventana de apertura. Esto agrava rate limiting y genera carga innecesaria.</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
       <td class="sub">D7.3</td>
       <td colspan="2"><strong>No hay detección de refresh token expirado / revocado:</strong> Si el usuario revoca la aplicación en MeLi o el refresh token expira, <code>meli_refresh_tokens.sh</code> falla con <code>invalid_grant</code> y el worker sigue reportando <code>token_expired</code> indefinidamente. No hay mecanismo para detectar este caso especial ni forzar re-autenticación OAuth (redirigir a <code>/oauth/start</code>). El script de refresh tampoco notifica vía webhook/email/alerta.</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
@@ -784,7 +784,7 @@
     <tr>
       <td class="sub">D7.6</td>
       <td colspan="2"><strong>Callback no requiere <code>refresh_token</code> obligatoriamente:</strong> Si MeLi no devuelve <code>refresh_token</code> (ej. usuario ya autorizó antes y MeLi no lo reemite), <code>/oauth/callback</code> guarda igual el <code>access_token</code> y solo emite un warning. Esto resulta en un token que expira en 6h y nunca se puede refrescar. Debería requerir <code>refresh_token</code> para considerar el callback exitoso, o al menos enviar alerta.</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
     <tr>
