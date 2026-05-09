@@ -505,14 +505,24 @@ def main():
             # 4) apply MELI si está habilitado
             if channel.lower() == "meli" and meli_adapter_enabled:
                 detail = meli_set_qty_from_mapping(str(sku), int(qty))
+                has_meli_errors = "FAIL[" in detail
                 mark_event_done(str(event_id), "ok", detail)
                 bump_metric("events_processed_ok_total", 1)
                 bump_metric("events_meli_applied_total", 1)
                 set_metric("last_success_at", utc_now_iso())
-                print(
-                    f"[{utc_now_iso()}] job(meli_applied): channel={channel} "
-                    f"sku={sku} qty={qty} event_id={event_id} {detail}"
-                )
+                if has_meli_errors:
+                    set_metric("last_error_at", utc_now_iso())
+                    set_metric("last_error", detail[:500])
+                    bump_metric("events_processed_error_total", 1)
+                    print(
+                        f"[{utc_now_iso()}] ERROR job(meli_partial_fail): channel={channel} "
+                        f"sku={sku} qty={qty} event_id={event_id} {detail}"
+                    )
+                else:
+                    print(
+                        f"[{utc_now_iso()}] job(meli_applied): channel={channel} "
+                        f"sku={sku} qty={qty} event_id={event_id} {detail}"
+                    )
                 continue
 
 
