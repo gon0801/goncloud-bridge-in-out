@@ -304,7 +304,8 @@ def init_db() -> None:
               user_id TEXT,
               payload_json TEXT NOT NULL,
               dedupe_key TEXT NOT NULL UNIQUE,
-              status TEXT NOT NULL DEFAULT 'queued'
+              status TEXT NOT NULL DEFAULT 'queued',
+              rawsha TEXT
             )""")
 
         # Amazon raw inbound order events (audit trail before queueing)
@@ -333,6 +334,16 @@ def init_db() -> None:
               note TEXT,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
             )""")
+
+        # D1.8: idempotent schema migrations for columns added after initial deploy
+        for _migration in [
+            "ALTER TABLE inbound_events ADD COLUMN rawsha TEXT",
+            "ALTER TABLE processed_inbound_events ADD COLUMN status TEXT DEFAULT 'done'",
+        ]:
+            try:
+                conn.execute(_migration)
+            except Exception:
+                pass  # Column already exists
 
         conn.commit()
     finally:
@@ -624,6 +635,7 @@ def _verify_sns_signature(payload: dict) -> bool:
         if not sig_b64 or not cert_url:
             return False
         if sig_ver == "1":
+            logger.warning("SNS signature version 1 (SHA1) received — configure topic to use SignatureVersion=2 (SHA256)")
             hash_algo = hashes.SHA1()
         elif sig_ver == "2":
             hash_algo = hashes.SHA256()

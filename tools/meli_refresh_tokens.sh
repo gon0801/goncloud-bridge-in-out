@@ -59,7 +59,6 @@ BK="${TOK_FILE}.BK.$(date -u +%Y%m%dT%H%M%SZ)"
 cp -a "$TOK_FILE" "$BK"
 
 cp -a "$TMP" "$TOK_FILE"
-chown gon:gon "$TOK_FILE"
 chmod 600 "$TOK_FILE"
 
 echo "$(ts) OK access_prefix=${AT:0:12} refresh_prefix=${RT:0:12} backup=$(basename "$BK")" >>"$LOG_FILE"
