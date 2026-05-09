@@ -604,19 +604,19 @@
     <tr>
       <td class="sub">D4.3</td>
       <td colspan="2">521 <code>stock_jobs</code> acumulados (144 amazon_fbm + 373 meli) → escalar worker o reducir frecuencia snapshotter</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">D4.8</td>
       <td colspan="2">544 dead events en SQLite <code>processed_inbound_events</code> vs 9 en Redis DLQ → reconciliar tablas o agregar alerta</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">D4.9</td>
       <td colspan="2">Sin auto-recovery ante <code>token_expired</code>: si cron falla, sistema nunca se recupera solo → circuit breaker o healthcheck que alerte</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
@@ -658,7 +658,7 @@
     <tr>
       <td class="sub">D5.5</td>
       <td colspan="2">Logs de error no unificados: bridge-worker loguea errores MeLi como INFO con texto "FAIL"; inbound-worker loguea <code>token_expired</code> como WARN → unificar niveles y usar ERROR para fallos reales</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
