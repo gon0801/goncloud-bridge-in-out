@@ -538,7 +538,7 @@
     <tr>
       <td class="sub">D3.2</td>
       <td colspan="2"><code>fastapi==0.110.0</code> pin <code>starlette==0.36.3</code> → CVE-2024-47874 (DoS/OOM) + CVE-2025-54121 (thread block) → upgrade a ≥0.40.0</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
@@ -640,19 +640,19 @@
     <tr>
       <td class="sub">D5.2</td>
       <td colspan="2">Sin <code>trace_id</code> / <code>request_id</code> / <code>correlation_id</code> común entre workers; cada uno usa formato de log diferente (uvicorn texto, inbound JSON, worker texto plano) → imposible seguir flujo end-to-end</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
     <tr>
       <td class="sub">D5.3</td>
       <td colspan="2">Métricas solo contadores totales en <code>bridge_metrics</code> (SQLite) sin dimensión temporal; no hay latency, error rate, throughput por hora → agregar Prometheus/métricas estructuradas</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
       <td class="sub">D5.4</td>
       <td colspan="2">Sin sistema de alerting (no Slack, email, PagerDuty, Alertmanager); <code>token_expired</code> y queue creciendo pasan desapercibidos → agregar alertas mínimas</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
     <tr>
@@ -670,13 +670,13 @@
     <tr>
       <td class="sub">D5.7</td>
       <td colspan="2">Redis sin <code>SLOWLOG</code> configurado ni métricas de ops/sec, hit rate, memory pressure → habilitar slowlog y exponer métricas Redis</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-media">Media</span></td>
     </tr>
     <tr>
       <td class="sub">D5.8</td>
       <td colspan="2">Sin métricas de infraestructura del host (CPU, memoria, disco I/O de contenedores) → agregar <code>docker stats</code> o node-exporter básico</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
 
@@ -736,13 +736,13 @@
     <tr>
       <td class="sub">D6.9</td>
       <td colspan="2">Sin backup offsite — <code>bridge_backup.sh</code> solo guarda en <code>/mnt/data/backups/</code> (mismo disco); si falla el disco, se pierde todo → agregar sync a S3/B2/u otro destino</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
     <tr>
       <td class="sub">D6.10</td>
       <td colspan="2">Sin restore tests — no hay verificación periódica de que los backups de <code>bridge.db</code> son restaurables → agregar restore test mensual</td>
-      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
 
