@@ -83,6 +83,23 @@ def ensure_inbound_sales_orders_table():
         CREATE INDEX IF NOT EXISTS idx_inbound_sales_orders_ml_order_id
           ON inbound_sales_orders(ml_order_id)
         """)
+        # D1.7: remove UNKNOWN-site orphans superseded by a real site row for the same order.
+        # Root cause: dedupe_key encodes site; when site resolves from UNKNOWN→MLM two rows
+        # coexist for the same ml_order_id.  Keep the row with a known site (odoo_so_id set).
+        con.execute("""
+        DELETE FROM inbound_sales_orders
+        WHERE site = 'UNKNOWN'
+          AND EXISTS (
+            SELECT 1 FROM inbound_sales_orders b
+            WHERE b.ml_order_id = inbound_sales_orders.ml_order_id
+              AND b.site != 'UNKNOWN'
+          )
+        """)
+        # Enforce uniqueness going forward after orphan cleanup
+        con.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_sales_orders_ml_order_id_unique
+          ON inbound_sales_orders(ml_order_id)
+        """)
         con.commit()
 
 def upsert_inbound_so_row(dedupe_key: str, ml_order_id: str, site: str, status: str,
