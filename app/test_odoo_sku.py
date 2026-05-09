@@ -1,4 +1,5 @@
 import sqlite3
+import defusedxml.xmlrpc as _defusedxml_xmlrpc; _defusedxml_xmlrpc.monkey_patch()
 import xmlrpc.client
 import sys
 

@@ -6,6 +6,7 @@ import sqlite3
 import time
 import urllib.parse
 import hashlib
+import defusedxml.xmlrpc as _defusedxml_xmlrpc; _defusedxml_xmlrpc.monkey_patch()
 from datetime import datetime, timezone
 from contextlib import closing
 from typing import List, Optional

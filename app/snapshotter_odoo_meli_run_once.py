@@ -4,6 +4,7 @@ import sys
 import json
 import sqlite3
 from datetime import datetime, timezone
+import defusedxml.xmlrpc as _defusedxml_xmlrpc; _defusedxml_xmlrpc.monkey_patch()
 import xmlrpc.client
 
 # =========================

@@ -5,6 +5,7 @@ import json
 import sqlite3
 import argparse
 from datetime import datetime, timezone
+import defusedxml.xmlrpc as _defusedxml_xmlrpc; _defusedxml_xmlrpc.monkey_patch()
 import xmlrpc.client
 
 BRIDGE_DB = os.getenv("BRIDGE_DB_PATH") or os.getenv("BRIDGE_DB") or "/mnt/data/appdata/bridge/data/bridge.db"
