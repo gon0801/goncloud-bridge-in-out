@@ -450,7 +450,28 @@ def meli_oauth_callback(request: Request):
         )
 
     data = resp.json()
+
+    # D7.6: reject if MeLi didn't return refresh_token — a session without it
+    # expires in 6h and can never auto-renew, causing mass order failures.
+    if not data.get("refresh_token"):
+        logger.error("OAuth callback: MeLi did not return refresh_token — rejecting non-refreshable session")
+        return JSONResponse({
+            "error": "missing_refresh_token",
+            "message": (
+                "MeLi no devolvió refresh_token. Ocurre cuando la app ya fue autorizada "
+                "y MeLi no reemite el token. Solución: en https://myaccount.mercadolibre.com.mx/apps/authorized "
+                "revoca el acceso a esta app y vuelve a autorizar vía /oauth/start."
+            ),
+        }, status_code=422)
+
     _save_tokens(data)
+    # Clear reauth sentinel if one exists from a previous invalid_grant
+    try:
+        reauth_sentinel = TOKEN_FILE.replace(".meli_tokens.json", ".meli_reauth_required")
+        if os.path.exists(reauth_sentinel):
+            os.remove(reauth_sentinel)
+    except Exception:
+        pass
 
     # marca el code como ya consumido para que un refresh/doble carga no lo intente otra vez
     try:
@@ -462,10 +483,9 @@ def meli_oauth_callback(request: Request):
     return {
         "ok": True,
         "message": "Tokens guardados correctamente en /data/.meli_tokens.json",
-        "has_refresh_token": bool(data.get("refresh_token")),
+        "has_refresh_token": True,
         "expires_in": data.get("expires_in"),
         "user_id": data.get("user_id"),
-        "warning": None if data.get("refresh_token") else "NO llegó refresh_token. Aun así se guardó access_token.",
     }
 
 
@@ -853,6 +873,16 @@ def health():
     except Exception as e:
         checks["redis"] = f"error: {e}"
         ok = False
+
+    # D7.3: surface MeLi reauth requirement when inline refresh detected invalid_grant
+    try:
+        reauth_sentinel = TOKEN_FILE.replace(".meli_tokens.json", ".meli_reauth_required")
+        if os.path.exists(reauth_sentinel):
+            with open(reauth_sentinel) as _f:
+                checks["meli_reauth_required"] = _f.read().strip()
+            ok = False
+    except Exception:
+        pass
 
     status_code = 200 if ok else 503
     from fastapi.responses import JSONResponse

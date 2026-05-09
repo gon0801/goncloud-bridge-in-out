@@ -690,6 +690,12 @@ def ml_token() -> str:
     return token
 
 _ML_REFRESH_LOCK_FILE = Config.TOKEN_FILE + ".refresh.lock"
+_MELI_REAUTH_SENTINEL = Config.TOKEN_FILE.replace(".meli_tokens.json", ".meli_reauth_required")
+
+# D7.2: circuit breaker state — opens after 5 consecutive ml_get() failures
+_ML_CIRCUIT: dict = {"failures": 0, "open_until": 0.0}
+_ML_CIRCUIT_THRESHOLD = 5
+_ML_CIRCUIT_COOLDOWN_S = 120  # 2 min cooldown before half-open probe
 
 def ml_refresh_token() -> str:
     """Inline token refresh using credentials stored in the token file.
@@ -723,6 +729,18 @@ def ml_refresh_token() -> str:
             timeout=20,
         )
         if resp.status_code != 200:
+            # D7.3: detect revoked/expired refresh token and write sentinel for health endpoint
+            try:
+                err_body = resp.json()
+            except Exception:
+                err_body = {}
+            if err_body.get("error") == "invalid_grant" or "invalid_grant" in resp.text:
+                try:
+                    with open(_MELI_REAUTH_SENTINEL, "w") as _sf:
+                        _sf.write(f"invalid_grant detected at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+                except Exception:
+                    pass
+                raise RuntimeError("token_refresh_invalid_grant: refresh token revoked or expired — re-authorize via /oauth/start")
             raise RuntimeError(f"token_refresh_failed: HTTP {resp.status_code}")
 
         new_tok = resp.json()
@@ -747,56 +765,73 @@ def ml_refresh_token() -> str:
 def ml_get(path: str, retries: int = 0) -> dict:
     import requests  # Import local para no fallar si no está disponible al inicio
 
+    # D7.2: circuit breaker — refuse calls while circuit is open
+    _now = time.time()
+    if _ML_CIRCUIT["open_until"] > _now:
+        remaining = int(_ML_CIRCUIT["open_until"] - _now)
+        raise RuntimeError(f"ml_circuit_open: MeLi API circuit open for {remaining}s more after {_ML_CIRCUIT['failures']} failures")
+
     token = ml_token()
     url = f"https://api.mercadolibre.com{path}"
 
     def _call(tok: str):
         return requests.get(url, headers={"Authorization": f"Bearer {tok}"}, timeout=20)
 
-    for attempt in range(retries + 1):
-        try:
-            r = _call(token)
+    try:
+        for attempt in range(retries + 1):
+            try:
+                r = _call(token)
 
-            if r.status_code == 200:
-                return r.json()
+                if r.status_code == 200:
+                    _ML_CIRCUIT["failures"] = 0
+                    return r.json()
 
-            if r.status_code == 401:
-                # Inline refresh — one immediate retry; independent of the retries counter.
-                log("ML API 401 — attempting inline token refresh", "WARN")
-                token = ml_refresh_token()
-                r2 = _call(token)
-                if r2.status_code == 200:
-                    return r2.json()
-                raise RuntimeError("token_expired")
+                if r.status_code == 401:
+                    # Inline refresh — one immediate retry; independent of the retries counter.
+                    log("ML API 401 — attempting inline token refresh", "WARN")
+                    token = ml_refresh_token()
+                    r2 = _call(token)
+                    if r2.status_code == 200:
+                        _ML_CIRCUIT["failures"] = 0
+                        return r2.json()
+                    raise RuntimeError("token_expired")
 
-            if r.status_code in (429, 500, 502, 503, 504):
+                if r.status_code in (429, 500, 502, 503, 504):
+                    if attempt < retries:
+                        if r.status_code == 429:
+                            reset_ts = int(r.headers.get("X-RateLimit-Reset", "0") or "0")
+                            now_ts = int(time.time())
+                            sleep_time = max(reset_ts - now_ts, 1) if reset_ts > now_ts else Config.RETRY_DELAY_BASE * (2 ** attempt)
+                            sleep_time = min(sleep_time, 300)  # cap 5 min
+                            remaining = r.headers.get("X-RateLimit-Remaining", "?")
+                            log(f"ML API 429 rate-limited remaining={remaining} sleeping={sleep_time}s", "WARN")
+                        else:
+                            sleep_time = Config.RETRY_DELAY_BASE * (2 ** attempt)
+                            log(f"ML API retry: {r.status_code} attempt {attempt+1}/{retries}", "WARN")
+                        time.sleep(sleep_time)
+                        continue
+
+                raise RuntimeError(f"ML API error: {path} = {r.status_code}")
+
+            except requests.exceptions.Timeout:
                 if attempt < retries:
-                    if r.status_code == 429:
-                        reset_ts = int(r.headers.get("X-RateLimit-Reset", "0") or "0")
-                        now_ts = int(time.time())
-                        sleep_time = max(reset_ts - now_ts, 1) if reset_ts > now_ts else Config.RETRY_DELAY_BASE * (2 ** attempt)
-                        sleep_time = min(sleep_time, 300)  # cap 5 min
-                        remaining = r.headers.get("X-RateLimit-Remaining", "?")
-                        log(f"ML API 429 rate-limited remaining={remaining} sleeping={sleep_time}s", "WARN")
-                    else:
-                        sleep_time = Config.RETRY_DELAY_BASE * (2 ** attempt)
-                        log(f"ML API retry: {r.status_code} attempt {attempt+1}/{retries}", "WARN")
-                    time.sleep(sleep_time)
+                    time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
                     continue
+                raise RuntimeError(f"ML API timeout after {retries} retries")
 
-            raise RuntimeError(f"ML API error: {path} = {r.status_code}")
+            except requests.exceptions.RequestException as e:
+                if attempt < retries:
+                    time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
+                    continue
+                raise RuntimeError(f"ML API exception: {e}")
 
-        except requests.exceptions.Timeout:
-            if attempt < retries:
-                time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
-                continue
-            raise RuntimeError(f"ML API timeout after {retries} retries")
-
-        except requests.exceptions.RequestException as e:
-            if attempt < retries:
-                time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
-                continue
-            raise RuntimeError(f"ML API exception: {e}")
+    except Exception:
+        # D7.2: trip circuit after threshold consecutive failures
+        _ML_CIRCUIT["failures"] += 1
+        if _ML_CIRCUIT["failures"] >= _ML_CIRCUIT_THRESHOLD:
+            _ML_CIRCUIT["open_until"] = time.time() + _ML_CIRCUIT_COOLDOWN_S
+            log(f"ML circuit OPENED after {_ML_CIRCUIT['failures']} failures — cooling {_ML_CIRCUIT_COOLDOWN_S}s", "ERROR")
+        raise
 
 # =========================
 # BUSINESS LOGIC — Idempotente, con validación de SKU
