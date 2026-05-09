@@ -130,68 +130,52 @@ def _utc_now_iso_seconds() -> str:
 
 
 def db_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
 
 def init_db() -> None:
     conn = db_conn()
     try:
-        # Eventos crudos (auditoría)
-        conn.execute(
-            """
+        # ── Outbound stock worker ─────────────────────────────────────────────
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS events (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               created_at TEXT NOT NULL,
               channel TEXT NOT NULL,
               item_count INTEGER NOT NULL,
               payload TEXT NOT NULL
-            )
-            """
-        )
+            )""")
 
-        # Idempotencia (worker)
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS processed_events (
               event_id TEXT PRIMARY KEY,
               channel TEXT NOT NULL,
               status TEXT NOT NULL,
               created_at TEXT,
               updated_at TEXT
-            )
-            """
-        )
+            )""")
 
-        # Métricas
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS bridge_metrics (
               key TEXT PRIMARY KEY,
               value INTEGER NOT NULL DEFAULT 0,
               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+            )""")
 
-        # Catálogo observado (NO fuente de verdad)
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS known_skus (
               channel TEXT NOT NULL,
               sku TEXT NOT NULL,
               first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
               last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
               PRIMARY KEY(channel, sku)
-            )
-            """
-        )
+            )""")
 
-        # Snapshot por SKU (auditoría)
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS snapshot_items (
               event_id TEXT NOT NULL,
               channel TEXT NOT NULL,
@@ -199,13 +183,9 @@ def init_db() -> None:
               qty INTEGER NOT NULL,
               derived_zero INTEGER NOT NULL DEFAULT 0,
               PRIMARY KEY(event_id, channel, sku)
-            )
-            """
-        )
+            )""")
 
-        # Auditoría de SKUs rechazados (hardening)
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS rejected_skus (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               created_at TEXT NOT NULL,
@@ -213,17 +193,10 @@ def init_db() -> None:
               channel TEXT NOT NULL,
               sku TEXT NOT NULL,
               reason TEXT NOT NULL
-            )
-            """
-        )
+            )""")
 
-        # Mapping SKU -> listing remoto.
-        # PK por (channel, remote_item_id, remote_variation_id) para soportar 1 SKU -> N listings
-        # (caso MeLi post "separacion de variantes": un mismo SKU vive en multiples listings).
-        # La migracion desde el schema viejo (PK = channel,sku) se hace con
-        # tools/migrate_sku_mapping_1n.py - este CREATE solo aplica en deploys nuevos.
-        conn.execute(
-            """
+        # ── SKU mapping (1 SKU → N listings post split-variantes MeLi) ────────
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS sku_mapping (
               channel TEXT NOT NULL,
               sku TEXT NOT NULL,
@@ -232,12 +205,134 @@ def init_db() -> None:
               site TEXT DEFAULT '',
               last_seen_at TEXT,
               PRIMARY KEY (channel, remote_item_id, remote_variation_id)
-            )
-            """
-        )
+            )""")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sku_mapping_sku ON sku_mapping(channel, sku)"
         )
+
+        # ── S4: tables used by main.py but previously absent from init_db ─────
+
+        # Configuration key-value store (read by every component)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bridge_settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL,
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )""")
+        # Auto-update timestamp on insert/update
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_bridge_settings_updated_insert
+            AFTER INSERT ON bridge_settings FOR EACH ROW
+            BEGIN
+              UPDATE bridge_settings
+                SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              WHERE key = NEW.key;
+            END""")
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_bridge_settings_updated_update
+            AFTER UPDATE OF value ON bridge_settings FOR EACH ROW
+            BEGIN
+              UPDATE bridge_settings
+                SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              WHERE key = NEW.key;
+            END""")
+
+        # Amazon SKU → Odoo product mapping (manual overrides)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS amazon_sku_mapping (
+              seller_sku TEXT PRIMARY KEY,
+              odoo_product_id INTEGER,
+              odoo_default_code TEXT,
+              asin TEXT,
+              parent_asin TEXT,
+              keepa_domain INTEGER DEFAULT 11,
+              notes TEXT,
+              created_at TEXT DEFAULT (datetime('now'))
+            )""")
+
+        # Amazon FBA/FBM inventory cache (populated by amazon_prices_sync)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS amazon_inventory_cache (
+              seller_sku TEXT NOT NULL,
+              asin TEXT,
+              product_name TEXT,
+              qty INTEGER NOT NULL DEFAULT 0,
+              marketplace TEXT NOT NULL DEFAULT 'MX',
+              updated_at TEXT,
+              PRIMARY KEY (seller_sku, marketplace)
+            )""")
+
+        # MeLi listings cache (populated by sync_meli_listings / backfill)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meli_listings_cache (
+              item_id TEXT NOT NULL,
+              variation_id TEXT NOT NULL,
+              title TEXT,
+              var_name TEXT,
+              sku TEXT,
+              qty INTEGER DEFAULT 0,
+              price REAL,
+              status TEXT DEFAULT 'active',
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              raw_json TEXT,
+              PRIMARY KEY (item_id, variation_id)
+            )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_meli_listings_sku ON meli_listings_cache(sku)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_meli_listings_updated ON meli_listings_cache(updated_at)"
+        )
+
+        # MeLi SKU → Odoo product mapping (manual overrides, parallel to amazon_sku_mapping)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meli_sku_mapping (
+              seller_sku TEXT PRIMARY KEY,
+              odoo_product_id INTEGER,
+              odoo_default_code TEXT,
+              notes TEXT,
+              created_at TEXT DEFAULT (datetime('now'))
+            )""")
+
+        # MeLi raw inbound webhook events (audit trail before queueing)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbound_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              received_at TEXT NOT NULL,
+              topic TEXT NOT NULL,
+              resource TEXT NOT NULL,
+              user_id TEXT,
+              payload_json TEXT NOT NULL,
+              dedupe_key TEXT NOT NULL UNIQUE,
+              status TEXT NOT NULL DEFAULT 'queued'
+            )""")
+
+        # Amazon raw inbound order events (audit trail before queueing)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS amazon_inbound_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              received_at TEXT NOT NULL DEFAULT (datetime('now')),
+              event_type TEXT NOT NULL,
+              order_id TEXT NOT NULL,
+              payload_json TEXT,
+              dedupe_key TEXT UNIQUE,
+              status TEXT DEFAULT 'pending'
+            )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_amazon_events_order ON amazon_inbound_events(order_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_amazon_events_status ON amazon_inbound_events(status)"
+        )
+
+        # MeLi SKUs allowed for inbound processing (synced from sku_mapping)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbound_allowed_skus (
+              sku TEXT PRIMARY KEY,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              note TEXT,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )""")
 
         conn.commit()
     finally:
