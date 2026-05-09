@@ -378,9 +378,17 @@ _OAUTH_STATE_TTL_SECONDS = 600
 @app.get("/oauth/start")
 def meli_oauth_start():
     import secrets as _secrets
+    import base64 as _base64
     state = _secrets.token_urlsafe(32)
+    # D7.5: PKCE S256 (RFC 7636). code_verifier is stored in Redis; code_challenge is sent
+    # to MeLi. Servers that don't support PKCE ignore these params — no breakage risk.
+    code_verifier = _secrets.token_urlsafe(48)  # 64 URL-safe chars, within [43,128]
+    code_challenge = _base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
     try:
         r.setex(f"meli_oauth_state:{state}", _OAUTH_STATE_TTL_SECONDS, "1")
+        r.setex(f"meli_oauth_pkce:{state}", _OAUTH_STATE_TTL_SECONDS, code_verifier)
     except Exception as e:
         logger.error(f"OAuth state redis save failed: {e}")
         return JSONResponse({"error": "oauth_state_store_failed"}, status_code=500)
@@ -391,6 +399,8 @@ def meli_oauth_start():
         # IMPORTANTE: pide refresh token (offline access)
         "scope": "offline_access",
         "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     }
     url = "https://auth.mercadolibre.com.mx/authorization?" + urllib.parse.urlencode(params)
     return RedirectResponse(url)
@@ -424,6 +434,8 @@ def meli_oauth_callback(request: Request):
         return JSONResponse({"error": "missing_state"}, status_code=400)
     try:
         consumed = r.getdel(f"meli_oauth_state:{state}")
+        # D7.5: retrieve PKCE verifier (may be absent for flows started before this deploy)
+        code_verifier = r.getdel(f"meli_oauth_pkce:{state}")
     except Exception as e:
         logger.error(f"OAuth state redis check failed: {e}")
         return JSONResponse({"error": "oauth_state_check_failed"}, status_code=500)
@@ -431,15 +443,19 @@ def meli_oauth_callback(request: Request):
         # No coincide ningún state vivo: callback no iniciado por nosotros (CSRF) o expirado.
         return JSONResponse({"error": "invalid_or_expired_state"}, status_code=400)
 
+    token_payload: dict = {
+        "grant_type": "authorization_code",
+        "client_id": MELI_CLIENT_ID,
+        "client_secret": MELI_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": MELI_REDIRECT_URI,
+    }
+    if code_verifier:
+        token_payload["code_verifier"] = code_verifier
+
     resp = requests.post(
         "https://api.mercadolibre.com/oauth/token",
-        data={
-            "grant_type": "authorization_code",
-            "client_id": MELI_CLIENT_ID,
-            "client_secret": MELI_CLIENT_SECRET,
-            "code": code,
-            "redirect_uri": MELI_REDIRECT_URI,
-        },
+        data=token_payload,
         timeout=20,
     )
 
