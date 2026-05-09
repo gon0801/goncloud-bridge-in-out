@@ -2,7 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: bridge-redis
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--slowlog-log-slower-than", "10000", "--slowlog-max-len", "128"]
     volumes:
       - /mnt/data/appdata/bridge/redis:/data
     restart: unless-stopped

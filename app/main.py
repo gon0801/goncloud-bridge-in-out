@@ -4,9 +4,11 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 import urllib.parse
 import hashlib
 import defusedxml.xmlrpc as _defusedxml_xmlrpc; _defusedxml_xmlrpc.monkey_patch()
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from contextlib import closing
 from typing import List, Optional
@@ -101,6 +103,19 @@ _CSP_POLICY = (
     "connect-src 'self'; "
     "frame-ancestors 'none';"
 )
+
+# D5.2: correlation ID on every request — set as ContextVar so downstream
+# code can read it, echoed in X-Request-ID response header for log correlation.
+_request_id: ContextVar[str] = ContextVar("request_id", default="")
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    _request_id.set(req_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = req_id
+    return response
+
 
 @app.middleware("http")
 async def _security_headers_middleware(request: Request, call_next):
@@ -890,6 +905,24 @@ def health():
         checks["redis"] = f"error: {e}"
         ok = False
 
+    # D5.4: alert conditions — queue depth and recent dead events
+    try:
+        import redis as _redis_alert
+        _ra = _redis_alert.Redis.from_url(os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"), socket_connect_timeout=2)
+        ml_dead = _ra.llen("ml_orders_dead")
+        amz_dead = _ra.llen("amazon_orders_dead")
+        stock_q = _ra.llen("stock_jobs")
+        checks["ml_orders_dead"] = ml_dead
+        checks["amazon_orders_dead"] = amz_dead
+        checks["stock_jobs_queued"] = stock_q
+        if ml_dead > 50 or amz_dead > 50:
+            checks["alert"] = f"dead_queue_high ml={ml_dead} amz={amz_dead}"
+            ok = False
+        if stock_q > 2000:
+            checks["alert_stock"] = f"stock_jobs_backlog={stock_q}"
+    except Exception:
+        pass
+
     # D7.3: surface MeLi reauth requirement when inline refresh detected invalid_grant
     try:
         reauth_sentinel = TOKEN_FILE.replace(".meli_tokens.json", ".meli_reauth_required")
@@ -906,6 +939,47 @@ def health():
         {"ok": ok, "time": utc_now_iso(), "checks": checks},
         status_code=status_code,
     )
+
+
+@app.get("/v1/metrics", dependencies=[Depends(require_secret)])
+def get_metrics():
+    """D5.3: structured metrics — SQLite counters + Redis queue depths."""
+    out: dict = {}
+    # Bridge SQLite counters
+    try:
+        with closing(db_conn()) as conn:
+            rows = conn.execute("SELECT key, value, updated_at FROM bridge_metrics").fetchall()
+            out["bridge"] = {r[0]: {"v": r[1], "at": r[2]} for r in rows}
+    except Exception as e:
+        out["bridge"] = {"error": str(e)}
+    # Redis queue depths
+    try:
+        import redis as _redis_m
+        _rm = _redis_m.Redis.from_url(os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"), socket_connect_timeout=2)
+        out["queues"] = {q: _rm.llen(q) for q in [
+            "ml_orders_jobs", "ml_orders_dead",
+            "amazon_orders_jobs", "amazon_orders_dead",
+            "stock_jobs",
+        ]}
+    except Exception as e:
+        out["queues"] = {"error": str(e)}
+    # Recent inbound results (last 24h)
+    try:
+        with closing(db_conn()) as conn:
+            rows = conn.execute(
+                "SELECT result, COUNT(*) FROM processed_inbound_events "
+                "WHERE processed_at >= datetime('now','-24 hours') GROUP BY result"
+            ).fetchall()
+            out["meli_24h"] = {r[0]: r[1] for r in rows}
+            rows2 = conn.execute(
+                "SELECT result, COUNT(*) FROM amazon_processed_events "
+                "WHERE processed_at >= datetime('now','-24 hours') GROUP BY result"
+            ).fetchall()
+            out["amazon_24h"] = {r[0]: r[1] for r in rows2}
+    except Exception as e:
+        out["inbound_24h"] = {"error": str(e)}
+    out["generated_at"] = utc_now_iso()
+    return out
 
 
 @app.get("/v1/debug/rejected-skus")
