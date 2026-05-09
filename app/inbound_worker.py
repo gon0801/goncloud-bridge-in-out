@@ -8,6 +8,7 @@ Diseñado para: 500k SKUs, 10+ workers, recuperación autónoma, zero duplicaci�
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -16,6 +17,16 @@ import hashlib
 import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+
+# S3: graceful shutdown — set by SIGTERM/SIGINT handler, checked in main loop
+_shutdown_requested = threading.Event()
+
+def _handle_shutdown(signum, frame):
+    # Minimal signal handler — no locks, no logging. Main loop logs on check.
+    _shutdown_requested.set()
+
+signal.signal(signal.SIGTERM, _handle_shutdown)
+signal.signal(signal.SIGINT, _handle_shutdown)
 
 import redis
 
@@ -560,14 +571,16 @@ def reaper_loop(redis_client: redis.Redis):
             time.sleep(Config.REAPER_INTERVAL)
             
             stale_threshold = (datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)).isoformat()
-            
-            # 1. Encontrar locks stale
+
+            # 1. Encontrar locks stale — S3: respeta heartbeat_at si existe.
+            # Un job con heartbeat reciente está vivo aunque claimed_at sea viejo.
             stale_locks = db.execute(
-                """SELECT dedupe_key, worker_id, payload_hash 
-                   FROM inbound_processing_locks 
-                   WHERE claimed_at < ? 
+                """SELECT dedupe_key, worker_id, payload_hash
+                   FROM inbound_processing_locks
+                   WHERE claimed_at < ?
+                     AND (heartbeat_at IS NULL OR heartbeat_at < ?)
                    LIMIT 100""",
-                (stale_threshold,)
+                (stale_threshold, stale_threshold)
             ).fetchall()
             
             if not stale_locks:
@@ -886,21 +899,22 @@ def parse_items(order: dict) -> List[dict]:
     
     return items
 
-def run_tool(tool_name: str, env_vars: dict) -> Tuple[int, str, str]:
+def run_tool(tool_name: str, env_vars: dict, lock_key: Optional[str] = None) -> Tuple[int, str, str]:
     """
     Ejecuta tool externa con idempotencia garantizada por CLIENT_ORDER_REF.
-    Las tools deben usar CLIENT_ORDER_REF como clave única en Odoo.
+    S3: Mantiene heartbeat activo durante la ejecución para que el reaper
+    no robe el lock de un job que está tardando (ej. Odoo lento).
     """
     tool_paths = [
         f"/data/{tool_name}.py",
         f"/mnt/data/appdata/bridge/tools/{tool_name}.py",
         f"./tools/{tool_name}.py"
     ]
-    
+
     tool_path = next((p for p in tool_paths if os.path.exists(p)), None)
     if not tool_path:
         return -1, "", f"Tool not found: {tool_name}"
-    
+
     env = os.environ.copy()
     env.update({
         "ODOO_URL": Config.ODOO_URL or "",
@@ -909,30 +923,45 @@ def run_tool(tool_name: str, env_vars: dict) -> Tuple[int, str, str]:
         "ODOO_PASS": Config.ODOO_PASS or "",
     })
     env.update(env_vars)
-    
+
+    # S3: heartbeat thread — keeps lock alive for long-running tools
+    _hb_stop = threading.Event()
+    def _heartbeat_worker():
+        while not _hb_stop.wait(timeout=Config.HEARTBEAT_INTERVAL):
+            if lock_key:
+                update_heartbeat(lock_key)
+    hb_thread = None
+    if lock_key:
+        hb_thread = threading.Thread(target=_heartbeat_worker, daemon=True)
+        hb_thread.start()
+
     try:
         start = time.time()
         p = subprocess.run(
-            ["python3", tool_path], 
-            env=env, 
-            capture_output=True, 
-            text=True, 
+            ["python3", tool_path],
+            env=env,
+            capture_output=True,
+            text=True,
             timeout=180
         )
         elapsed_ms = int((time.time() - start) * 1000)
-        
+
         if p.returncode != 0:
             log(f"Tool failed: {tool_name} rc={p.returncode}", "ERROR", {
                 "stderr": p.stderr[-500:],
                 "stdout": p.stdout[-500:]
             })
-        
+
         return p.returncode, p.stdout, p.stderr
-        
+
     except subprocess.TimeoutExpired:
         return -2, "", f"Timeout after 180s"
     except Exception as e:
         return -3, "", str(e)
+    finally:
+        _hb_stop.set()
+        if hb_thread:
+            hb_thread.join(timeout=5)
 
 def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str, lock_key: str):
     """Procesa orden Fulfillment.
@@ -949,7 +978,7 @@ def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: 
             mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key)
             return
 
-        rc, out, err = run_tool("inbound_full_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
+        rc, out, err = run_tool("inbound_full_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref}, lock_key=lock_key)
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
         mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
@@ -974,7 +1003,7 @@ def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: 
             "SITE_ID": site,
             "SO_NOTE": so_note,
             "WAREHOUSE_NAME": get_setting("warehouse_meli_full"),
-        })
+        }, lock_key=lock_key)
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
         mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
@@ -993,7 +1022,7 @@ def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: s
             mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key)
             return
 
-        rc, out, err = run_tool("inbound_fbm_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
+        rc, out, err = run_tool("inbound_fbm_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref}, lock_key=lock_key)
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
         mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
@@ -1021,7 +1050,7 @@ def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: s
             "ORDER_JSON": json.dumps(order),
             "SITE_ID": site,
             "SO_NOTE": so_note,
-        })
+        }, lock_key=lock_key)
 
         processing_time = int((time.time() - start_time) * 1000)
         if rc == 0:
@@ -1086,10 +1115,10 @@ def main():
     
     threading.Thread(target=metrics_reporter, daemon=True).start()
     
-    # Main processing loop
-    while True:
+    # Main processing loop — S3: exits cleanly on SIGTERM after current job finishes
+    while not _shutdown_requested.is_set():
         if not is_enabled("meli_inbound_enabled"):
-            time.sleep(2)
+            _shutdown_requested.wait(timeout=2)
             continue
         
         item = None
@@ -1338,6 +1367,9 @@ def main():
                     pass
             
             time.sleep(1)
+
+    log("Graceful shutdown complete", "INFO", {"worker": Config.WORKER_ID})
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
