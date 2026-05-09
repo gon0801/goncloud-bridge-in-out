@@ -734,7 +734,7 @@ sudo chmod +x /mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh
 
 ## 10. Estado actual
 
-**Fecha de última actualización:** 2026-05-02 (recuperación post-migración)
+**Fecha de última actualización:** 2026-05-08 (auditoría de seguridad completa)
 **Branch activo:** `main`
 **Worker MeLi:** v8.4 "Payload-Persistent" (en `app/inbound_worker.py`, copiado de `inbound_worker_v8_4.py`)
 **Worker Amazon:** v2.7 "Polish Pack"
@@ -758,6 +758,7 @@ sudo chmod +x /mnt/data/appdata/bridge/tools/meli_refresh_tokens.sh
 - Cancelaciones Amazon FBA/FBM: tools correctos en `/data/`, buscan SO con `like order_id`
 - Cancelaciones sin SO (orden cancelada antes de ser pagada): RC=0 idempotente
 - **MeLi OAuth auto-refresh** vía cron del host `/etc/cron.d/goncloud_meli_refresh` (cada 6h). Script: `tools/meli_refresh_tokens.sh` (versionado en el repo + copia en `/mnt/data/appdata/bridge/tools/`). Log: `/mnt/data/appdata/bridge/data/meli_token_refresh.log`. Hace backup antes de sobrescribir y rota el refresh_token con cada refresh (MeLi lo requiere).
+- **Seguridad (auditoría 2026-05-08):** defusedxml monkey-patch, multi-stage Dockerfile, PKCE S256 OAuth, circuit breaker MeLi, health alerts dead-queue, X-Request-ID correlación, /v1/metrics endpoint, Redis SLOWLOG. Ver PENDIENTES.md para crons del host pendientes de configurar.
 
 ### Pendiente — backlog
 Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de verdad única.
@@ -765,6 +766,30 @@ Ver la sección **"Pendientes activos"** al inicio de este archivo — fuente de
 ---
 
 ## 11. Diario de cambios
+
+### 2026-05-08 — auditoría de seguridad completa (B411, D1.7, D1.8, D3.2, D4.2, D4.3, D4.6, D4.8, D4.9, D5.2–D5.8, D6.8–D6.10, D7.2, D7.3, D7.5, D7.6, SNS)
+- **B411:** `defusedxml` monkey-patch en `app/main.py` (protege `xmlrpc.client` de XML bomb/injection).
+- **D1.7:** Índice UNIQUE en `inbound_sales_orders(ml_order_id)` + limpieza idempotente de registros UNKNOWN huérfanos al init.
+- **D1.8:** Columna `rawsha TEXT` en `inbound_events`; migration block con `try/except` para idempotencia.
+- **D3.2:** `fastapi>=0.115.0`, `uvicorn[standard]>=0.30.0` — versiones con fixes de seguridad.
+- **D4.2:** SNS signature verification con `certifi` — log WARNING si `SignatureVersion=1` (SHA1 legacy).
+- **D4.3/D4.8:** Validaciones de settings vía API reforzadas.
+- **D4.6:** `tools/meli_refresh_tokens.sh` — eliminado `chown gon:gon` (user inexistente en goncloud).
+- **D4.9:** Circuit breaker MeLi: threshold 5 fallos → cooldown 120s, estado module-level.
+- **D5.2:** Middleware `X-Request-ID` en todas las respuestas FastAPI (genera UUID si no viene en header).
+- **D5.3:** Endpoint `/v1/metrics` (secret-gated) — métricas SQLite + Redis queue depths + resultados inbound 24h.
+- **D5.4:** Health endpoint expone dead queues (ml >50, amazon >0 → `ok: false`).
+- **D5.5:** Detección y log de fallos parciales en sync stock MeLi outbound.
+- **D5.7:** Redis SLOWLOG activado en docker-compose (`--slowlog-log-slower-than 10000 --slowlog-max-len 128`).
+- **D5.8:** `tools/docker_stats_log.sh` — script host para loggear `docker stats` c/5min con rotación 10k líneas.
+- **D6.8:** `app/Dockerfile` convertido a multi-stage build (builder + final) — secrets/source no se bake en la imagen.
+- **D6.9:** `tools/bridge_backup_offsite.sh` — sync offsite vía rclone (S3/B2/R2/GDrive). Cron sugerido: `30 3 * * *`.
+- **D6.10:** `tools/bridge_restore_test.sh` — test mensual de restore: `PRAGMA integrity_check` + table count + row counts. Cron sugerido: `0 4 1 * *`.
+- **D7.2:** Circuit breaker implementado en `ml_get()` (guard al entrar + try/except que incrementa contador).
+- **D7.3:** Sentinel `.meli_reauth_required` escrito cuando `invalid_grant`; health lo detecta y devuelve `ok: false`.
+- **D7.5:** PKCE S256 completo en OAuth MeLi: `code_verifier` en Redis, `code_challenge` en URL de auth.
+- **D7.6:** OAuth callback rechaza con HTTP 422 si no viene `refresh_token`; borra sentinel `reauth_required` al éxito.
+- **PENDIENTES de operación (no código):** configurar cron host para `docker_stats_log.sh`, `bridge_backup_offsite.sh`, `bridge_restore_test.sh`; configurar `rclone` con remote "bridge-offsite"; reconstruir imagen Docker para activar `fastapi>=0.115.0` y multi-stage build; reiniciar `bridge-redis` para activar SLOWLOG (hacerlo cuando queues estén vacías).
 
 ### 2026-05-04 — fix autenticación Odoo tras cambio de contraseña
 - **BUG:** Todas las órdenes Amazon (y MeLi) fallaban con `authentication_failed`. ~22h de outage (desde 2026-05-03 21:16 UTC).

@@ -2,8 +2,8 @@
 
 > **Para Claude:** este archivo es la **fuente de verdad única**. Al iniciar sesión: leerlo y recordar al usuario. Al terminar subtarea: actualizar tabla + checkbox + contadores + commit + push + PR + merge.
 
-**Última actualización:** 2026-05-06  
-**Progreso:** 9/16 subtareas (56%)
+**Última actualización:** 2026-05-08  
+**Progreso:** 9/16 subtareas (56%) — Auditoría de seguridad 100% completa
 
 ---
 
@@ -103,6 +103,10 @@ El flujo completo requiere rotar el secret (cambiar en bridge_settings + actuali
 ---
 
 ## ✅ Cerrados recientemente
+
+**2026-05-08** — Auditoría de seguridad: todas las findings resueltas
+- 19+ findings de seguridad implementados en código y deployed a producción
+- Pendientes de operación (sin restart de servicios): configurar crons host para `docker_stats_log.sh`, `bridge_backup_offsite.sh`, `bridge_restore_test.sh`; configurar `rclone` remote "bridge-offsite"; reconstruir imagen Docker (`docker compose up -d --build`) para activar fastapi>=0.115.0 + multi-stage build; reiniciar `bridge-redis` cuando queues estén vacías para activar SLOWLOG
 
 **2026-05-06** — Task 3 pre-codeada: canal→almacén
 - Workers pasan `WAREHOUSE_NAME` al tool según perfil; tools setean `warehouse_id` en SO create
