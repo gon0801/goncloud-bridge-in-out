@@ -262,8 +262,13 @@ def main():
     print(f"{'='*60}")
 
     db = conn()
-    db.execute("BEGIN")
 
+    # Atomicidad POR ORDEN: recover_meli()/recover_amazon() hacen COMMIT por
+    # cada orden recuperada (DELETE audit + DELETE lock). Es lo correcto para
+    # una tool de recuperación: el progreso parcial es durable y re-ejecutar
+    # es idempotente. NO envolver en un BEGIN/COMMIT externo — chocaba con los
+    # COMMIT por-fila y hacía fallar el cierre con "cannot commit - no
+    # transaction is active" (incidente 2026-05-19).
     try:
         if not args.dry_run:
             r = get_redis()
@@ -277,9 +282,6 @@ def main():
         if args.channel in ("amazon", "all"):
             total += recover_amazon(db, r, since_iso, args.include_dead, args.dry_run)
 
-        if not args.dry_run:
-            db.execute("COMMIT")
-
         print(f"\n{'='*60}")
         if args.dry_run:
             print(f"  [DRY-RUN] {total} órdenes serían re-encoladas.")
@@ -289,7 +291,9 @@ def main():
         print(f"{'='*60}\n")
 
     except Exception as e:
-        db.execute("ROLLBACK")
+        # Sin ROLLBACK externo: cada orden ya commiteó por su cuenta. Un
+        # ROLLBACK acá fallaba con "no transaction is active" y enmascaraba
+        # el error real.
         print(f"\nERROR: {e}")
         sys.exit(1)
     finally:
