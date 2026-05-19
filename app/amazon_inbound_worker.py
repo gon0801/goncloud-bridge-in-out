@@ -50,6 +50,11 @@ class Config:
     HEARTBEAT_INTERVAL = 30     # 30s
     REAPER_INTERVAL = 30
     METRICS_INTERVAL = 300
+    # Watchdog: nº de ciclos de métricas con queue>0 y CERO progreso antes de
+    # forzar reinicio del proceso (Docker restart: unless-stopped lo levanta).
+    # 3 × METRICS_INTERVAL ≈ 15 min. Evita que un deadlock deje el worker
+    # "Up" pero congelado durante días (incidente 2026-05-19).
+    WATCHDOG_STUCK_INTERVALS = 3
     MAX_RETRIES = 3
     MAX_DEFERRED = 5        # RC=2 retries antes de enviar a DLQ
 
@@ -100,7 +105,13 @@ class Database:
             return
         self.path = path
         self._local = threading.local()
-        self._writer_lock = threading.Lock()
+        # RLock + conteo de profundidad por hilo (ver Transaction): hace los
+        # `with db.transaction()` anidados seguros. Antes era threading.Lock()
+        # no reentrante: el reaper, dentro de su transacción, llamaba
+        # mark_completed() que abría OTRA transacción en el mismo hilo →
+        # self-deadlock permanente que congelaba toda escritura a bridge.db
+        # (incidente 2026-05-19).
+        self._writer_lock = threading.RLock()
 
         conn = self._create_connection()
         self._ensure_tables(conn)
@@ -143,7 +154,7 @@ class Database:
                 raise
 
     def transaction(self):
-        return Transaction(self._get_conn(), self._writer_lock)
+        return Transaction(self._get_conn(), self._writer_lock, self._local)
 
     def _ensure_tables(self, conn: sqlite3.Connection):
         conn.execute("""
@@ -255,20 +266,44 @@ class Database:
 
 
 class Transaction:
-    def __init__(self, conn, writer_lock):
+    """Context manager de transacción REENTRANTE por hilo.
+
+    Solo la transacción más externa hace BEGIN IMMEDIATE / COMMIT-ROLLBACK y
+    toma/suelta el writer_lock; las anidadas (mismo hilo) se unen a la externa
+    como no-op. Esto evita el self-deadlock cuando código que ya está dentro de
+    `with db.transaction()` llama a otra función que también la abre
+    (p.ej. el reaper llamando mark_completed()). Incidente 2026-05-19.
+    """
+
+    def __init__(self, conn, writer_lock, local):
         self.conn = conn
         self.writer_lock = writer_lock
+        self.local = local
+        self._outermost = False
 
     def __enter__(self):
-        self.writer_lock.acquire()
-        self.conn.execute("BEGIN IMMEDIATE")
+        depth = getattr(self.local, "txn_depth", 0)
+        self.local.txn_depth = depth + 1
+        if depth == 0:
+            self._outermost = True
+            self.writer_lock.acquire()
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+            except BaseException:
+                self.local.txn_depth = depth
+                self.writer_lock.release()
+                raise
         return self.conn
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self.local.txn_depth = getattr(self.local, "txn_depth", 1) - 1
+        if not self._outermost:
+            return False
         try:
             self.conn.execute("COMMIT" if exc_type is None else "ROLLBACK")
         finally:
             self.writer_lock.release()
+        return False
 
 
 # =========================
@@ -876,6 +911,8 @@ def heartbeat_thread():
 # METRICS REPORTER
 # =========================
 def metrics_reporter(redis_client: redis.Redis):
+    stuck_intervals = 0
+    last_completed = -1
     while not _shutdown.is_set():
         time.sleep(Config.METRICS_INTERVAL)
         try:
@@ -894,6 +931,26 @@ def metrics_reporter(redis_client: redis.Redis):
                 "redis_queue": q_len,
                 "redis_dlq": dlq_len,
             })
+
+            # Watchdog anti-deadlock: si hay jobs en cola pero CERO progreso
+            # (completed_1h no sube) por WATCHDOG_STUCK_INTERVALS ciclos, el
+            # worker está congelado (loop de jobs deadlockeado aunque el
+            # contenedor figure "Up"). Forzar salida → Docker
+            # (restart: unless-stopped) lo reinicia. Sin esto, un deadlock
+            # quedaba mudo durante días (incidente 2026-05-19).
+            if q_len > 0 and last_completed >= 0 and completed_1h <= last_completed:
+                stuck_intervals += 1
+                if stuck_intervals >= Config.WATCHDOG_STUCK_INTERVALS:
+                    log("WATCHDOG: worker congelado (queue>0, sin progreso) — forzando reinicio", "CRITICAL", {
+                        "redis_queue": q_len,
+                        "completed_1h": completed_1h,
+                        "db_locks": locks,
+                        "stuck_intervals": stuck_intervals,
+                    })
+                    os._exit(1)
+            else:
+                stuck_intervals = 0
+            last_completed = completed_1h
         except Exception as e:
             log("Metrics error", "ERROR", {"error": str(e)})
 
