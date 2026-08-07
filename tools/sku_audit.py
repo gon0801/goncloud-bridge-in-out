@@ -21,11 +21,13 @@ MAX_PAGES = 300  # safety
 
 API = "https://api.mercadolibre.com"
 
+
 # =====================
 # UTILS
 # =====================
 def utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
 
 def run(cmd: list[str]) -> str:
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -33,9 +35,11 @@ def run(cmd: list[str]) -> str:
         raise RuntimeError(f"CMD failed: {' '.join(cmd)}\nSTDERR:\n{p.stderr.strip()}")
     return p.stdout
 
+
 def die(msg, code=1):
     print(msg, file=sys.stderr)
     sys.exit(code)
+
 
 def load_token() -> str:
     if not TOK_PATH.exists():
@@ -45,6 +49,7 @@ def load_token() -> str:
     if not tok:
         die("No access_token en token file")
     return str(tok)
+
 
 def req_json(url: str, headers: dict, retries: int = 4) -> dict:
     last = None
@@ -63,6 +68,7 @@ def req_json(url: str, headers: dict, retries: int = 4) -> dict:
             last = str(e)
             time.sleep(0.6 + i * 0.8)
     raise RuntimeError(f"GET failed after retries: {url}\nERR: {last}")
+
 
 # =====================
 # ODOO EXPORT
@@ -88,15 +94,29 @@ WHERE x.sell_on_meli_effective = true
 ORDER BY default_code;
 """.strip()
 
-    txt = run([
-        "sudo","docker","exec","-i","odoo-db-1",
-        "psql","-U","odoo","-d","EHV","-At","-c",sql
-    ])
+    txt = run(
+        [
+            "sudo",
+            "docker",
+            "exec",
+            "-i",
+            "odoo-db-1",
+            "psql",
+            "-U",
+            "odoo",
+            "-d",
+            "EHV",
+            "-At",
+            "-c",
+            sql,
+        ]
+    )
     skus = [ln.strip() for ln in txt.splitlines() if ln.strip()]
     out.write_text("\n".join(skus) + ("\n" if skus else ""), encoding="utf-8")
     print(f"ODOO_SELL_ON_MELI={len(skus)}")
     print(f"OUT={out}")
     return out
+
 
 # =====================
 # ML ACTIVE SCAN
@@ -107,6 +127,7 @@ def get_user_id(headers: dict) -> str:
     if uid is None:
         raise RuntimeError("No pude leer users/me id")
     return str(uid)
+
 
 def iter_active_item_ids(headers: dict, user_id: str):
     """
@@ -140,15 +161,17 @@ def iter_active_item_ids(headers: dict, user_id: str):
         for it in results:
             yield str(it)
 
+
 def extract_seller_sku_from_variation_full(vfull: dict) -> str | None:
     # Lo vimos en producción: attributes incluye id=SELLER_SKU
-    for a in (vfull.get("attributes") or []):
+    for a in vfull.get("attributes") or []:
         if a.get("id") == "SELLER_SKU":
             val = a.get("value_name")
             return str(val).strip() if val else None
     # fallback por si cambia: seller_custom_field
     val = vfull.get("seller_custom_field")
     return str(val).strip() if val else None
+
 
 def build_ml_active_sku_map(headers: dict, user_id: str):
     """
@@ -157,7 +180,7 @@ def build_ml_active_sku_map(headers: dict, user_id: str):
       active_skus: set
       total_items: int
     """
-    sku_map: dict[str, list[tuple[str,str]]] = {}
+    sku_map: dict[str, list[tuple[str, str]]] = {}
     item_ids = list(iter_active_item_ids(headers, user_id))
     total = len(item_ids)
     print(f"items_activos_encontrados: {total}")
@@ -186,10 +209,11 @@ def build_ml_active_sku_map(headers: dict, user_id: str):
 
     return sku_map, total
 
+
 # =====================
 # COMPARE
 # =====================
-def compare(odoo_skus: list[str], ml_sku_map: dict[str, list[tuple[str,str]]]):
+def compare(odoo_skus: list[str], ml_sku_map: dict[str, list[tuple[str, str]]]):
     odoo_set = set(odoo_skus)
     ok = []
     missing = []
@@ -206,6 +230,7 @@ def compare(odoo_skus: list[str], ml_sku_map: dict[str, list[tuple[str,str]]]):
 
     return ok, missing, dup
 
+
 # =====================
 # MAIN
 # =====================
@@ -215,7 +240,11 @@ def main():
 
     # Odoo list
     odoo_file = export_odoo_sell_on_meli()
-    odoo_skus = [ln.strip() for ln in odoo_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    odoo_skus = [
+        ln.strip()
+        for ln in odoo_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
 
     # ML Active map
     token = load_token()
@@ -236,7 +265,9 @@ def main():
     out_report = OUT_DIR / f"report_{ts}.txt"
 
     active_sku_list = sorted(ml_map.keys())
-    out_active_skus.write_text("\n".join(active_sku_list) + ("\n" if active_sku_list else ""), encoding="utf-8")
+    out_active_skus.write_text(
+        "\n".join(active_sku_list) + ("\n" if active_sku_list else ""), encoding="utf-8"
+    )
 
     with out_map.open("w", encoding="utf-8") as f:
         f.write("seller_sku\titem_id\tvariation_id\n")
@@ -244,7 +275,9 @@ def main():
             for item_id, vid in ml_map[sku]:
                 f.write(f"{sku}\t{item_id}\t{vid}\n")
 
-    out_missing.write_text("\n".join(missing) + ("\n" if missing else ""), encoding="utf-8")
+    out_missing.write_text(
+        "\n".join(missing) + ("\n" if missing else ""), encoding="utf-8"
+    )
 
     with out_dup.open("w", encoding="utf-8") as f:
         for sku, hits in dup:
@@ -281,6 +314,7 @@ def main():
     print(f"- {out_map}")
     print(f"- {out_missing}")
     print(f"- {out_report}")
+
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,6 @@
 # GONCLOUD BRIDGE — RUNBOOK OPERATIVO
-**Versión:** 2.0  
-**Fecha:** 2026-02-04  
+**Versión:** 2.0
+**Fecha:** 2026-02-04
 **Sistema:** Integración MercadoLibre + Amazon → Odoo 17
 
 ---
@@ -272,13 +272,13 @@ sudo docker exec bridge-redis redis-cli LLEN amazon_orders_jobs
 ### Ver eventos procesados
 ```sql
 -- MercadoLibre
-SELECT dedupe_key, result, processed_at 
-FROM processed_inbound_events 
+SELECT dedupe_key, result, processed_at
+FROM processed_inbound_events
 ORDER BY processed_at DESC LIMIT 10;
 
 -- Amazon
-SELECT dedupe_key, result, processed_at 
-FROM amazon_processed_inbound_events 
+SELECT dedupe_key, result, processed_at
+FROM amazon_processed_inbound_events
 ORDER BY processed_at DESC LIMIT 10;
 ```
 
@@ -296,11 +296,11 @@ sudo docker exec bridge-redis redis-cli RPUSH amazon_orders_jobs '{"dedupe_key":
 ### Verificar SO en Odoo
 ```sql
 -- Por referencia Amazon
-SELECT name, state, client_order_ref FROM sale_order 
+SELECT name, state, client_order_ref FROM sale_order
 WHERE client_order_ref LIKE 'AMZFBM%' ORDER BY id DESC LIMIT 5;
 
 -- Por referencia MercadoLibre
-SELECT name, state, client_order_ref FROM sale_order 
+SELECT name, state, client_order_ref FROM sale_order
 WHERE client_order_ref LIKE 'MLFULL%' OR client_order_ref LIKE 'MLFBM%'
 ORDER BY id DESC LIMIT 5;
 ```

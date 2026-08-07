@@ -31,7 +31,7 @@
     }
     .wrap{ max-width:1200px; margin:0 auto; }
     h1{ margin:0 0 20px; font-size:24px; }
-    
+
     /* Tabs */
     .tabs{ display:flex; gap:10px; margin-bottom:20px; }
     .tab{
@@ -49,14 +49,14 @@
     .tab.active{ background:var(--card); color:var(--text); border-color:var(--teal); }
     .tab.amazon.active{ border-color:var(--orange); }
     .tab.meli.active{ border-color:var(--yellow); }
-    
+
     .panel{ display:none; }
     .panel.active{ display:block; }
-    
+
     /* Cards */
     .grid{ display:grid; grid-template-columns:1fr 1fr; gap:20px; }
     @media(max-width:900px){ .grid{ grid-template-columns:1fr; } }
-    
+
     .card{
       background:var(--card);
       border:1px solid var(--border);
@@ -77,7 +77,7 @@
     .unmapped-count.zero{ background:var(--ok); }
     .toggle-row{ display:flex; align-items:center; gap:8px; margin-bottom:10px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none; }
     .toggle-row input{ cursor:pointer; margin:0; }
-    
+
     /* Lists */
     .list{ max-height:400px; overflow-y:auto; }
     .item{
@@ -103,7 +103,7 @@
     }
     .item .badge.warn{ background:var(--yellow); }
     .item .badge.bad{ background:var(--bad); }
-    
+
     /* Inputs */
     input[type="text"]{
       width:100%;
@@ -115,7 +115,7 @@
       margin-bottom:12px;
     }
     input:focus{ outline:none; border-color:var(--teal); }
-    
+
     /* Buttons */
     .btn{
       padding:10px 16px;
@@ -128,7 +128,7 @@
     .btn.primary{ background:var(--teal); color:#000; }
     .btn.danger{ background:var(--bad); color:#fff; }
     .btn:disabled{ opacity:0.5; cursor:not-allowed; }
-    
+
     /* Mappings table */
     .mappings{ margin-top:20px; }
     table{ width:100%; border-collapse:collapse; font-size:13px; }
@@ -143,12 +143,12 @@
       font-size:16px;
     }
     .del-btn:hover{ color:#ff6b6b; }
-    
+
     /* Status */
     .status{ padding:10px; border-radius:8px; margin:10px 0; font-size:13px; }
     .status.ok{ background:rgba(34,197,94,0.2); color:var(--ok); }
     .status.err{ background:rgba(239,68,68,0.2); color:var(--bad); }
-    
+
     /* Selected display */
     .selected-box{
       background:var(--bg);
@@ -168,12 +168,12 @@
 <body>
   <div class="wrap">
     <h1>🔗 SKU Mapper</h1>
-    
+
     <div class="tabs">
       <div class="tab amazon active" onclick="switchTab('amazon')">🟠 Amazon</div>
       <div class="tab meli" onclick="switchTab('meli')">🟡 MercadoLibre</div>
     </div>
-    
+
     <!-- AMAZON PANEL -->
     <div id="panel-amazon" class="panel active">
       <div class="grid">
@@ -196,7 +196,7 @@
           <div class="list" id="amz-amazon-list"></div>
         </div>
       </div>
-      
+
       <div class="card" style="margin-top:20px;">
         <h3>➕ Crear Mapeo</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;">
@@ -212,7 +212,7 @@
         </div>
         <div id="amz-status" style="margin-top:10px;"></div>
       </div>
-      
+
       <div class="card mappings">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <h3 style="margin:0;">📋 Mapeos Existentes</h3>
@@ -225,7 +225,7 @@
         </table>
       </div>
     </div>
-    
+
     <!-- MELI PANEL -->
     <div id="panel-meli" class="panel">
       <div class="grid">
@@ -248,7 +248,7 @@
           <div class="list" id="meli-meli-list"></div>
         </div>
       </div>
-      
+
       <div class="card" style="margin-top:20px;">
         <h3>➕ Crear Mapeo</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;">
@@ -264,7 +264,7 @@
         </div>
         <div id="meli-status"></div>
       </div>
-      
+
       <div class="card mappings">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <h3 style="margin:0;">📋 Mapeos Existentes</h3>
@@ -287,7 +287,7 @@
     meli: { odooSkus: [], listings: [], mappings: [], selOdoo: null, selListing: null, odooPage: 1, listingPage: 1 }
   };
   const PAGE_SIZE = 50;
-  
+
   // Tab switching
   function switchTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -297,7 +297,7 @@
     if (tab === 'amazon') loadAmazonData();
     else loadMeliData();
   }
-  
+
   // Load Amazon data
   async function loadAmazonData() {
     const odooResp = await fetch('/api/amazon/odoo-skus');
@@ -321,7 +321,7 @@
       renderList('amz-amazon', state.amazon.amazonSkus, 'amazon', 'amazon');
     }
   }
-  
+
   // Load MeLi data
   async function loadMeliData() {
     const odooResp = await fetch('/api/meli/odoo-skus');
@@ -348,7 +348,7 @@
       renderMeliListings();
     }
   }
-  
+
   function renderMeliListings() {
     const search = document.getElementById('meli-meli-search')?.value?.toLowerCase() || '';
     const onlyUnmapped = document.getElementById('meli-meli-unmapped')?.checked || false;
@@ -367,7 +367,7 @@
     const totalPages = Math.ceil(filtered.length / pageSize) || 1;
     const start = (page - 1) * pageSize;
     const pageItems = filtered.slice(start, start + pageSize);
-    
+
     const container = document.getElementById('meli-meli-list');
     // MAP-1: todos los campos provenientes de la API MeLi (item_id, variation_id,
     // title, var_name, sku, qty) deben pasar por esc() antes de inyectarse
@@ -406,24 +406,24 @@
     const args = JSON.parse(jsonArgs);
     return selectMeliListing(args[0], args[1], args[2]);
   }
-  
+
   function changeMeliPage(delta) {
     state.meli.listingPage = Math.max(1, (state.meli.listingPage || 1) + delta);
     renderMeliListings();
   }
-  
+
   function filterMeliListings() {
     state.meli.listingPage = 1;
     renderMeliListings();
   }
-  
+
   function selectMeliListing(itemId, varId, title) {
     state.meli.selListing = { item_id: itemId, variation_id: varId };
     document.getElementById('meli-sel-listing').textContent = itemId + (varId ? ':' + varId : '') + ' - ' + title.substring(0, 25);
     document.getElementById('meli-sel-listing').classList.remove('empty');
     updateMeliSaveBtn();
   }
-  
+
   function isAmzOdooMapped(sku) {
     return (state.amazon.mappings || []).some(m => m.odoo_sku === sku);
   }
@@ -463,7 +463,7 @@
     const totalPages = Math.ceil(filtered.length / pageSize) || 1;
     const start = (page - 1) * pageSize;
     const pageItems = filtered.slice(start, start + pageSize);
-    
+
     const container = document.getElementById(`${id}-list`);
 
     let html = pageItems.map(i => {
@@ -493,7 +493,7 @@
         </div>
       `;
     }).join('');
-    
+
     if (totalPages > 1) {
       html += `<div style="display:flex;justify-content:center;align-items:center;gap:10px;padding:10px;border-top:1px solid var(--border);margin-top:10px;">
         <button class="btn small" onclick="changePage('${channel}','${type}',-1)" ${page <= 1 ? 'disabled' : ''}>◀ Ant</button>
@@ -503,7 +503,7 @@
     }
     container.innerHTML = html;
   }
-  
+
   function changePage(channel, type, delta) {
     const pageKey = type === 'odoo' ? 'odooPage' : 'amazonPage';
     state[channel][pageKey] = Math.max(1, (state[channel][pageKey] || 1) + delta);
@@ -524,7 +524,7 @@
       if (type === 'odoo') { state.meli.odooPage = 1; renderList('meli-odoo', state.meli.odooSkus, 'meli', 'odoo'); }
     }
   }
-  
+
   function onAmzManualInput(val) {
     const sku = val.trim();
     state.amazon.selAmazon = sku || null;
@@ -555,13 +555,13 @@
       updateMeliSaveBtn();
     }
   }
-  
+
   function updateMeliSaveBtn() {
     const hasOdoo = state.meli.selOdoo;
     const hasListing = state.meli.selListing;
     document.getElementById('meli-save-btn').disabled = !(hasOdoo && hasListing);
   }
-  
+
   async function saveMapping(channel) {
     if (channel === 'amazon') {
       const resp = await fetch('/api/amazon/mappings', {
@@ -584,7 +584,7 @@
       if (data.ok) loadMeliData();
     }
   }
-  
+
   async function deleteMapping(channel, itemIdOrSku, variationId = null, sellerSku = null) {
     // MAP-2/AP-24: confirm muestra ambos lados del mapping para que el operador
     // sepa exactamente qué fila se borra (un odoo_sku puede tener N seller_sku).
@@ -622,10 +622,10 @@
       alert('Error de conexión: ' + error.message);
     }
   }
-  
+
   function renderAmazonMappings() {
     const search = document.getElementById('amz-map-search')?.value?.toLowerCase() || '';
-    const filtered = state.amazon.mappings.filter(m => 
+    const filtered = state.amazon.mappings.filter(m =>
       m.odoo_sku.toLowerCase().includes(search) || m.amazon_sku.toLowerCase().includes(search)
     );
     // MAP-1+MAP-2: esc() en odoo_sku/amazon_sku/created_at; onclick pasa
@@ -668,19 +668,19 @@
     const args = JSON.parse(jsonArgs);
     return deleteMapping(args[0], args[1], args[2], args[3]);
   }
-  
+
   function filterMappings(channel) {
     if (channel === 'amazon') renderAmazonMappings();
     else renderMeliMappings();
   }
-  
+
   function showStatus(id, ok, msg) {
     const el = document.getElementById(id);
     el.className = 'status ' + (ok ? 'ok' : 'err');
     el.textContent = msg;
     setTimeout(() => el.textContent = '', 3000);
   }
-  
+
   async function autoMapAmazon() {
     // MAP-3: el match literal seller_sku === odoo_default_code produce mappings
     // silenciosamente erróneos cuando el operador usa convenciones distintas
@@ -767,19 +767,3 @@
 </script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

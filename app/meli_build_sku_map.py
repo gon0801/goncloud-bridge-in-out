@@ -12,14 +12,13 @@ OUT_DIR = Path("/mnt/data/appdata/bridge/data")
 OUT_JSON = OUT_DIR / "meli_sku_map.json"
 OUT_CSV = OUT_DIR / "meli_sku_map.csv"
 
+
 # === HELPERS ===
 def get(url):
-    req = urllib.request.Request(
-        url,
-        headers={"Authorization": "Bearer " + TOK}
-    )
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + TOK})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
+
 
 def pick_sku(item):
     # 1) seller_custom_field (prioridad máxima)
@@ -37,6 +36,7 @@ def pick_sku(item):
             return str(val).strip()
 
     return None
+
 
 # === MAIN ===
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,46 +58,37 @@ for idx, item_id in enumerate(ITEMS, 1):
             if vsku and str(vsku).strip():
                 any_vsku = True
                 vsku = str(vsku).strip()
-                sku_map[vsku] = {
-                    "item_id": item_id,
-                    "variation_id": v.get("id")
-                }
-                out_rows.append([
-                    vsku,
-                    item_id,
-                    v.get("id") or "",
-                    item.get("status"),
-                    (item.get("title") or "")[:120]
-                ])
+                sku_map[vsku] = {"item_id": item_id, "variation_id": v.get("id")}
+                out_rows.append(
+                    [
+                        vsku,
+                        item_id,
+                        v.get("id") or "",
+                        item.get("status"),
+                        (item.get("title") or "")[:120],
+                    ]
+                )
 
         if not any_vsku:
             if sku:
-                sku_map[sku] = {
-                    "item_id": item_id,
-                    "variation_id": None
-                }
-                out_rows.append([
-                    sku,
-                    item_id,
-                    "",
-                    item.get("status"),
-                    (item.get("title") or "")[:120]
-                ])
+                sku_map[sku] = {"item_id": item_id, "variation_id": None}
+                out_rows.append(
+                    [
+                        sku,
+                        item_id,
+                        "",
+                        item.get("status"),
+                        (item.get("title") or "")[:120],
+                    ]
+                )
             else:
                 missing += 1
     else:
         if sku:
-            sku_map[sku] = {
-                "item_id": item_id,
-                "variation_id": None
-            }
-            out_rows.append([
-                sku,
-                item_id,
-                "",
-                item.get("status"),
-                (item.get("title") or "")[:120]
-            ])
+            sku_map[sku] = {"item_id": item_id, "variation_id": None}
+            out_rows.append(
+                [sku, item_id, "", item.get("status"), (item.get("title") or "")[:120]]
+            )
         else:
             missing += 1
 

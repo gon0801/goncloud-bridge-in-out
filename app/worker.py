@@ -43,7 +43,9 @@ def sql_init_conn(conn: sqlite3.Connection) -> None:
 
 
 def setting_get(conn, key: str, default: str = "") -> str:
-    row = conn.execute("SELECT value FROM bridge_settings WHERE key=?", (key,)).fetchone()
+    row = conn.execute(
+        "SELECT value FROM bridge_settings WHERE key=?", (key,)
+    ).fetchone()
     if not row or row[0] is None:
         return default
     return str(row[0])
@@ -112,7 +114,13 @@ def record_rejected_sku(event_id: str, channel: str, sku: str, reason: str) -> N
                 INSERT INTO rejected_skus(created_at, event_id, channel, sku, reason)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (utc_now_iso(), str(event_id), str(channel), str(sku), str(reason)[:200]),
+                (
+                    utc_now_iso(),
+                    str(event_id),
+                    str(channel),
+                    str(sku),
+                    str(reason)[:200],
+                ),
             )
             conn.commit()
         except sqlite3.OperationalError:
@@ -245,10 +253,13 @@ def _is_complete_snapshot_event(conn, event_id: str) -> bool:
     if rid is None:
         return False
     try:
-        row = conn.execute("SELECT payload FROM events WHERE id=? LIMIT 1", (rid,)).fetchone()
+        row = conn.execute(
+            "SELECT payload FROM events WHERE id=? LIMIT 1", (rid,)
+        ).fetchone()
         if not row or not row[0]:
             return False
         import json as _json
+
         return bool(_json.loads(row[0]).get("complete") is True)
     except Exception:
         return False
@@ -308,25 +319,43 @@ def meli_set_qty_from_mapping(sku: str, qty: int) -> str:
     for item_id, var_id in rows:
         try:
             if var_id:
-                url = f"https://api.mercadolibre.com/items/{item_id}/variations/{var_id}"
-                code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
+                url = (
+                    f"https://api.mercadolibre.com/items/{item_id}/variations/{var_id}"
+                )
+                code_put, resp_put = meli_api_json(
+                    url, tok, method="PUT", body={"available_quantity": qty_int}
+                )
                 qty_put_echo = None
                 if isinstance(resp_put, list) and resp_put:
                     qty_put_echo = resp_put[0].get("available_quantity")
                 elif isinstance(resp_put, dict):
                     qty_put_echo = resp_put.get("available_quantity")
                 code_get, resp_get = meli_api_json(url, tok, method="GET")
-                qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
+                qty_real = (
+                    resp_get.get("available_quantity")
+                    if isinstance(resp_get, dict)
+                    else None
+                )
                 results.append(
                     f"var[{item_id}:{var_id}] put={code_put} get={code_get} "
                     f"echo={qty_put_echo} real={qty_real}"
                 )
             else:
                 url = f"https://api.mercadolibre.com/items/{item_id}"
-                code_put, resp_put = meli_api_json(url, tok, method="PUT", body={"available_quantity": qty_int})
-                qty_put_echo = resp_put.get("available_quantity") if isinstance(resp_put, dict) else None
+                code_put, resp_put = meli_api_json(
+                    url, tok, method="PUT", body={"available_quantity": qty_int}
+                )
+                qty_put_echo = (
+                    resp_put.get("available_quantity")
+                    if isinstance(resp_put, dict)
+                    else None
+                )
                 code_get, resp_get = meli_api_json(url, tok, method="GET")
-                qty_real = resp_get.get("available_quantity") if isinstance(resp_get, dict) else None
+                qty_real = (
+                    resp_get.get("available_quantity")
+                    if isinstance(resp_get, dict)
+                    else None
+                )
                 results.append(
                     f"item[{item_id}] put={code_put} get={code_get} "
                     f"echo={qty_put_echo} real={qty_real}"
@@ -334,7 +363,9 @@ def meli_set_qty_from_mapping(sku: str, qty: int) -> str:
             ok_count += 1
         except Exception as e:
             err_count += 1
-            results.append(f"FAIL[{item_id}:{var_id or '-'}] {type(e).__name__}: {str(e)[:120]}")
+            results.append(
+                f"FAIL[{item_id}:{var_id or '-'}] {type(e).__name__}: {str(e)[:120]}"
+            )
 
     summary = f"meli_multi_put sku={sku} listings={len(rows)} ok={ok_count} err={err_count} qty={qty_int}"
     return summary + " | " + " | ".join(results)
@@ -344,13 +375,18 @@ def meli_set_qty_from_mapping(sku: str, qty: int) -> str:
 # AMAZON SP-API STOCK SYNC
 # =========================
 
+
 def amazon_get_credentials():
     """Lee credenciales Amazon de bridge_settings."""
     with closing(db_conn()) as conn:
         sql_init_conn(conn)
+
         def get(k):
-            row = conn.execute("SELECT value FROM bridge_settings WHERE key=?", (k,)).fetchone()
+            row = conn.execute(
+                "SELECT value FROM bridge_settings WHERE key=?", (k,)
+            ).fetchone()
             return row[0] if row else ""
+
         return {
             "refresh_token": get("amazon_sp_api_refresh_token"),
             "client_id": get("amazon_sp_api_client_id"),
@@ -359,6 +395,7 @@ def amazon_get_credentials():
             "seller_id": get("amazon_seller_id"),
         }
 
+
 def amazon_set_qty(sku: str, qty: int) -> str:
     """Actualiza inventario en Amazon via SP-API directa."""
     creds = amazon_get_credentials()
@@ -366,17 +403,45 @@ def amazon_set_qty(sku: str, qty: int) -> str:
         return "amazon_skip_no_credentials"
     with closing(db_conn()) as conn:
         sql_init_conn(conn)
-        row = conn.execute("SELECT seller_sku FROM amazon_sku_mapping WHERE odoo_default_code=?", (sku,)).fetchone()
+        row = conn.execute(
+            "SELECT seller_sku FROM amazon_sku_mapping WHERE odoo_default_code=?",
+            (sku,),
+        ).fetchone()
         if not row:
             return f"amazon_skip_no_mapping odoo_sku={sku}"
         amazon_sku = row[0]
     try:
-        token_data = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": creds["refresh_token"], "client_id": creds["client_id"], "client_secret": creds["client_secret"]}).encode()
-        req = urllib.request.Request("https://api.amazon.com/auth/o2/token", data=token_data)
+        token_data = urllib.parse.urlencode(
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": creds["refresh_token"],
+                "client_id": creds["client_id"],
+                "client_secret": creds["client_secret"],
+            }
+        ).encode()
+        req = urllib.request.Request(
+            "https://api.amazon.com/auth/o2/token", data=token_data
+        )
         with urllib.request.urlopen(req, timeout=30) as resp:
             access_token = json.loads(resp.read().decode())["access_token"]
         url = f"https://sellingpartnerapi-na.amazon.com/listings/2021-08-01/items/{creds['seller_id']}/{urllib.parse.quote(amazon_sku, safe='')}?marketplaceIds={creds['marketplace']}"
-        body = json.dumps({"productType": "PRODUCT", "patches": [{"op": "replace", "path": "/attributes/fulfillment_availability", "value": [{"fulfillment_channel_code": "DEFAULT", "quantity": int(qty)}]}]}).encode()
+        body = json.dumps(
+            {
+                "productType": "PRODUCT",
+                "patches": [
+                    {
+                        "op": "replace",
+                        "path": "/attributes/fulfillment_availability",
+                        "value": [
+                            {
+                                "fulfillment_channel_code": "DEFAULT",
+                                "quantity": int(qty),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ).encode()
         req = urllib.request.Request(url, data=body, method="PATCH")
         req.add_header("x-amz-access-token", access_token)
         req.add_header("Content-Type", "application/json")
@@ -387,6 +452,7 @@ def amazon_set_qty(sku: str, qty: int) -> str:
         return f"amazon_put_error sku={sku} http={e.code}"
     except Exception as e:
         return f"amazon_put_error sku={sku} error={e}"
+
 
 def main():
     print(f"[{utc_now_iso()}] worker started. queue={QUEUE}")
@@ -417,7 +483,9 @@ def main():
         # =========================
         # HARDEN event_id
         # =========================
-        event_id, bad_event_reason = normalize_or_block_event_id(raw_event_id, str(sku or ""))
+        event_id, bad_event_reason = normalize_or_block_event_id(
+            raw_event_id, str(sku or "")
+        )
         if bad_event_reason:
             # si no hay event_id válido, no intentamos idempotencia (no ensuciamos)
             print(
@@ -432,7 +500,9 @@ def main():
 
         # Idempotencia (ya con event_id normalizado)
         if not claim_event_idempotent(str(event_id), channel):
-            print(f"[{utc_now_iso()}] skip duplicate: channel={channel} sku={sku} qty={qty} event_id={event_id}")
+            print(
+                f"[{utc_now_iso()}] skip duplicate: channel={channel} sku={sku} qty={qty} event_id={event_id}"
+            )
             continue
 
         try:
@@ -441,7 +511,9 @@ def main():
 
                 dummy = setting_is_true(conn, "dummy_mode", "0")
                 enabled = is_channel_enabled(conn, channel)
-                meli_adapter_enabled = setting_is_true(conn, "meli_adapter_enabled", "0")
+                meli_adapter_enabled = setting_is_true(
+                    conn, "meli_adapter_enabled", "0"
+                )
 
                 # 1) dummy_mode
                 if dummy:
@@ -489,7 +561,10 @@ def main():
                 # Guardrail: NO aplicar snapshots complete=true.
                 # complete=true pisó stock a 0 (ej NH-CAR-AZU-CEN-DOR → 0).
                 # amazon_fbm complete=true también es ruido hasta tener mapeos.
-                if channel.lower() in ("meli", "amazon_fbm") and _is_complete_snapshot_event(conn, str(event_id)):
+                if channel.lower() in (
+                    "meli",
+                    "amazon_fbm",
+                ) and _is_complete_snapshot_event(conn, str(event_id)):
                     reason = "skip_complete_snapshot"
                     mark_event_done(str(event_id), "ok", reason)
                     bump_metric("events_blocked_total", 1)
@@ -525,9 +600,10 @@ def main():
                     )
                 continue
 
-
             # 4.5) apply AMAZON si está habilitado
-            if channel.lower() == "amazon_fbm" and setting_is_true(db_conn(), "amazon_fbm_enabled", "0"):
+            if channel.lower() == "amazon_fbm" and setting_is_true(
+                db_conn(), "amazon_fbm_enabled", "0"
+            ):
                 detail = amazon_set_qty(str(sku), int(qty))
                 mark_event_done(str(event_id), "ok", detail)
                 bump_metric("events_processed_ok_total", 1)

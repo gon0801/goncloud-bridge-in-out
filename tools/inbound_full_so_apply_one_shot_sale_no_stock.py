@@ -56,8 +56,9 @@ def require_odoo_envs():
     missing = [k for k in REQUIRED_ODOO_ENVS if not os.getenv(k)]
     if missing:
         die(
-            "missing env(s): " + ",".join(missing) +
-            " (export ODOO_URL/ODOO_DB/ODOO_USER/ODOO_PASSWORD antes de correr one-shot)"
+            "missing env(s): "
+            + ",".join(missing)
+            + " (export ODOO_URL/ODOO_DB/ODOO_USER/ODOO_PASSWORD antes de correr one-shot)"
         )
 
 
@@ -65,7 +66,9 @@ def main():
     ap = argparse.ArgumentParser(
         description="FULL one-shot: create FULL SO (draft) + force state=sale without picking/stock."
     )
-    ap.add_argument("--ml-order-id", required=True, help="ML order id (numeric) or SIM id")
+    ap.add_argument(
+        "--ml-order-id", required=True, help="ML order id (numeric) or SIM id"
+    )
     ap.add_argument("--order-json-file", help="SIM only: path to order JSON")
     args = ap.parse_args()
 
@@ -102,7 +105,9 @@ def main():
 
     so_id = extract_so_id(out)
     if so_id:
-        print(f"[FULL_ONE_SHOT] INFO fallback_confirm_by_so_id so_id={so_id}", flush=True)
+        print(
+            f"[FULL_ONE_SHOT] INFO fallback_confirm_by_so_id so_id={so_id}", flush=True
+        )
         confirm_cmd = ["python3", CONFIRM_TOOL, "--so-id", so_id]
         rc2, out2 = run(confirm_cmd)
         print(out2, end="")

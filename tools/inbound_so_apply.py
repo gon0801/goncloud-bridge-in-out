@@ -14,7 +14,9 @@ import requests
 # CONFIG
 # =========================
 BRIDGE_DB = os.getenv("BRIDGE_DB", "/mnt/data/appdata/bridge/data/bridge.db")
-MELI_TOKEN_FILE = os.getenv("MELI_TOKEN_FILE", "/mnt/data/appdata/bridge/data/.meli_tokens.json")
+MELI_TOKEN_FILE = os.getenv(
+    "MELI_TOKEN_FILE", "/mnt/data/appdata/bridge/data/.meli_tokens.json"
+)
 
 TIMEOUT = 30
 SLEEP = 0.10
@@ -32,38 +34,54 @@ SLEEP = 0.10
 #   meli_inbound_confirm_so_enabled = 1 (opcional, default 0)
 #   meli_inbound_validate_picking_enabled = 1 (opcional, default 0)  <-- RIESGOSO, default 0
 
+
 # =========================
 # UTILS
 # =========================
 def utc_now_z() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
 
 def die(msg: str, code: int = 1):
     print(msg, file=sys.stderr)
     sys.exit(code)
 
+
 def get_env(name: str) -> str:
     v = os.getenv(name)
     if not v:
-        die(f"FALTA ENV {name}. Define {name} en tu entorno antes de correr este script.")
+        die(
+            f"FALTA ENV {name}. Define {name} en tu entorno antes de correr este script."
+        )
     return v
+
 
 def short(s: Any, n: int = 1200) -> str:
     s = str(s)
     return s if len(s) <= n else s[:n] + "…"
+
 
 def db_conn() -> sqlite3.Connection:
     con = sqlite3.connect(BRIDGE_DB, timeout=10)
     con.execute("PRAGMA busy_timeout=5000;")
     return con
 
+
 def get_flag(key: str, default: str = "0") -> str:
     try:
         with db_conn() as con:
-            row = con.execute("SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,)).fetchone()
+            row = con.execute(
+                "SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,)
+            ).fetchone()
         return str(row[0]) if row and row[0] is not None else default
     except Exception:
         return default
+
 
 def ensure_inbound_sales_orders_table():
     with db_conn() as con:
@@ -102,10 +120,18 @@ def ensure_inbound_sales_orders_table():
         """)
         con.commit()
 
-def upsert_inbound_so_row(dedupe_key: str, ml_order_id: str, site: str, status: str,
-                          odoo_so_id: Optional[int] = None, odoo_name: Optional[str] = None):
+
+def upsert_inbound_so_row(
+    dedupe_key: str,
+    ml_order_id: str,
+    site: str,
+    status: str,
+    odoo_so_id: Optional[int] = None,
+    odoo_name: Optional[str] = None,
+):
     with db_conn() as con:
-        con.execute("""
+        con.execute(
+            """
         INSERT INTO inbound_sales_orders(dedupe_key, ml_order_id, site, status, odoo_so_id, odoo_name, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         ON CONFLICT(dedupe_key) DO UPDATE SET
@@ -115,12 +141,16 @@ def upsert_inbound_so_row(dedupe_key: str, ml_order_id: str, site: str, status: 
           odoo_so_id=COALESCE(excluded.odoo_so_id, inbound_sales_orders.odoo_so_id),
           odoo_name=COALESCE(excluded.odoo_name, inbound_sales_orders.odoo_name),
           updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        """, (dedupe_key, ml_order_id, site, status, odoo_so_id, odoo_name))
+        """,
+            (dedupe_key, ml_order_id, site, status, odoo_so_id, odoo_name),
+        )
         con.commit()
+
 
 def get_inbound_so_row(dedupe_key: str):
     with db_conn() as con:
-        row = con.execute("""
+        row = con.execute(
+            """
         SELECT dedupe_key, ml_order_id, site, status,
                COALESCE(odoo_so_id,0) AS odoo_so_id,
                COALESCE(odoo_name,'') AS odoo_name,
@@ -128,8 +158,11 @@ def get_inbound_so_row(dedupe_key: str):
         FROM inbound_sales_orders
         WHERE dedupe_key=?
         LIMIT 1
-        """, (dedupe_key,)).fetchone()
+        """,
+            (dedupe_key,),
+        ).fetchone()
     return row
+
 
 # =========================
 # MERCADOLIBRE
@@ -144,16 +177,20 @@ def load_meli_access_token() -> str:
         raise RuntimeError("no_access_token_in_token_file")
     return str(tok)
 
+
 def ml_get_order(order_id: str) -> Dict[str, Any]:
     tok = load_meli_access_token()
     url = f"https://api.mercadolibre.com/orders/{order_id}"
     r = requests.get(url, headers={"Authorization": f"Bearer {tok}"}, timeout=TIMEOUT)
     if r.status_code != 200:
-        raise RuntimeError(f"ml_get_order_failed status={r.status_code} body={r.text[:300]}")
+        raise RuntimeError(
+            f"ml_get_order_failed status={r.status_code} body={r.text[:300]}"
+        )
     data = r.json()
     if not isinstance(data, dict):
         raise RuntimeError("ml_get_order_bad_json")
     return data
+
 
 def infer_site_from_order(order: Dict[str, Any]) -> str:
     # 1) site_id explícito
@@ -173,6 +210,7 @@ def infer_site_from_order(order: Dict[str, Any]) -> str:
         pass
     return "UNKNOWN"
 
+
 def extract_sku(item: Dict[str, Any]) -> Optional[str]:
     # CANÓNICO: seller_sku directo (lo vimos en tu orden real)
     v = item.get("seller_sku")
@@ -187,6 +225,7 @@ def extract_sku(item: Dict[str, Any]) -> Optional[str]:
                 if vv:
                     return str(vv).strip()
     return None
+
 
 def order_to_lines(order: Dict[str, Any]) -> List[Tuple[str, int]]:
     items = order.get("order_items") or order.get("order_items_v2") or []
@@ -211,10 +250,13 @@ def order_to_lines(order: Dict[str, Any]) -> List[Tuple[str, int]]:
     # return stable order
     return sorted(acc.items(), key=lambda x: x[0])
 
+
 # =========================
 # ODOO JSON-RPC
 # =========================
-def odoo_auth(session: requests.Session, base_url: str, db: str, user: str, password: str) -> int:
+def odoo_auth(
+    session: requests.Session, base_url: str, db: str, user: str, password: str
+) -> int:
     url = base_url.rstrip("/") + "/web/session/authenticate"
     payload = {
         "jsonrpc": "2.0",
@@ -226,13 +268,25 @@ def odoo_auth(session: requests.Session, base_url: str, db: str, user: str, pass
     r.raise_for_status()
     data = r.json()
     if "error" in data:
-        raise RuntimeError(f"auth_error: {short(json.dumps(data['error'], ensure_ascii=False), 1200)}")
+        raise RuntimeError(
+            f"auth_error: {short(json.dumps(data['error'], ensure_ascii=False), 1200)}"
+        )
     uid = (data.get("result") or {}).get("uid")
     if not uid:
-        raise RuntimeError(f"auth_failed_no_uid body={short(json.dumps(data, ensure_ascii=False), 1200)}")
+        raise RuntimeError(
+            f"auth_failed_no_uid body={short(json.dumps(data, ensure_ascii=False), 1200)}"
+        )
     return int(uid)
 
-def call_kw(session: requests.Session, base_url: str, model: str, method: str, args=None, kwargs=None):
+
+def call_kw(
+    session: requests.Session,
+    base_url: str,
+    model: str,
+    method: str,
+    args=None,
+    kwargs=None,
+):
     args = args or []
     kwargs = kwargs or {}
     url = base_url.rstrip("/") + f"/web/dataset/call_kw/{model}/{method}"
@@ -255,33 +309,59 @@ def call_kw(session: requests.Session, base_url: str, model: str, method: str, a
     # algunos métodos void regresan solo {"jsonrpc":"2.0","id":1}
     if "result" not in data:
         # warning pero no falla
-        print(f"[WARN] odoo_no_result_key model={model} method={method} body={short(json.dumps(data, ensure_ascii=False), 600)}", flush=True)
+        print(
+            f"[WARN] odoo_no_result_key model={model} method={method} body={short(json.dumps(data, ensure_ascii=False), 600)}",
+            flush=True,
+        )
         return None
 
     return data["result"]
 
+
 def odoo_product_by_sku(session, ODOO_URL: str, sku: str) -> Dict[str, Any]:
-    prod_ids = call_kw(
-        session, ODOO_URL,
-        "product.product", "search",
-        args=[[["default_code", "=", sku]]],
-        kwargs={"limit": 1},
-    ) or []
+    prod_ids = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "product.product",
+            "search",
+            args=[[["default_code", "=", sku]]],
+            kwargs={"limit": 1},
+        )
+        or []
+    )
     if not prod_ids:
         return {"exists": False}
 
     pid = int(prod_ids[0])
-    rows = call_kw(
-        session, ODOO_URL,
-        "product.product", "read",
-        args=[[pid], ["id", "default_code", "product_tmpl_id", "sell_on_meli", "lst_price", "display_name"]],
-        kwargs={},
-    ) or []
+    rows = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "product.product",
+            "read",
+            args=[
+                [pid],
+                [
+                    "id",
+                    "default_code",
+                    "product_tmpl_id",
+                    "sell_on_meli",
+                    "lst_price",
+                    "display_name",
+                ],
+            ],
+            kwargs={},
+        )
+        or []
+    )
     if not rows:
         return {"exists": False}
     r = rows[0]
     tmpl = r.get("product_tmpl_id")
-    tmpl_id = int(tmpl[0]) if isinstance(tmpl, list) and tmpl else (int(tmpl) if tmpl else 0)
+    tmpl_id = (
+        int(tmpl[0]) if isinstance(tmpl, list) and tmpl else (int(tmpl) if tmpl else 0)
+    )
     sell_on_meli = bool(r.get("sell_on_meli") or False)
     lst_price = float(r.get("lst_price") or 0.0)
     return {
@@ -293,55 +373,85 @@ def odoo_product_by_sku(session, ODOO_URL: str, sku: str) -> Dict[str, Any]:
         "display_name": r.get("display_name") or "",
     }
 
+
 def odoo_phantom_bom_count(session, ODOO_URL: str, tmpl_id: int) -> int:
     if not tmpl_id:
         return 0
-    bom_ids = call_kw(
-        session, ODOO_URL,
-        "mrp.bom", "search",
-        args=[[["product_tmpl_id", "=", tmpl_id], ["type", "=", "phantom"], ["active", "=", True]]],
-        kwargs={},
-    ) or []
+    bom_ids = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "mrp.bom",
+            "search",
+            args=[
+                [
+                    ["product_tmpl_id", "=", tmpl_id],
+                    ["type", "=", "phantom"],
+                    ["active", "=", True],
+                ]
+            ],
+            kwargs={},
+        )
+        or []
+    )
     return int(len(bom_ids))
+
 
 def ensure_partner_meli(session, ODOO_URL: str) -> int:
     # buscamos partner "MercadoLibre"
-    ids = call_kw(
-        session, ODOO_URL,
-        "res.partner", "search",
-        args=[[["name", "=", "MercadoLibre"]]],
-        kwargs={"limit": 1},
-    ) or []
+    ids = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "res.partner",
+            "search",
+            args=[[["name", "=", "MercadoLibre"]]],
+            kwargs={"limit": 1},
+        )
+        or []
+    )
     if ids:
         return int(ids[0])
     # lo creamos (contacto genérico)
     pid = call_kw(
-        session, ODOO_URL,
-        "res.partner", "create",
-        args=[{
-            "name": "MercadoLibre",
-            "company_type": "company",
-        }],
+        session,
+        ODOO_URL,
+        "res.partner",
+        "create",
+        args=[
+            {
+                "name": "MercadoLibre",
+                "company_type": "company",
+            }
+        ],
         kwargs={},
     )
     if not pid:
         raise RuntimeError("no_pude_crear_partner_MercadoLibre")
     return int(pid)
 
-def create_sale_order(session, ODOO_URL: str, partner_id: int, client_ref: str, note: str) -> int:
+
+def create_sale_order(
+    session, ODOO_URL: str, partner_id: int, client_ref: str, note: str
+) -> int:
     so_id = call_kw(
-        session, ODOO_URL,
-        "sale.order", "create",
-        args=[{
-            "partner_id": partner_id,
-            "client_order_ref": client_ref,
-            "note": note,
-        }],
+        session,
+        ODOO_URL,
+        "sale.order",
+        "create",
+        args=[
+            {
+                "partner_id": partner_id,
+                "client_order_ref": client_ref,
+                "note": note,
+            }
+        ],
         kwargs={},
     )
     if not so_id:
         raise RuntimeError("odoo_create_sale_order_failed")
     return int(so_id)
+
 
 def add_so_lines(session, ODOO_URL: str, so_id: int, lines: List[Dict[str, Any]]):
     # crea líneas como sale.order.line separadas (simple y confiable)
@@ -353,47 +463,84 @@ def add_so_lines(session, ODOO_URL: str, so_id: int, lines: List[Dict[str, Any]]
             "price_unit": ln["price_unit"],
             "name": ln.get("name") or "",
         }
-        _ = call_kw(session, ODOO_URL, "sale.order.line", "create", args=[vals], kwargs={})
+        _ = call_kw(
+            session, ODOO_URL, "sale.order.line", "create", args=[vals], kwargs={}
+        )
         time.sleep(SLEEP)
 
+
 def read_so_name(session, ODOO_URL: str, so_id: int) -> str:
-    rows = call_kw(
-        session, ODOO_URL,
-        "sale.order", "read",
-        args=[[so_id], ["name"]],
-        kwargs={},
-    ) or []
+    rows = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "sale.order",
+            "read",
+            args=[[so_id], ["name"]],
+            kwargs={},
+        )
+        or []
+    )
     if not rows:
         return ""
     return str(rows[0].get("name") or "")
 
+
 def so_action_confirm(session, ODOO_URL: str, so_id: int):
-    _ = call_kw(session, ODOO_URL, "sale.order", "action_confirm", args=[[so_id]], kwargs={})
+    _ = call_kw(
+        session, ODOO_URL, "sale.order", "action_confirm", args=[[so_id]], kwargs={}
+    )
+
 
 def validate_picking_for_so(session, ODOO_URL: str, so_name: str):
     # MUY RIESGOSO (lotes/series/backorders). Por eso default OFF.
     # Busca pickings cuyo origin = so_name y los intenta validar.
-    pick_ids = call_kw(
-        session, ODOO_URL,
-        "stock.picking", "search",
-        args=[[["origin", "=", so_name]]],
-        kwargs={},
-    ) or []
+    pick_ids = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "stock.picking",
+            "search",
+            args=[[["origin", "=", so_name]]],
+            kwargs={},
+        )
+        or []
+    )
     for pid in pick_ids:
         pid = int(pid)
         # intenta assign primero
-        _ = call_kw(session, ODOO_URL, "stock.picking", "action_assign", args=[[pid]], kwargs={})
+        _ = call_kw(
+            session, ODOO_URL, "stock.picking", "action_assign", args=[[pid]], kwargs={}
+        )
         # luego validate
-        _ = call_kw(session, ODOO_URL, "stock.picking", "button_validate", args=[[pid]], kwargs={})
+        _ = call_kw(
+            session,
+            ODOO_URL,
+            "stock.picking",
+            "button_validate",
+            args=[[pid]],
+            kwargs={},
+        )
         time.sleep(SLEEP)
+
 
 # =========================
 # MAIN
 # =========================
 def main():
-    ap = argparse.ArgumentParser(description="INBOUND: Create SO in Odoo from ML order (safe, flag-gated).")
-    ap.add_argument("--ml-order-id", required=True, help="MercadoLibre order id, e.g. 2000014950669108")
-    ap.add_argument("--force", action="store_true", help="Ignore existing planned row and re-run (still idempotent by dedupe_key if exists).")
+    ap = argparse.ArgumentParser(
+        description="INBOUND: Create SO in Odoo from ML order (safe, flag-gated)."
+    )
+    ap.add_argument(
+        "--ml-order-id",
+        required=True,
+        help="MercadoLibre order id, e.g. 2000014950669108",
+    )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore existing planned row and re-run (still idempotent by dedupe_key if exists).",
+    )
     args = ap.parse_args()
 
     ensure_inbound_sales_orders_table()
@@ -418,10 +565,18 @@ def main():
     if row:
         _, _, _, status, odoo_so_id, odoo_name, *_ = row
         if int(odoo_so_id) > 0:
-            print(f"YA_EXISTE: dedupe_key={dedupe_key} status={status} odoo_so_id={odoo_so_id} odoo_name={odoo_name}")
+            print(
+                f"YA_EXISTE: dedupe_key={dedupe_key} status={status} odoo_so_id={odoo_so_id} odoo_name={odoo_name}"
+            )
             return
-        if (status or "").lower() in {"created", "confirmed", "done"} and not args.force:
-            print(f"YA_PROCESADO: dedupe_key={dedupe_key} status={status}. Usa --force si quieres reintentar.")
+        if (status or "").lower() in {
+            "created",
+            "confirmed",
+            "done",
+        } and not args.force:
+            print(
+                f"YA_PROCESADO: dedupe_key={dedupe_key} status={status}. Usa --force si quieres reintentar."
+            )
             return
 
     # Creamos/actualizamos estado planned (evidencia)
@@ -430,7 +585,9 @@ def main():
     # 3) Construye líneas por SELLER_SKU
     sku_lines = order_to_lines(order)
     if not sku_lines:
-        upsert_inbound_so_row(dedupe_key, ml_order_id, site, "manual_review", None, None)
+        upsert_inbound_so_row(
+            dedupe_key, ml_order_id, site, "manual_review", None, None
+        )
         die("manual_review: no_items_or_no_skus_found")
 
     # 4) Odoo auth
@@ -452,26 +609,34 @@ def main():
             blocked.append({"sku": sku, "qty": qty, "reason": "sku_not_in_odoo"})
             continue
         if not info.get("sell_on_meli", False):
-            blocked.append({"sku": sku, "qty": qty, "reason": "sku_not_allowed_for_meli"})
+            blocked.append(
+                {"sku": sku, "qty": qty, "reason": "sku_not_allowed_for_meli"}
+            )
             continue
 
         tmpl_id = int(info.get("tmpl_id") or 0)
         phantom_count = odoo_phantom_bom_count(session, ODOO_URL, tmpl_id)
         is_kit = phantom_count > 0
 
-        lines_ok.append({
-            "sku": sku,
-            "qty": int(qty),
-            "product_id": int(info["product_id"]),
-            "name": str(info.get("display_name") or sku),
-            "price_unit": float(info.get("lst_price") or 0.0),
-            "is_kit_phantom": bool(is_kit),
-            "phantom_bom_count": int(phantom_count),
-        })
+        lines_ok.append(
+            {
+                "sku": sku,
+                "qty": int(qty),
+                "product_id": int(info["product_id"]),
+                "name": str(info.get("display_name") or sku),
+                "price_unit": float(info.get("lst_price") or 0.0),
+                "is_kit_phantom": bool(is_kit),
+                "phantom_bom_count": int(phantom_count),
+            }
+        )
 
     if not lines_ok:
-        upsert_inbound_so_row(dedupe_key, ml_order_id, site, "manual_review", None, None)
-        die(f"manual_review: all_items_blocked blocked={json.dumps(blocked, ensure_ascii=False)}")
+        upsert_inbound_so_row(
+            dedupe_key, ml_order_id, site, "manual_review", None, None
+        )
+        die(
+            f"manual_review: all_items_blocked blocked={json.dumps(blocked, ensure_ascii=False)}"
+        )
 
     # 6) Decide: para consistencia, aquí SIEMPRE creamos SO (kits y simples)
     # (sellado en tu decisión reciente: NO descontar stock por delta; dejar que SO lo haga normal)
@@ -505,7 +670,9 @@ def main():
     # 7) Confirm / Validate picking (opcionales)
     if get_flag("meli_inbound_confirm_so_enabled") == "1":
         so_action_confirm(session, ODOO_URL, so_id)
-        upsert_inbound_so_row(dedupe_key, ml_order_id, site, "confirmed", so_id, so_name)
+        upsert_inbound_so_row(
+            dedupe_key, ml_order_id, site, "confirmed", so_id, so_name
+        )
         print("OK: SO confirmed (flag meli_inbound_confirm_so_enabled=1)")
 
         if get_flag("meli_inbound_validate_picking_enabled") == "1":
@@ -513,7 +680,10 @@ def main():
                 so_name = read_so_name(session, ODOO_URL, so_id)
             validate_picking_for_so(session, ODOO_URL, so_name)
             upsert_inbound_so_row(dedupe_key, ml_order_id, site, "done", so_id, so_name)
-            print("OK: picking validated (flag meli_inbound_validate_picking_enabled=1)")
+            print(
+                "OK: picking validated (flag meli_inbound_validate_picking_enabled=1)"
+            )
+
 
 if __name__ == "__main__":
     main()

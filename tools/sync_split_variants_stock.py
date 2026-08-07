@@ -14,6 +14,7 @@ Para cada MLM ID:
 Soporta tambien modo --auto: descubre listings huerfanos del SKU via MeLi API
 (a traves de /items/{existing_mapped_id} y sus variantes relacionadas — fallback manual).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -75,7 +76,11 @@ def get_odoo_qty(conn: sqlite3.Connection, sku: str) -> float | None:
         "object",
         "execute_kw",
         [
-            db_, uid, pw, "product.product", "search_read",
+            db_,
+            uid,
+            pw,
+            "product.product",
+            "search_read",
             [[["default_code", "=", sku]]],
             {"fields": ["id", "default_code", "qty_available", "name"], "limit": 3},
         ],
@@ -122,7 +127,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default="/data/bridge.db")
     parser.add_argument("--token-file", default="/data/.meli_tokens.json")
-    parser.add_argument("--sku", required=True, help="SKU en Odoo (ej: NH-CAR-AZU-CEN-DOR)")
+    parser.add_argument(
+        "--sku", required=True, help="SKU en Odoo (ej: NH-CAR-AZU-CEN-DOR)"
+    )
     parser.add_argument(
         "--listings",
         required=True,
@@ -172,12 +179,16 @@ def main() -> int:
                 for v in variations:
                     vid = str(v.get("id") or "")
                     current = v.get("available_quantity")
-                    log(f"  {mid}/{vid} status={current_status} current={current} -> {qty}")
+                    log(
+                        f"  {mid}/{vid} status={current_status} current={current} -> {qty}"
+                    )
                     if args.dry_run:
                         continue
                     try:
                         code, resp = ml_put_qty(mid, vid, qty, token)
-                        log(f"    PUT {code} echo={resp.get('available_quantity') if isinstance(resp, dict) else 'n/a'}")
+                        log(
+                            f"    PUT {code} echo={resp.get('available_quantity') if isinstance(resp, dict) else 'n/a'}"
+                        )
                         # upsert mapping
                         conn.execute(
                             """
@@ -197,7 +208,9 @@ def main() -> int:
                     continue
                 try:
                     code, resp = ml_put_qty(mid, "", qty, token)
-                    log(f"    PUT {code} echo={resp.get('available_quantity') if isinstance(resp, dict) else 'n/a'}")
+                    log(
+                        f"    PUT {code} echo={resp.get('available_quantity') if isinstance(resp, dict) else 'n/a'}"
+                    )
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO sku_mapping

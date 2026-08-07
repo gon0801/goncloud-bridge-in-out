@@ -11,8 +11,10 @@ from datetime import datetime, timezone
 
 DB_PATH = os.getenv("BRIDGE_DB") or os.getenv("BRIDGE_DB_PATH") or "/data/bridge.db"
 
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
 
 def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=30)
@@ -21,12 +23,14 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
+
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
         (table,),
     ).fetchone()
     return row is not None
+
 
 def get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     cols = set()
@@ -35,14 +39,17 @@ def get_columns(conn: sqlite3.Connection, table: str) -> set[str]:
         cols.add(str(r[1]))
     return cols
 
+
 def ensure_table(conn: sqlite3.Connection, ddl: str):
     conn.execute(ddl)
+
 
 def ensure_column(conn: sqlite3.Connection, table: str, col: str, col_def: str):
     cols = get_columns(conn, table)
     if col in cols:
         return
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def};")
+
 
 def main():
     print(f"[migrate_rev4_schema] start db={DB_PATH} ts={utc_now()}", flush=True)
@@ -51,7 +58,9 @@ def main():
         conn.execute("BEGIN IMMEDIATE;")
 
         # 1) inbound_job_payloads (nuevo)
-        ensure_table(conn, """
+        ensure_table(
+            conn,
+            """
         CREATE TABLE IF NOT EXISTS inbound_job_payloads (
             dedupe_key   TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL,
@@ -59,10 +68,13 @@ def main():
             created_at   TEXT NOT NULL,
             expires_at   TEXT
         );
-        """)
+        """,
+        )
 
         # 2) inbound_processing_locks (nuevo)
-        ensure_table(conn, """
+        ensure_table(
+            conn,
+            """
         CREATE TABLE IF NOT EXISTS inbound_processing_locks (
             dedupe_key    TEXT PRIMARY KEY,
             claimed_at    TEXT NOT NULL,
@@ -70,23 +82,29 @@ def main():
             payload_hash  TEXT,
             heartbeat_at  TEXT
         );
-        """)
+        """,
+        )
 
         # 3) processed_inbound_events (existe legacy, migrar columnas)
-        ensure_table(conn, """
+        ensure_table(
+            conn,
+            """
         CREATE TABLE IF NOT EXISTS processed_inbound_events (
             dedupe_key TEXT PRIMARY KEY,
             processed_at TEXT,
             result TEXT,
             detail_json TEXT
         );
-        """)
+        """,
+        )
         # columnas nuevas rev4
         ensure_column(conn, "processed_inbound_events", "worker_id", "TEXT")
         ensure_column(conn, "processed_inbound_events", "processing_time_ms", "INTEGER")
 
         # 4) inbound_orders_state (existe legacy, migrar columnas)
-        ensure_table(conn, """
+        ensure_table(
+            conn,
+            """
         CREATE TABLE IF NOT EXISTS inbound_orders_state (
             order_id TEXT PRIMARY KEY,
             last_state TEXT,
@@ -94,7 +112,8 @@ def main():
             last_seen_at TEXT,
             pack_id TEXT
         );
-        """)
+        """,
+        )
         ensure_column(conn, "inbound_orders_state", "site", "TEXT")
         ensure_column(conn, "inbound_orders_state", "logistic_type", "TEXT")
 
@@ -109,6 +128,7 @@ def main():
         raise
     finally:
         conn.close()
+
 
 if __name__ == "__main__":
     main()

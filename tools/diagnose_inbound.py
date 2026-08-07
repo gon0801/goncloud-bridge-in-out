@@ -18,11 +18,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone, timedelta
 
-DB_PATH = (
-    os.getenv("BRIDGE_DB")
-    or os.getenv("BRIDGE_DB_PATH")
-    or "/data/bridge.db"
-)
+DB_PATH = os.getenv("BRIDGE_DB") or os.getenv("BRIDGE_DB_PATH") or "/data/bridge.db"
 
 HOURS = int(os.getenv("HOURS", "24"))
 for arg in sys.argv[1:]:
@@ -33,23 +29,27 @@ for arg in sys.argv[1:]:
         HOURS = int(sys.argv[idx + 1])
         break
 
+
 def conn():
     c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL;")
     return c
 
+
 def sep(title="", char="─", width=72):
     if title:
         pad = (width - len(title) - 2) // 2
-        print(f"\n{'─'*pad} {title} {'─'*(width - pad - len(title) - 2)}")
+        print(f"\n{'─' * pad} {title} {'─' * (width - pad - len(title) - 2)}")
     else:
         print("─" * width)
 
+
 def banner(msg):
-    print(f"\n{'═'*72}")
+    print(f"\n{'═' * 72}")
     print(f"  {msg}")
-    print(f"{'═'*72}")
+    print(f"{'═' * 72}")
+
 
 # ──────────────────────────────────────────────
 # 1. KILL-SWITCHES
@@ -109,7 +109,13 @@ def show_meli_today(db, since_iso: str):
             total = sum(r["cnt"] for r in summary)
             print(f"  Total: {total}")
             for r in summary:
-                icon = {"success": "✅", "manual_review": "⚠️ ", "dead": "❌", "skipped": "⏭️ ", "error": "🔴"}.get(r["result"], "  ")
+                icon = {
+                    "success": "✅",
+                    "manual_review": "⚠️ ",
+                    "dead": "❌",
+                    "skipped": "⏭️ ",
+                    "error": "🔴",
+                }.get(r["result"], "  ")
                 print(f"    {icon} {r['result']:<20} {r['cnt']:>4}")
 
         # Detalle de errores/manual_review
@@ -137,7 +143,9 @@ def show_meli_today(db, since_iso: str):
                 ref = detail.get("ref", "")
                 rc = detail.get("rc", "")
                 err_tail = str(detail.get("error", ""))[:120]
-                print(f"  [{r['processed_at'][:19]}] {r['result']:<14} key={r['dedupe_key'][:40]}")
+                print(
+                    f"  [{r['processed_at'][:19]}] {r['result']:<14} key={r['dedupe_key'][:40]}"
+                )
                 if ref:
                     print(f"    ref={ref}")
                 if reason:
@@ -173,7 +181,14 @@ def show_amazon_today(db, since_iso: str):
             total = sum(r["cnt"] for r in summary)
             print(f"  Total: {total}")
             for r in summary:
-                icon = {"success": "✅", "manual_review": "⚠️ ", "dead": "❌", "skipped": "⏭️ ", "deferred": "⏳", "error": "🔴"}.get(r["result"], "  ")
+                icon = {
+                    "success": "✅",
+                    "manual_review": "⚠️ ",
+                    "dead": "❌",
+                    "skipped": "⏭️ ",
+                    "deferred": "⏳",
+                    "error": "🔴",
+                }.get(r["result"], "  ")
                 print(f"    {icon} {r['result']:<20} {r['cnt']:>4}")
 
         errors = db.execute(
@@ -198,7 +213,9 @@ def show_amazon_today(db, since_iso: str):
                     pass
                 reason = detail.get("reason", "")
                 err_tail = str(detail.get("error", ""))[:120]
-                print(f"  [{r['processed_at'][:19]}] {r['result']:<14} key={r['dedupe_key'][:50]}")
+                print(
+                    f"  [{r['processed_at'][:19]}] {r['result']:<14} key={r['dedupe_key'][:50]}"
+                )
                 if reason:
                     print(f"    reason={reason}")
                 if err_tail and err_tail != reason:
@@ -214,11 +231,17 @@ def show_redis_status():
     sep("REDIS — estado de colas")
     try:
         import redis as _redis
+
         REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
         r = _redis.Redis.from_url(REDIS_URL, decode_responses=True)
         r.ping()
-        for q in ["ml_orders_jobs", "ml_orders_processing", "ml_orders_dead",
-                  "amazon_orders_jobs", "amazon_orders_dead"]:
+        for q in [
+            "ml_orders_jobs",
+            "ml_orders_processing",
+            "ml_orders_dead",
+            "amazon_orders_jobs",
+            "amazon_orders_dead",
+        ]:
             n = r.llen(q)
             icon = "⚠️ " if n > 0 else "  "
             print(f"  {icon} {q:<35} {n:>4} items")
@@ -244,11 +267,15 @@ def show_locks(db):
             for lk in locks:
                 age_s = "?"
                 try:
-                    claimed = datetime.fromisoformat(lk["claimed_at"].replace("Z", "+00:00"))
+                    claimed = datetime.fromisoformat(
+                        lk["claimed_at"].replace("Z", "+00:00")
+                    )
                     age_s = int((now - claimed).total_seconds())
                 except Exception:
                     pass
-                print(f"  {lk['dedupe_key'][:50]}  age={age_s}s  worker={lk['worker_id'][:30]}")
+                print(
+                    f"  {lk['dedupe_key'][:50]}  age={age_s}s  worker={lk['worker_id'][:30]}"
+                )
     except Exception as e:
         print(f"  ERROR: {e}")
 
@@ -264,7 +291,9 @@ def show_locks(db):
             for lk in locks:
                 age_s = "?"
                 try:
-                    claimed = datetime.fromisoformat(lk["claimed_at"].replace("Z", "+00:00"))
+                    claimed = datetime.fromisoformat(
+                        lk["claimed_at"].replace("Z", "+00:00")
+                    )
                     age_s = int((now - claimed).total_seconds())
                 except Exception:
                     pass
@@ -330,9 +359,13 @@ def show_metrics(db):
         if not rows:
             print("  Sin métricas para hoy.")
         else:
-            print(f"  {'Hora':<16} {'OK':>5} {'manual':>7} {'dead':>6} {'err':>5} {'retry':>6}")
+            print(
+                f"  {'Hora':<16} {'OK':>5} {'manual':>7} {'dead':>6} {'err':>5} {'retry':>6}"
+            )
             for r in rows:
-                print(f"  {r['hour']:<16} {r['processed'] or 0:>5} {r['manual_review'] or 0:>7} {r['dead'] or 0:>6} {r['errors'] or 0:>5} {r['retries'] or 0:>6}")
+                print(
+                    f"  {r['hour']:<16} {r['processed'] or 0:>5} {r['manual_review'] or 0:>7} {r['dead'] or 0:>6} {r['errors'] or 0:>5} {r['retries'] or 0:>6}"
+                )
     except Exception as e:
         print(f"  ERROR: {e}")
 
@@ -345,9 +378,13 @@ def show_metrics(db):
         if not rows:
             print("  Sin métricas Amazon para hoy.")
         else:
-            print(f"  {'Hora':<16} {'OK':>5} {'manual':>7} {'dead':>6} {'err':>5} {'defer':>6} {'skip':>5}")
+            print(
+                f"  {'Hora':<16} {'OK':>5} {'manual':>7} {'dead':>6} {'err':>5} {'defer':>6} {'skip':>5}"
+            )
             for r in rows:
-                print(f"  {r['hour']:<16} {r['processed'] or 0:>5} {r['manual_review'] or 0:>7} {r['dead'] or 0:>6} {r['errors'] or 0:>5} {r['deferred'] or 0:>6} {r['skipped'] or 0:>5}")
+                print(
+                    f"  {r['hour']:<16} {r['processed'] or 0:>5} {r['manual_review'] or 0:>7} {r['dead'] or 0:>6} {r['errors'] or 0:>5} {r['deferred'] or 0:>6} {r['skipped'] or 0:>5}"
+                )
     except Exception as e:
         print(f"  ERROR: {e}")
 
@@ -356,7 +393,9 @@ def show_metrics(db):
 # MAIN
 # ──────────────────────────────────────────────
 def main():
-    banner(f"GONCLOUD Bridge — Diagnóstico Inbound  ({datetime.now().strftime('%Y-%m-%d %H:%M')})")
+    banner(
+        f"GONCLOUD Bridge — Diagnóstico Inbound  ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+    )
     print(f"  DB: {DB_PATH}")
     print(f"  Ventana: últimas {HOURS}h")
 

@@ -22,21 +22,23 @@ rows = con.execute(
 ).fetchall()
 settings = {r["key"]: (r["value"] or "") for r in rows}
 
-client_id     = settings.get("amazon_sp_api_client_id", "")
+client_id = settings.get("amazon_sp_api_client_id", "")
 client_secret = settings.get("amazon_sp_api_client_secret", "")
 refresh_token = settings.get("amazon_sp_api_refresh_token", "")
 
 if not (client_id and client_secret and refresh_token):
-    print("ERROR: Missing amazon_sp_api_client_id / amazon_sp_api_client_secret / amazon_sp_api_refresh_token in bridge_settings")
+    print(
+        "ERROR: Missing amazon_sp_api_client_id / amazon_sp_api_client_secret / amazon_sp_api_refresh_token in bridge_settings"
+    )
     sys.exit(1)
 
 # 2) Obtener access token
 r = httpx.post(
     TOKEN_URL,
     data={
-        "grant_type":    "refresh_token",
+        "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        "client_id":     client_id,
+        "client_id": client_id,
         "client_secret": client_secret,
     },
     timeout=30,
@@ -48,7 +50,9 @@ access_token = r.json()["access_token"]
 url = f"{BASE}/orders/2026-01-01/orders/{ORDER_ID}"
 headers = {"x-amz-access-token": access_token, "Accept": "application/json"}
 
-resp = httpx.get(url, headers=headers, params={"includedData": INCLUDED_DATA}, timeout=30)
+resp = httpx.get(
+    url, headers=headers, params={"includedData": INCLUDED_DATA}, timeout=30
+)
 print("HTTP", resp.status_code)
 resp.raise_for_status()
 
@@ -57,10 +61,14 @@ raw_order = payload.get("order", {})
 
 # 4) Normalizar a v0 para verificar que el adapter funciona
 _V2026_STATUS_MAP = {
-    "PENDING": "Pending", "PENDING_AVAILABILITY": "Pending",
-    "UNSHIPPED": "Unshipped", "PARTIALLY_SHIPPED": "PartiallyShipped",
-    "SHIPPED": "Shipped", "INVOICE_UNCONFIRMED": "InvoiceUnconfirmed",
-    "CANCELLED": "Canceled", "UNFULFILLABLE": "Unfulfillable",
+    "PENDING": "Pending",
+    "PENDING_AVAILABILITY": "Pending",
+    "UNSHIPPED": "Unshipped",
+    "PARTIALLY_SHIPPED": "PartiallyShipped",
+    "SHIPPED": "Shipped",
+    "INVOICE_UNCONFIRMED": "InvoiceUnconfirmed",
+    "CANCELLED": "Canceled",
+    "UNFULFILLABLE": "Unfulfillable",
 }
 
 
@@ -73,16 +81,16 @@ def normalize_order(order: dict) -> dict:
     proceeds = order.get("proceeds") or {}
     grand_total = proceeds.get("grandTotal") or {}
     v0 = {
-        "AmazonOrderId":      order.get("orderId", ""),
-        "PurchaseDate":       order.get("purchaseDate", ""),
-        "LastUpdateDate":     order.get("lastUpdatedTime", ""),
-        "OrderStatus":        _V2026_STATUS_MAP.get(fs, fs),
+        "AmazonOrderId": order.get("orderId", ""),
+        "PurchaseDate": order.get("purchaseDate", ""),
+        "LastUpdateDate": order.get("lastUpdatedTime", ""),
+        "OrderStatus": _V2026_STATUS_MAP.get(fs, fs),
         "FulfillmentChannel": fc,
-        "MarketplaceId":      sales_channel.get("marketplaceId", ""),
-        "SalesChannel":       sales_channel.get("channelType", ""),
+        "MarketplaceId": sales_channel.get("marketplaceId", ""),
+        "SalesChannel": sales_channel.get("channelType", ""),
         "OrderTotal": {
             "CurrencyCode": grand_total.get("currencyCode", ""),
-            "Amount":       str(grand_total.get("amount", "0")),
+            "Amount": str(grand_total.get("amount", "0")),
         },
         "OrderItems": len(order.get("orderItems") or []),
     }
@@ -93,8 +101,13 @@ def normalize_order(order: dict) -> dict:
 
 print("\n=== KEY FIELDS (v2026 raw) ===")
 raw_keys = [
-    "orderId", "purchaseDate", "lastUpdatedTime",
-    "programs", "salesChannel", "fulfillment", "proceeds",
+    "orderId",
+    "purchaseDate",
+    "lastUpdatedTime",
+    "programs",
+    "salesChannel",
+    "fulfillment",
+    "proceeds",
 ]
 for k in raw_keys:
     if k in raw_order:
@@ -108,7 +121,9 @@ for k, v in norm.items():
 print(f"\n=== ORDER ITEMS ({len(raw_order.get('orderItems') or [])} items) ===")
 for i, item in enumerate(raw_order.get("orderItems") or []):
     prod = item.get("product") or {}
-    print(f"  [{i}] SKU={prod.get('sellerSku')} qty={item.get('quantityOrdered')} breakdowns={[b.get('type') for b in item.get('breakdowns') or []]}")
+    print(
+        f"  [{i}] SKU={prod.get('sellerSku')} qty={item.get('quantityOrdered')} breakdowns={[b.get('type') for b in item.get('breakdowns') or []]}"
+    )
 
 print("\n=== FULL JSON SAVED ===")
 ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

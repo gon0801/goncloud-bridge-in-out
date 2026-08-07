@@ -1,9 +1,9 @@
 # DOCUMENTO CANÓNICO — GONCLOUD SETUP WIZARD v1
 
-**Fecha:** 2026-02-13  
-**Sistema:** GONCLOUD Bridge  
-**Servidor:** goncloud  
-**Versión:** 1.0  
+**Fecha:** 2026-02-13
+**Sistema:** GONCLOUD Bridge
+**Servidor:** goncloud
+**Versión:** 1.0
 **Estado:** PRODUCCIÓN
 
 ---
@@ -342,7 +342,7 @@ curl -s -X POST http://localhost:8099/setup/api/test-odoo \
 ### Ver settings guardados
 ```bash
 sqlite3 /mnt/data/appdata/bridge/data/bridge.db "
-SELECT key, value FROM bridge_settings 
+SELECT key, value FROM bridge_settings
 WHERE key LIKE 'odoo_%' OR key LIKE 'amazon_%' OR key LIKE 'meli_%' OR key LIKE 'setup_%'
 ORDER BY key;"
 ```

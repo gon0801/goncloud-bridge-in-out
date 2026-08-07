@@ -35,6 +35,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import redis
 
+
 # =========================
 # CONFIG
 # =========================
@@ -46,8 +47,8 @@ class Config:
     DEAD_LETTER = "amazon_orders_dead"
     PROCESSING_PREFIX = "amazon:processing"
 
-    LOCK_TIMEOUT = 600          # 10 min
-    HEARTBEAT_INTERVAL = 30     # 30s
+    LOCK_TIMEOUT = 600  # 10 min
+    HEARTBEAT_INTERVAL = 30  # 30s
     REAPER_INTERVAL = 30
     METRICS_INTERVAL = 300
     # Watchdog: nº de ciclos de métricas con queue>0 y CERO progreso antes de
@@ -56,8 +57,7 @@ class Config:
     # "Up" pero congelado durante días (incidente 2026-05-19).
     WATCHDOG_STUCK_INTERVALS = 3
     MAX_RETRIES = 3
-    MAX_DEFERRED = 5        # RC=2 retries antes de enviar a DLQ
-
+    MAX_DEFERRED = 5  # RC=2 retries antes de enviar a DLQ
 
     DLQ_MAX = 9999
 
@@ -148,7 +148,7 @@ class Database:
                 return conn.execute(sql, params)
             except sqlite3.OperationalError as e:
                 if "busy" in str(e).lower() and attempt < max_retries - 1:
-                    sleep_time = (0.1 * (2 ** attempt)) + (hash(str(params)) % 100 / 1000)
+                    sleep_time = (0.1 * (2**attempt)) + (hash(str(params)) % 100 / 1000)
                     time.sleep(sleep_time)
                     continue
                 raise
@@ -233,24 +233,34 @@ class Database:
     def _migrate_if_needed(self, conn: sqlite3.Connection):
         if not self._col_exists(conn, "amazon_processing_locks", "heartbeat_at"):
             try:
-                conn.execute("ALTER TABLE amazon_processing_locks ADD COLUMN heartbeat_at TEXT")
+                conn.execute(
+                    "ALTER TABLE amazon_processing_locks ADD COLUMN heartbeat_at TEXT"
+                )
             except Exception:
                 pass
 
         if not self._col_exists(conn, "amazon_metrics", "skipped"):
             try:
-                conn.execute("ALTER TABLE amazon_metrics ADD COLUMN skipped INTEGER DEFAULT 0")
+                conn.execute(
+                    "ALTER TABLE amazon_metrics ADD COLUMN skipped INTEGER DEFAULT 0"
+                )
             except Exception:
                 pass
 
     def _ensure_indexes(self, conn: sqlite3.Connection):
         # Base helpful indexes
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_amz_processed_at ON amazon_processed_events(processed_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_amz_payload_expires ON amazon_job_payloads(expires_at)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_amz_processed_at ON amazon_processed_events(processed_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_amz_payload_expires ON amazon_job_payloads(expires_at)"
+        )
 
         # Reaper query: (heartbeat_at IS NULL AND claimed_at < ?) OR (heartbeat_at < ?)
         # Composite helps second branch sometimes, but first branch benefits strongly from partial index.
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_amz_locks_hb_claimed ON amazon_processing_locks(heartbeat_at, claimed_at)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_amz_locks_hb_claimed ON amazon_processing_locks(heartbeat_at, claimed_at)"
+        )
 
         # ✅ Partial indexes to avoid table scan on the IS NULL branch (big tables)
         conn.execute("""
@@ -328,6 +338,7 @@ def log(msg: str, level: str = "INFO", extra: dict = None):
 _settings_cache: Dict[str, Tuple[str, datetime, timedelta]] = {}
 _settings_gets = 0
 
+
 def _purge_settings_cache():
     now = datetime.now(timezone.utc)
     expired = []
@@ -341,6 +352,7 @@ def _purge_settings_cache():
         items = sorted(_settings_cache.items(), key=lambda kv: kv[1][1])  # by cached_at
         for k, _ in items[: len(_settings_cache) - Config.SETTINGS_CACHE_MAX]:
             _settings_cache.pop(k, None)
+
 
 def get_setting(key: str, default: str = "", use_short_ttl: bool = False) -> str:
     global _settings_gets
@@ -356,13 +368,16 @@ def get_setting(key: str, default: str = "", use_short_ttl: bool = False) -> str
             if datetime.now(timezone.utc) - cached_at < cached_ttl:
                 return value
 
-        row = db.execute("SELECT value FROM bridge_settings WHERE key=?", (key,)).fetchone()
+        row = db.execute(
+            "SELECT value FROM bridge_settings WHERE key=?", (key,)
+        ).fetchone()
         value = str(row[0]) if row and row[0] else default
         _settings_cache[key] = (value, datetime.now(timezone.utc), ttl)
         return value
     except Exception as e:
         log("Settings error", "ERROR", {"key": key, "error": str(e)})
         return default
+
 
 def is_enabled(key: str) -> bool:
     return get_setting(key, "0", use_short_ttl=True) == "1"
@@ -374,14 +389,14 @@ def is_enabled(key: str) -> bool:
 _V2026_INCLUDED_DATA = "BUYER,PROCEEDS,FULFILLMENT,PACKAGES"
 
 _V2026_STATUS_MAP = {
-    "PENDING":              "Pending",
+    "PENDING": "Pending",
     "PENDING_AVAILABILITY": "Pending",
-    "UNSHIPPED":            "Unshipped",
-    "PARTIALLY_SHIPPED":    "PartiallyShipped",
-    "SHIPPED":              "Shipped",
-    "INVOICE_UNCONFIRMED":  "InvoiceUnconfirmed",
-    "CANCELLED":            "Canceled",
-    "UNFULFILLABLE":        "Unfulfillable",
+    "UNSHIPPED": "Unshipped",
+    "PARTIALLY_SHIPPED": "PartiallyShipped",
+    "SHIPPED": "Shipped",
+    "INVOICE_UNCONFIRMED": "InvoiceUnconfirmed",
+    "CANCELLED": "Canceled",
+    "UNFULFILLABLE": "Unfulfillable",
 }
 
 
@@ -427,18 +442,18 @@ def _normalize_item_to_v0(item: dict) -> dict:
                     gwp = {"Amount": da, "CurrencyCode": dc}
 
     return {
-        "ASIN":             product.get("asin", ""),
-        "SellerSKU":        product.get("sellerSku", ""),
-        "OrderItemId":      item.get("orderItemId", ""),
-        "Title":            product.get("title", "") or product.get("productName", ""),
-        "QuantityOrdered":  item.get("quantityOrdered", 0),
-        "QuantityShipped":  item.get("quantityShipped", 0),
-        "ItemPrice":        ip,
-        "ItemTax":          itax,
-        "ShippingPrice":    sp,
-        "ShippingTax":      stax,
-        "GiftWrapPrice":    gwp,
-        "GiftWrapTax":      gwtax,
+        "ASIN": product.get("asin", ""),
+        "SellerSKU": product.get("sellerSku", ""),
+        "OrderItemId": item.get("orderItemId", ""),
+        "Title": product.get("title", "") or product.get("productName", ""),
+        "QuantityOrdered": item.get("quantityOrdered", 0),
+        "QuantityShipped": item.get("quantityShipped", 0),
+        "ItemPrice": ip,
+        "ItemTax": itax,
+        "ShippingPrice": sp,
+        "ShippingTax": stax,
+        "GiftWrapPrice": gwp,
+        "GiftWrapTax": gwtax,
         "PromotionDiscount": pdis,
     }
 
@@ -475,28 +490,30 @@ def normalize_to_v0(order: dict) -> dict:
     shipping_address: dict = {}
     if delivery:
         shipping_address = {
-            "Name":          delivery.get("name", ""),
-            "City":          delivery.get("city", ""),
+            "Name": delivery.get("name", ""),
+            "City": delivery.get("city", ""),
             "StateOrRegion": delivery.get("stateOrRegion", ""),
-            "PostalCode":    delivery.get("postalCode", ""),
-            "CountryCode":   delivery.get("countryCode", ""),
+            "PostalCode": delivery.get("postalCode", ""),
+            "CountryCode": delivery.get("countryCode", ""),
         }
 
     v0 = {
-        "AmazonOrderId":      order.get("orderId", ""),
-        "PurchaseDate":       order.get("purchaseDate", ""),
-        "LastUpdateDate":     order.get("lastUpdatedTime", ""),
-        "OrderStatus":        order_status,
+        "AmazonOrderId": order.get("orderId", ""),
+        "PurchaseDate": order.get("purchaseDate", ""),
+        "LastUpdateDate": order.get("lastUpdatedTime", ""),
+        "OrderStatus": order_status,
         "FulfillmentChannel": fc,
-        "MarketplaceId":      marketplace_id,
-        "SalesChannel":       sales_channel.get("channelType", ""),
+        "MarketplaceId": marketplace_id,
+        "SalesChannel": sales_channel.get("channelType", ""),
         "OrderTotal": {
             "CurrencyCode": grand_total.get("currencyCode", ""),
-            "Amount":       str(grand_total.get("amount", "0")),
+            "Amount": str(grand_total.get("amount", "0")),
         },
-        "BuyerInfo":        buyer_info,
-        "ShippingAddress":  shipping_address,
-        "OrderItems":       [_normalize_item_to_v0(i) for i in (order.get("orderItems") or [])],
+        "BuyerInfo": buyer_info,
+        "ShippingAddress": shipping_address,
+        "OrderItems": [
+            _normalize_item_to_v0(i) for i in (order.get("orderItems") or [])
+        ],
     }
     if easy_ship:
         v0["EasyShipShipmentStatus"] = "PendingPickUp"
@@ -509,6 +526,7 @@ def normalize_to_v0(order: dict) -> dict:
 _SPAPI_BASE = "https://sellingpartnerapi-na.amazon.com"
 _AMAZON_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 
+
 def _get_amazon_access_token() -> Optional[str]:
     """Obtain a short-lived SP-API access token via the stored refresh token."""
     try:
@@ -517,12 +535,14 @@ def _get_amazon_access_token() -> Optional[str]:
         refresh_token = get_setting("amazon_sp_api_refresh_token")
         if not all([client_id, client_secret, refresh_token]):
             return None
-        body = urllib.parse.urlencode({
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-            "client_secret": client_secret,
-        }).encode()
+        body = urllib.parse.urlencode(
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            }
+        ).encode()
         req = urllib.request.Request(_AMAZON_TOKEN_URL, data=body, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read()).get("access_token")
@@ -547,11 +567,15 @@ def enrich_order_with_items(order_id: str) -> Optional[dict]:
             log("SP-API enrich: no access token", "WARN", {"order_id": order_id})
             return None
 
-        def _spapi_get(url: str, params: Optional[dict] = None, max_retries: int = 4) -> Optional[dict]:
+        def _spapi_get(
+            url: str, params: Optional[dict] = None, max_retries: int = 4
+        ) -> Optional[dict]:
             """SP-API GET con retry exponencial en 429/5xx/timeout (Bug #11)."""
             full_url = url
             if params:
-                full_url = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+                full_url = (
+                    url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+                )
             for attempt in range(max_retries):
                 try:
                     req = urllib.request.Request(
@@ -561,16 +585,34 @@ def enrich_order_with_items(order_id: str) -> Optional[dict]:
                         return json.loads(r.read())
                 except urllib.error.HTTPError as e:
                     if e.code == 429 or e.code >= 500:
-                        wait = 2 ** attempt
-                        log("SP-API retry", "WARN", {"url": url, "code": e.code, "wait_s": wait, "attempt": attempt + 1})
+                        wait = 2**attempt
+                        log(
+                            "SP-API retry",
+                            "WARN",
+                            {
+                                "url": url,
+                                "code": e.code,
+                                "wait_s": wait,
+                                "attempt": attempt + 1,
+                            },
+                        )
                         if attempt + 1 == max_retries:
                             return None
                         time.sleep(wait)
                         continue
                     return None
                 except (urllib.error.URLError, TimeoutError, OSError) as e:
-                    wait = 2 ** attempt
-                    log("SP-API network retry", "WARN", {"url": url, "err": str(e), "wait_s": wait, "attempt": attempt + 1})
+                    wait = 2**attempt
+                    log(
+                        "SP-API network retry",
+                        "WARN",
+                        {
+                            "url": url,
+                            "err": str(e),
+                            "wait_s": wait,
+                            "attempt": attempt + 1,
+                        },
+                    )
                     if attempt + 1 == max_retries:
                         return None
                     time.sleep(wait)
@@ -589,14 +631,18 @@ def enrich_order_with_items(order_id: str) -> Optional[dict]:
             return None
         order_data = normalize_to_v0(raw_order)
         if order_data:
-            log("SP-API enrich OK", "INFO", {
-                "order_id":           order_id,
-                "items":              len(order_data.get("OrderItems", [])),
-                "fc_inferred":        order_data.get("FulfillmentChannel"),
-                "marketplace":        order_data.get("MarketplaceId"),
-                "status":             order_data.get("OrderStatus"),
-                "easy_ship":          "EasyShipShipmentStatus" in order_data,
-            })
+            log(
+                "SP-API enrich OK",
+                "INFO",
+                {
+                    "order_id": order_id,
+                    "items": len(order_data.get("OrderItems", [])),
+                    "fc_inferred": order_data.get("FulfillmentChannel"),
+                    "marketplace": order_data.get("MarketplaceId"),
+                    "status": order_data.get("OrderStatus"),
+                    "easy_ship": "EasyShipShipmentStatus" in order_data,
+                },
+            )
             return order_data
         return None
     except Exception as e:
@@ -620,19 +666,24 @@ def init_db():
 # METRICS
 # =========================
 _AMAZON_METRIC_SQL = {
-    "processed":     "INSERT INTO amazon_metrics (hour, processed) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET processed = processed + 1",
-    "deferred":      "INSERT INTO amazon_metrics (hour, deferred) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET deferred = deferred + 1",
+    "processed": "INSERT INTO amazon_metrics (hour, processed) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET processed = processed + 1",
+    "deferred": "INSERT INTO amazon_metrics (hour, deferred) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET deferred = deferred + 1",
     "manual_review": "INSERT INTO amazon_metrics (hour, manual_review) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET manual_review = manual_review + 1",
-    "dead":          "INSERT INTO amazon_metrics (hour, dead) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET dead = dead + 1",
-    "errors":        "INSERT INTO amazon_metrics (hour, errors) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET errors = errors + 1",
-    "skipped":       "INSERT INTO amazon_metrics (hour, skipped) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET skipped = skipped + 1",
+    "dead": "INSERT INTO amazon_metrics (hour, dead) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET dead = dead + 1",
+    "errors": "INSERT INTO amazon_metrics (hour, errors) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET errors = errors + 1",
+    "skipped": "INSERT INTO amazon_metrics (hour, skipped) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET skipped = skipped + 1",
 }
+
 
 def record_metric(result_type: str):
     hour = datetime.now().strftime("%Y-%m-%d-%H")
     column_map = {
-        "success": "processed", "deferred": "deferred", "manual_review": "manual_review",
-        "dead": "dead", "error": "errors", "skipped": "skipped",
+        "success": "processed",
+        "deferred": "deferred",
+        "manual_review": "manual_review",
+        "dead": "dead",
+        "error": "errors",
+        "skipped": "skipped",
     }
     column = column_map.get(result_type, "processed")
     try:
@@ -650,7 +701,8 @@ def persist_payload(dedupe_key: str, job: dict) -> str:
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(days=7)).isoformat()
 
-    db.execute("""
+    db.execute(
+        """
         INSERT INTO amazon_job_payloads (dedupe_key, payload_json, payload_hash, created_at, expires_at)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(dedupe_key) DO UPDATE SET
@@ -660,8 +712,11 @@ def persist_payload(dedupe_key: str, job: dict) -> str:
                 ELSE amazon_job_payloads.payload_json
             END,
             expires_at = excluded.expires_at
-    """, (dedupe_key, payload_json, payload_hash, now.isoformat(), expires_at))
+    """,
+        (dedupe_key, payload_json, payload_hash, now.isoformat(), expires_at),
+    )
     return payload_hash
+
 
 def get_payload(dedupe_key: str) -> Optional[Tuple[dict, str]]:
     try:
@@ -673,7 +728,11 @@ def get_payload(dedupe_key: str) -> Optional[Tuple[dict, str]]:
             return None
         return json.loads(row["payload_json"]), row["payload_hash"]
     except Exception as e:
-        log("Payload retrieval failed", "ERROR", {"dedupe_key": dedupe_key, "error": str(e)})
+        log(
+            "Payload retrieval failed",
+            "ERROR",
+            {"dedupe_key": dedupe_key, "error": str(e)},
+        )
         return None
 
 
@@ -682,7 +741,9 @@ def get_payload(dedupe_key: str) -> Optional[Tuple[dict, str]]:
 # =========================
 def acquire_lock(dedupe_key: str, payload_hash: str) -> bool:
     now = datetime.now(timezone.utc).isoformat()
-    stale_threshold = (datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)).isoformat()
+    stale_threshold = (
+        datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)
+    ).isoformat()
 
     try:
         with db.transaction():
@@ -711,8 +772,13 @@ def acquire_lock(dedupe_key: str, payload_hash: str) -> bool:
                 return False
 
     except Exception as e:
-        log("Lock acquisition error", "ERROR", {"dedupe_key": dedupe_key, "error": str(e)})
+        log(
+            "Lock acquisition error",
+            "ERROR",
+            {"dedupe_key": dedupe_key, "error": str(e)},
+        )
         return False
+
 
 def release_lock(dedupe_key: str):
     try:
@@ -723,6 +789,7 @@ def release_lock(dedupe_key: str):
     except Exception as e:
         log("Lock release error", "ERROR", {"dedupe_key": dedupe_key, "error": str(e)})
 
+
 def update_heartbeat(dedupe_key: str):
     try:
         now = datetime.now(timezone.utc).isoformat()
@@ -731,7 +798,12 @@ def update_heartbeat(dedupe_key: str):
             (now, dedupe_key, Config.WORKER_ID),
         )
     except Exception as e:
-        log("Heartbeat update error", "ERROR", {"dedupe_key": dedupe_key, "error": str(e)})
+        log(
+            "Heartbeat update error",
+            "ERROR",
+            {"dedupe_key": dedupe_key, "error": str(e)},
+        )
+
 
 def is_already_completed(dedupe_key: str) -> bool:
     """Checks for terminal states only. 'deferred' is NOT terminal — it must be retried.
@@ -750,10 +822,17 @@ def is_already_completed(dedupe_key: str) -> bool:
         ).fetchone()
         return row is not None
     except Exception as e:
-        log("Completion check error", "ERROR", {"dedupe_key": dedupe_key, "error": str(e)})
+        log(
+            "Completion check error",
+            "ERROR",
+            {"dedupe_key": dedupe_key, "error": str(e)},
+        )
         return False
 
-def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_ms: Optional[int] = None):
+
+def mark_completed(
+    dedupe_key: str, result: str, detail: dict, processing_time_ms: Optional[int] = None
+):
     try:
         with db.transaction():
             db.execute(
@@ -777,11 +856,21 @@ def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_m
                     processing_time_ms,
                 ),
             )
-            db.execute("DELETE FROM amazon_processing_locks WHERE dedupe_key=?", (dedupe_key,))
+            db.execute(
+                "DELETE FROM amazon_processing_locks WHERE dedupe_key=?", (dedupe_key,)
+            )
         record_metric(result)
-        log("Completed", "INFO", {"dedupe_key": dedupe_key, "result": result, "detail": detail})
+        log(
+            "Completed",
+            "INFO",
+            {"dedupe_key": dedupe_key, "result": result, "detail": detail},
+        )
     except Exception as e:
-        log("CRITICAL: mark_completed failed", "CRITICAL", {"dedupe_key": dedupe_key, "error": str(e)})
+        log(
+            "CRITICAL: mark_completed failed",
+            "CRITICAL",
+            {"dedupe_key": dedupe_key, "error": str(e)},
+        )
 
 
 # =========================
@@ -794,7 +883,9 @@ def reaper_loop(redis_client: redis.Redis):
         try:
             time.sleep(Config.REAPER_INTERVAL)
 
-            stale_threshold = (datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)).isoformat()
+            stale_threshold = (
+                datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)
+            ).isoformat()
 
             candidates = db.execute(
                 """SELECT dedupe_key, worker_id, payload_hash
@@ -831,22 +922,34 @@ def reaper_loop(redis_client: redis.Redis):
                         )
 
                         if del_cur.rowcount != 1:
-                            log("Reaper: lock still alive (delete lost race)", "DEBUG", {
-                                "dedupe_key": dedupe_key,
-                                "rowcount": del_cur.rowcount,
-                            })
+                            log(
+                                "Reaper: lock still alive (delete lost race)",
+                                "DEBUG",
+                                {
+                                    "dedupe_key": dedupe_key,
+                                    "rowcount": del_cur.rowcount,
+                                },
+                            )
                             continue
 
                         payload_data = get_payload(dedupe_key)
                         if payload_data:
                             job, stored_hash = payload_data
                             if stored_hash != expected_hash:
-                                log("Hash mismatch on reap", "ERROR", {
-                                    "dedupe_key": dedupe_key,
-                                    "expected": expected_hash[:16],
-                                    "stored": stored_hash[:16],
-                                })
-                                mark_completed(dedupe_key, "manual_review", {"reason": "payload_integrity_error"})
+                                log(
+                                    "Hash mismatch on reap",
+                                    "ERROR",
+                                    {
+                                        "dedupe_key": dedupe_key,
+                                        "expected": expected_hash[:16],
+                                        "stored": stored_hash[:16],
+                                    },
+                                )
+                                mark_completed(
+                                    dedupe_key,
+                                    "manual_review",
+                                    {"reason": "payload_integrity_error"},
+                                )
                                 continue
 
                             reap_count = job.get("_reap_count", 0) + 1
@@ -858,23 +961,49 @@ def reaper_loop(redis_client: redis.Redis):
                             persist_payload(dedupe_key, job)
                             redis_client.rpush(Config.QUEUE, json.dumps(job))
 
-                            log("Reaper: job requeued", "INFO", {
-                                "dedupe_key": dedupe_key,
-                                "reap_count": reap_count,
-                                "original_worker": old_worker,
-                            })
-
-                            if reap_count >= 3:
-                                log("Reaper: job reaped multiple times - possible issue", "WARN", {
+                            log(
+                                "Reaper: job requeued",
+                                "INFO",
+                                {
                                     "dedupe_key": dedupe_key,
                                     "reap_count": reap_count,
-                                })
+                                    "original_worker": old_worker,
+                                },
+                            )
+
+                            if reap_count >= 3:
+                                log(
+                                    "Reaper: job reaped multiple times - possible issue",
+                                    "WARN",
+                                    {
+                                        "dedupe_key": dedupe_key,
+                                        "reap_count": reap_count,
+                                    },
+                                )
                         else:
-                            log("Reaper: payload lost", "ERROR", {"dedupe_key": dedupe_key, "original_worker": old_worker})
-                            mark_completed(dedupe_key, "dead", {"reason": "payload_lost", "original_worker": old_worker})
+                            log(
+                                "Reaper: payload lost",
+                                "ERROR",
+                                {
+                                    "dedupe_key": dedupe_key,
+                                    "original_worker": old_worker,
+                                },
+                            )
+                            mark_completed(
+                                dedupe_key,
+                                "dead",
+                                {
+                                    "reason": "payload_lost",
+                                    "original_worker": old_worker,
+                                },
+                            )
 
                 except Exception as e:
-                    log("Reaper error", "ERROR", {"dedupe_key": dedupe_key, "error": str(e)})
+                    log(
+                        "Reaper error",
+                        "ERROR",
+                        {"dedupe_key": dedupe_key, "error": str(e)},
+                    )
 
         except Exception as e:
             log("Reaper fatal error", "ERROR", {"error": str(e)})
@@ -900,7 +1029,11 @@ def heartbeat_thread():
                     try:
                         local_redis.expire(pkey, Config.LOCK_TIMEOUT + 60)
                     except Exception as redis_err:
-                        log("Heartbeat Redis TTL error (non-critical)", "DEBUG", {"error": str(redis_err)})
+                        log(
+                            "Heartbeat Redis TTL error (non-critical)",
+                            "DEBUG",
+                            {"error": str(redis_err)},
+                        )
                 log("Heartbeat sent", "DEBUG", {"dedupe_key": dedupe})
 
         except Exception as e:
@@ -916,21 +1049,29 @@ def metrics_reporter(redis_client: redis.Redis):
     while not _shutdown.is_set():
         time.sleep(Config.METRICS_INTERVAL)
         try:
-            locks = db.execute("SELECT COUNT(*) FROM amazon_processing_locks").fetchone()[0]
-            payloads = db.execute("SELECT COUNT(*) FROM amazon_job_payloads").fetchone()[0]
+            locks = db.execute(
+                "SELECT COUNT(*) FROM amazon_processing_locks"
+            ).fetchone()[0]
+            payloads = db.execute(
+                "SELECT COUNT(*) FROM amazon_job_payloads"
+            ).fetchone()[0]
             completed_1h = db.execute(
                 "SELECT COUNT(*) FROM amazon_processed_events WHERE processed_at > datetime('now', '-1 hour')"
             ).fetchone()[0]
             q_len = redis_client.llen(Config.QUEUE)
             dlq_len = redis_client.llen(Config.DEAD_LETTER)
 
-            log("Metrics snapshot", "INFO", {
-                "db_locks": locks,
-                "db_payloads": payloads,
-                "completed_1h": completed_1h,
-                "redis_queue": q_len,
-                "redis_dlq": dlq_len,
-            })
+            log(
+                "Metrics snapshot",
+                "INFO",
+                {
+                    "db_locks": locks,
+                    "db_payloads": payloads,
+                    "completed_1h": completed_1h,
+                    "redis_queue": q_len,
+                    "redis_dlq": dlq_len,
+                },
+            )
 
             # Watchdog anti-deadlock: si hay jobs en cola pero CERO progreso
             # (completed_1h no sube) por WATCHDOG_STUCK_INTERVALS ciclos, el
@@ -941,12 +1082,16 @@ def metrics_reporter(redis_client: redis.Redis):
             if q_len > 0 and last_completed >= 0 and completed_1h <= last_completed:
                 stuck_intervals += 1
                 if stuck_intervals >= Config.WATCHDOG_STUCK_INTERVALS:
-                    log("WATCHDOG: worker congelado (queue>0, sin progreso) — forzando reinicio", "CRITICAL", {
-                        "redis_queue": q_len,
-                        "completed_1h": completed_1h,
-                        "db_locks": locks,
-                        "stuck_intervals": stuck_intervals,
-                    })
+                    log(
+                        "WATCHDOG: worker congelado (queue>0, sin progreso) — forzando reinicio",
+                        "CRITICAL",
+                        {
+                            "redis_queue": q_len,
+                            "completed_1h": completed_1h,
+                            "db_locks": locks,
+                            "stuck_intervals": stuck_intervals,
+                        },
+                    )
                     os._exit(1)
             else:
                 stuck_intervals = 0
@@ -969,18 +1114,20 @@ def extract_buyer_info(order: dict) -> Dict[str, str]:
         "ship_country": shipping.get("CountryCode", ""),
     }
 
+
 AMZ_MX_MARKETPLACE = "A1AM78C64UM0Y8"
 
 # profile → (channel_type, label)
 # channel_type "FBA" = Amazon ships (no picking), "FBM" = seller ships (with picking)
 _PROFILE_MAP = {
     "FLEX_MX": ("FBM", "Amazon Flex MX"),
-    "FBA_US":  ("FBA", "Amazon FBA US"),
-    "FBA_MX":  ("FBA", "Amazon FBA MX"),
+    "FBA_US": ("FBA", "Amazon FBA US"),
+    "FBA_MX": ("FBA", "Amazon FBA MX"),
     "EASY_MX": ("FBM", "Amazon Easy MX"),
-    "FBM_MX":  ("FBM", "Amazon FBM MX"),
-    "FBM_US":  ("FBM", "Amazon FBM US"),
+    "FBM_MX": ("FBM", "Amazon FBM MX"),
+    "FBM_US": ("FBM", "Amazon FBM US"),
 }
+
 
 def detect_order_profile(order: Dict[str, Any]) -> Tuple[str, str, str]:
     """Returns (channel_type, label, profile) e.g. ('FBM', 'Amazon Flex MX', 'FLEX_MX')."""
@@ -1007,6 +1154,7 @@ def detect_fulfillment_channel(order: Dict[str, Any]) -> Tuple[str, str]:
     """Legacy shim — use detect_order_profile() for new code."""
     channel_type, _label, _profile = detect_order_profile(order)
     return (channel_type, "order.FulfillmentChannel")
+
 
 def map_order_status(status: str) -> Optional[str]:
     status = (status or "").strip()
@@ -1035,13 +1183,15 @@ def run_tool(tool_name: str, env_vars: dict) -> Tuple[int, str, str]:
         return -1, "", f"Tool not found: {tool_name}"
 
     env = os.environ.copy()
-    env.update({
-        "ODOO_URL": Config.ODOO_URL or "",
-        "ODOO_DB": Config.ODOO_DB or "",
-        "ODOO_USER": Config.ODOO_USER or "",
-        "ODOO_PASS": Config.ODOO_PASS or "",
-        "BRIDGE_DB": Config.DB_PATH,
-    })
+    env.update(
+        {
+            "ODOO_URL": Config.ODOO_URL or "",
+            "ODOO_DB": Config.ODOO_DB or "",
+            "ODOO_USER": Config.ODOO_USER or "",
+            "ODOO_PASS": Config.ODOO_PASS or "",
+            "BRIDGE_DB": Config.DB_PATH,
+        }
+    )
     env.update(env_vars)
 
     p = subprocess.Popen(
@@ -1076,12 +1226,22 @@ def run_tool(tool_name: str, env_vars: dict) -> Tuple[int, str, str]:
             pass
         return -3, "", str(e)
 
+
 def map_tool_result(rc: int, stdout: str, stderr: str) -> Tuple[str, dict]:
     if rc == 0:
         return "success", {"rc": rc, "stdout_preview": (stdout or "")[-200:]}
     if rc == 2:
-        return "deferred", {"rc": rc, "reason": "deferred_by_tool", "stderr_preview": (stderr or "")[-200:]}
-    return "manual_review", {"rc": rc, "error": (stderr or "")[-500:], "stdout_preview": (stdout or "")[-200:]}
+        return "deferred", {
+            "rc": rc,
+            "reason": "deferred_by_tool",
+            "stderr_preview": (stderr or "")[-200:],
+        }
+    return "manual_review", {
+        "rc": rc,
+        "error": (stderr or "")[-500:],
+        "stdout_preview": (stdout or "")[-200:],
+    }
+
 
 def _finalize(dedupe_key: str, result: str, detail: dict, ms: int) -> bool:
     """Marks job as completed. Returns True if the job needs to be re-queued (deferred)."""
@@ -1095,8 +1255,15 @@ def _finalize(dedupe_key: str, result: str, detail: dict, ms: int) -> bool:
     return False
 
 
-def process_fba(order: dict, order_id: str, marketplace: str, action: str, dedupe_key: str,
-               channel_label: str = "Amazon FBA", buyer_name: str = "") -> bool:
+def process_fba(
+    order: dict,
+    order_id: str,
+    marketplace: str,
+    action: str,
+    dedupe_key: str,
+    channel_label: str = "Amazon FBA",
+    buyer_name: str = "",
+) -> bool:
     """Returns True if the job must be re-queued (deferred)."""
     ref = f"AMZFBA:{marketplace}:{order_id}"
     start = time.time()
@@ -1108,13 +1275,19 @@ def process_fba(order: dict, order_id: str, marketplace: str, action: str, dedup
             # manual_review para que el operador la cancele en Odoo. Cuando se
             # parta el flag (cancel_so_enabled vs emit_credit_note_enabled),
             # cancelar SO debería seguir siendo automático.
-            mark_completed(dedupe_key, "manual_review", {
-                "reason": "cancelled_upstream_but_refunds_disabled",
-                "ref": ref,
-                "hint": "Cancelar manualmente la SO en Odoo (stock reservado).",
-            })
+            mark_completed(
+                dedupe_key,
+                "manual_review",
+                {
+                    "reason": "cancelled_upstream_but_refunds_disabled",
+                    "ref": ref,
+                    "hint": "Cancelar manualmente la SO en Odoo (stock reservado).",
+                },
+            )
             return False
-        rc, out, err = run_tool("amazon_fba_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
+        rc, out, err = run_tool(
+            "amazon_fba_refund_and_cancel", {"CLIENT_ORDER_REF": ref}
+        )
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
         return _finalize(dedupe_key, result, {"ref": ref, **detail}, ms)
@@ -1123,15 +1296,22 @@ def process_fba(order: dict, order_id: str, marketplace: str, action: str, dedup
         if not is_enabled("amazon_inbound_fba_paid_enabled"):
             mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"})
             return False
-        _wh_key = "warehouse_amazon_fba_us" if marketplace != AMZ_MX_MARKETPLACE else "warehouse_amazon_fba_mx"
-        rc, out, err = run_tool("amazon_fba_paid_one_shot", {
-            "CLIENT_ORDER_REF": ref,
-            "ORDER_JSON": json.dumps(order),
-            "CHANNEL_LABEL": channel_label,
-            "BUYER_NAME": buyer_name,
-            "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
-            "WAREHOUSE_NAME": get_setting(_wh_key),
-        })
+        _wh_key = (
+            "warehouse_amazon_fba_us"
+            if marketplace != AMZ_MX_MARKETPLACE
+            else "warehouse_amazon_fba_mx"
+        )
+        rc, out, err = run_tool(
+            "amazon_fba_paid_one_shot",
+            {
+                "CLIENT_ORDER_REF": ref,
+                "ORDER_JSON": json.dumps(order),
+                "CHANNEL_LABEL": channel_label,
+                "BUYER_NAME": buyer_name,
+                "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
+                "WAREHOUSE_NAME": get_setting(_wh_key),
+            },
+        )
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
         return _finalize(dedupe_key, result, {"ref": ref, **detail}, ms)
@@ -1139,8 +1319,15 @@ def process_fba(order: dict, order_id: str, marketplace: str, action: str, dedup
     return False
 
 
-def process_fbm(order: dict, order_id: str, marketplace: str, action: str, dedupe_key: str,
-               channel_label: str = "Amazon FBM", buyer_name: str = "") -> bool:
+def process_fbm(
+    order: dict,
+    order_id: str,
+    marketplace: str,
+    action: str,
+    dedupe_key: str,
+    channel_label: str = "Amazon FBM",
+    buyer_name: str = "",
+) -> bool:
     """Returns True if the job must be re-queued (deferred)."""
     ref = f"AMZFBM:{marketplace}:{order_id}"
     start = time.time()
@@ -1148,13 +1335,19 @@ def process_fbm(order: dict, order_id: str, marketplace: str, action: str, dedup
     if action == "cancelled":
         if not is_enabled("amazon_inbound_fbm_refunds_enabled"):
             # Bug #13: ver process_fba arriba.
-            mark_completed(dedupe_key, "manual_review", {
-                "reason": "cancelled_upstream_but_refunds_disabled",
-                "ref": ref,
-                "hint": "Cancelar manualmente la SO en Odoo (stock reservado).",
-            })
+            mark_completed(
+                dedupe_key,
+                "manual_review",
+                {
+                    "reason": "cancelled_upstream_but_refunds_disabled",
+                    "ref": ref,
+                    "hint": "Cancelar manualmente la SO en Odoo (stock reservado).",
+                },
+            )
             return False
-        rc, out, err = run_tool("amazon_fbm_refund_and_cancel", {"CLIENT_ORDER_REF": ref})
+        rc, out, err = run_tool(
+            "amazon_fbm_refund_and_cancel", {"CLIENT_ORDER_REF": ref}
+        )
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
         return _finalize(dedupe_key, result, {"ref": ref, **detail}, ms)
@@ -1163,13 +1356,16 @@ def process_fbm(order: dict, order_id: str, marketplace: str, action: str, dedup
         if not is_enabled("amazon_inbound_fbm_paid_enabled"):
             mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"})
             return False
-        rc, out, err = run_tool("amazon_fbm_paid_one_shot", {
-            "CLIENT_ORDER_REF": ref,
-            "ORDER_JSON": json.dumps(order),
-            "CHANNEL_LABEL": channel_label,
-            "BUYER_NAME": buyer_name,
-            "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
-        })
+        rc, out, err = run_tool(
+            "amazon_fbm_paid_one_shot",
+            {
+                "CLIENT_ORDER_REF": ref,
+                "ORDER_JSON": json.dumps(order),
+                "CHANNEL_LABEL": channel_label,
+                "BUYER_NAME": buyer_name,
+                "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
+            },
+        )
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
         return _finalize(dedupe_key, result, {"ref": ref, **detail}, ms)
@@ -1184,7 +1380,11 @@ def main():
     global current_job_dedupe_key, current_job_processing_key
 
     init_db()
-    log("Worker started", "INFO", {"version": "2.7", "db": Config.DB_PATH, "queue": Config.QUEUE})
+    log(
+        "Worker started",
+        "INFO",
+        {"version": "2.7", "db": Config.DB_PATH, "queue": Config.QUEUE},
+    )
 
     redis_client = redis.Redis.from_url(Config.REDIS_URL, decode_responses=True)
     try:
@@ -1238,7 +1438,9 @@ def main():
     # Start threads (non-daemon so we can join)
     t_reaper = threading.Thread(target=reaper_loop, args=(redis_client,), daemon=False)
     t_hb = threading.Thread(target=heartbeat_thread, daemon=False)
-    t_metrics = threading.Thread(target=metrics_reporter, args=(redis_client,), daemon=False)
+    t_metrics = threading.Thread(
+        target=metrics_reporter, args=(redis_client,), daemon=False
+    )
 
     t_reaper.start()
     t_hb.start()
@@ -1267,11 +1469,16 @@ def main():
                 job = json.loads(item_data)
             except json.JSONDecodeError:
                 log("Invalid JSON", "ERROR", {"preview": str(item_data)[:200]})
-                redis_client.lpush(Config.DEAD_LETTER, json.dumps({
-                    "raw": str(item_data)[:1000],
-                    "error": "json_decode_error",
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                }))
+                redis_client.lpush(
+                    Config.DEAD_LETTER,
+                    json.dumps(
+                        {
+                            "raw": str(item_data)[:1000],
+                            "error": "json_decode_error",
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ),
+                )
                 redis_client.ltrim(Config.DEAD_LETTER, 0, Config.DLQ_MAX)
                 continue
 
@@ -1291,7 +1498,9 @@ def main():
                 if order_id:
                     dedupe_key = f"amz:{marketplace}:{order_id}:{status}"
                 else:
-                    dedupe_key = f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
+                    dedupe_key = (
+                        f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
+                    )
                 job["dedupe_key"] = dedupe_key
 
             payload_hash = persist_payload(dedupe_key, job)
@@ -1311,7 +1520,15 @@ def main():
                 delay = min(base + jitter, 10.0)
 
                 redis_client.rpush(Config.QUEUE, json.dumps(job))
-                log("Lock busy: requeued", "DEBUG", {"dedupe_key": dedupe_key, "lock_busy": lock_busy, "sleep_s": round(delay, 3)})
+                log(
+                    "Lock busy: requeued",
+                    "DEBUG",
+                    {
+                        "dedupe_key": dedupe_key,
+                        "lock_busy": lock_busy,
+                        "sleep_s": round(delay, 3),
+                    },
+                )
                 time.sleep(delay)
                 continue
 
@@ -1319,7 +1536,13 @@ def main():
             redis_client.setex(
                 processing_key,
                 Config.LOCK_TIMEOUT + 60,
-                json.dumps({"dedupe_key": dedupe_key, "worker": Config.WORKER_ID, "started_at": datetime.now(timezone.utc).isoformat()}),
+                json.dumps(
+                    {
+                        "dedupe_key": dedupe_key,
+                        "worker": Config.WORKER_ID,
+                        "started_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ),
             )
 
             with job_lock:
@@ -1353,7 +1576,9 @@ def main():
                     order.update(enriched)
                     job["order_json"] = order
 
-            marketplace = str(order.get("MarketplaceId", "")).strip() or get_setting("amazon_marketplace_id", "A1AM78C64UM0Y8")
+            marketplace = str(order.get("MarketplaceId", "")).strip() or get_setting(
+                "amazon_marketplace_id", "A1AM78C64UM0Y8"
+            )
             status = str(order.get("OrderStatus", "")).strip()
             action = map_order_status(status)
 
@@ -1366,7 +1591,7 @@ def main():
                         continue
                     row = db.execute(
                         "SELECT odoo_default_code FROM amazon_sku_mapping WHERE seller_sku=? LIMIT 1",
-                        (raw_sku,)
+                        (raw_sku,),
                     ).fetchone()
                     if row and row[0]:
                         mapped = str(row[0]).strip()
@@ -1375,16 +1600,24 @@ def main():
                             it["SellerSKU"] = mapped
                             it["sku"] = mapped
                             order["amazon_sku_mapped"] = True
-                            log("SKU mapped (legacy)", "INFO", {
-                                "order_id": order_id,
-                                "amazon_sku": raw_sku,
-                                "odoo_sku": mapped,
-                            })
+                            log(
+                                "SKU mapped (legacy)",
+                                "INFO",
+                                {
+                                    "order_id": order_id,
+                                    "amazon_sku": raw_sku,
+                                    "odoo_sku": mapped,
+                                },
+                            )
             except Exception as e:
-                log("SKU mapping warning: could not apply amazon_sku_mapping", "WARN", {
-                    "order_id": order_id,
-                    "error": str(e),
-                })
+                log(
+                    "SKU mapping warning: could not apply amazon_sku_mapping",
+                    "WARN",
+                    {
+                        "order_id": order_id,
+                        "error": str(e),
+                    },
+                )
 
             channel_type, channel_label, profile = detect_order_profile(order)
 
@@ -1396,7 +1629,8 @@ def main():
             buyer = extract_buyer_info(order)
             buyer_name = buyer["buyer_name"] or ""
 
-            db.execute("""
+            db.execute(
+                """
                 INSERT INTO amazon_orders_state
                     (order_id, marketplace, last_state, last_seen_at, fulfillment_channel,
                      buyer_email, buyer_name, ship_city, ship_state, ship_country)
@@ -1410,24 +1644,46 @@ def main():
                     ship_city=COALESCE(excluded.ship_city, ship_city),
                     ship_state=COALESCE(excluded.ship_state, ship_state),
                     ship_country=COALESCE(excluded.ship_country, ship_country)
-            """, (
-                order_id, marketplace, status, datetime.now(timezone.utc).isoformat(), profile,
-                buyer["buyer_email"], buyer_name, buyer["ship_city"], buyer["ship_state"], buyer["ship_country"],
-            ))
+            """,
+                (
+                    order_id,
+                    marketplace,
+                    status,
+                    datetime.now(timezone.utc).isoformat(),
+                    profile,
+                    buyer["buyer_email"],
+                    buyer_name,
+                    buyer["ship_city"],
+                    buyer["ship_state"],
+                    buyer["ship_country"],
+                ),
+            )
 
-            log("State probe", "INFO", {
-                "order_id": order_id,
-                "marketplace": marketplace,
-                "status": status,
-                "action": action,
-                "profile": profile,
-                "label": channel_label,
-                "buyer_name": buyer_name[:30] if buyer_name else "N/A",
-                "ship_city": buyer["ship_city"] or "N/A",
-            })
+            log(
+                "State probe",
+                "INFO",
+                {
+                    "order_id": order_id,
+                    "marketplace": marketplace,
+                    "status": status,
+                    "action": action,
+                    "profile": profile,
+                    "label": channel_label,
+                    "buyer_name": buyer_name[:30] if buyer_name else "N/A",
+                    "ship_city": buyer["ship_city"] or "N/A",
+                },
+            )
 
             if action is None:
-                mark_completed(dedupe_key, "skipped", {"order_id": order_id, "status": status, "reason": "pending_or_unknown"})
+                mark_completed(
+                    dedupe_key,
+                    "skipped",
+                    {
+                        "order_id": order_id,
+                        "status": status,
+                        "reason": "pending_or_unknown",
+                    },
+                )
                 redis_client.delete(processing_key)
                 with job_lock:
                     current_job_dedupe_key = None
@@ -1435,34 +1691,67 @@ def main():
                 continue
 
             if channel_type == "FBA":
-                needs_requeue = process_fba(order, order_id, marketplace, action, dedupe_key, channel_label, buyer_name)
+                needs_requeue = process_fba(
+                    order,
+                    order_id,
+                    marketplace,
+                    action,
+                    dedupe_key,
+                    channel_label,
+                    buyer_name,
+                )
             else:
-                needs_requeue = process_fbm(order, order_id, marketplace, action, dedupe_key, channel_label, buyer_name)
+                needs_requeue = process_fbm(
+                    order,
+                    order_id,
+                    marketplace,
+                    action,
+                    dedupe_key,
+                    channel_label,
+                    buyer_name,
+                )
 
             if needs_requeue:
                 deferred_count = int(job.get("_deferred_count", 0)) + 1
                 job["_deferred_count"] = deferred_count
                 if deferred_count >= Config.MAX_DEFERRED:
-                    mark_completed(dedupe_key, "dead", {
-                        "reason": "max_deferred_exceeded",
-                        "deferred_count": deferred_count,
-                    })
-                    redis_client.lpush(Config.DEAD_LETTER, json.dumps({
-                        "job": job,
-                        "error": "max_deferred_exceeded",
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                    }))
+                    mark_completed(
+                        dedupe_key,
+                        "dead",
+                        {
+                            "reason": "max_deferred_exceeded",
+                            "deferred_count": deferred_count,
+                        },
+                    )
+                    redis_client.lpush(
+                        Config.DEAD_LETTER,
+                        json.dumps(
+                            {
+                                "job": job,
+                                "error": "max_deferred_exceeded",
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                            }
+                        ),
+                    )
                     redis_client.ltrim(Config.DEAD_LETTER, 0, Config.DLQ_MAX)
-                    log("Deferred: max retries exhausted → DLQ", "ERROR", {
-                        "dedupe_key": dedupe_key,
-                        "deferred_count": deferred_count,
-                    })
+                    log(
+                        "Deferred: max retries exhausted → DLQ",
+                        "ERROR",
+                        {
+                            "dedupe_key": dedupe_key,
+                            "deferred_count": deferred_count,
+                        },
+                    )
                 else:
                     redis_client.rpush(Config.QUEUE, json.dumps(job))
-                    log("Deferred: requeued", "INFO", {
-                        "dedupe_key": dedupe_key,
-                        "deferred_count": deferred_count,
-                    })
+                    log(
+                        "Deferred: requeued",
+                        "INFO",
+                        {
+                            "dedupe_key": dedupe_key,
+                            "deferred_count": deferred_count,
+                        },
+                    )
 
             redis_client.delete(processing_key)
             with job_lock:
@@ -1470,7 +1759,11 @@ def main():
                 current_job_processing_key = None
 
         except Exception as e:
-            log("Unhandled exception", "CRITICAL", {"error": str(e), "dedupe_key": dedupe_key})
+            log(
+                "Unhandled exception",
+                "CRITICAL",
+                {"error": str(e), "dedupe_key": dedupe_key},
+            )
 
             if dedupe_key:
                 try:
@@ -1478,8 +1771,15 @@ def main():
                     retry_count = int(job.get("_retry_count", 0))
 
                     if retry_count >= Config.MAX_RETRIES:
-                        mark_completed(dedupe_key, "dead", {"reason": "unhandled_exception", "error": str(e)})
-                        redis_client.lpush(Config.DEAD_LETTER, json.dumps({"job": job, "error": str(e)}))
+                        mark_completed(
+                            dedupe_key,
+                            "dead",
+                            {"reason": "unhandled_exception", "error": str(e)},
+                        )
+                        redis_client.lpush(
+                            Config.DEAD_LETTER,
+                            json.dumps({"job": job, "error": str(e)}),
+                        )
                         redis_client.ltrim(Config.DEAD_LETTER, 0, Config.DLQ_MAX)
                     else:
                         job["_retry_count"] = retry_count + 1
@@ -1488,10 +1788,13 @@ def main():
                         # Metrics: retries (optional)
                         try:
                             hour = datetime.now().strftime("%Y-%m-%d-%H")
-                            db.execute("""
+                            db.execute(
+                                """
                                 INSERT INTO amazon_metrics (hour, retries) VALUES (?, 1)
                                 ON CONFLICT(hour) DO UPDATE SET retries = retries + 1
-                            """, (hour,))
+                            """,
+                                (hour,),
+                            )
                         except Exception:
                             pass
 

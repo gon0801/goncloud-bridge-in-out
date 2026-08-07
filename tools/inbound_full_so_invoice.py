@@ -86,8 +86,12 @@ def find_so_id(url, db, uid, pw, so_id=None, client_order_ref=None):
         die("provide --so-id or --client-order-ref")
 
     ids = odoo_call(
-        url, db, uid, pw,
-        "sale.order", "search",
+        url,
+        db,
+        uid,
+        pw,
+        "sale.order",
+        "search",
         args=[[["client_order_ref", "=", client_order_ref]]],
         kwargs={"limit": 1},
     )
@@ -159,16 +163,24 @@ def main():
     so_id = find_so_id(url, db, uid, pw, args.so_id, args.client_order_ref)
 
     so = odoo_call(
-        url, db, uid, pw,
-        "sale.order", "read",
+        url,
+        db,
+        uid,
+        pw,
+        "sale.order",
+        "read",
         args=[[so_id], ["id", "name", "state", "client_order_ref"]],
     )[0]
 
     ref = so.get("client_order_ref") or ""
-    print(f"[FULL_INVOICE] INFO so_id={so_id} name={so.get('name')} state={so.get('state')} ref={ref}")
+    print(
+        f"[FULL_INVOICE] INFO so_id={so_id} name={so.get('name')} state={so.get('state')} ref={ref}"
+    )
 
     if so.get("state") != "sale":
-        die("sale.order must be in state 'sale' before invoicing (run FULL confirm-no-picking first)")
+        die(
+            "sale.order must be in state 'sale' before invoicing (run FULL confirm-no-picking first)"
+        )
 
     # Context CANÓNICO: wizard usa active_model/active_ids
     ctx = {
@@ -179,8 +191,12 @@ def main():
 
     # 1) Crear wizard
     wiz_id = odoo_call(
-        url, db, uid, pw,
-        "sale.advance.payment.inv", "create",
+        url,
+        db,
+        uid,
+        pw,
+        "sale.advance.payment.inv",
+        "create",
         args=[{"advance_payment_method": "delivered"}],
         kwargs={"context": ctx},
     )
@@ -189,8 +205,12 @@ def main():
 
     # 2) Ejecutar wizard (SIN args extra; solo recordset + context)
     action = odoo_call(
-        url, db, uid, pw,
-        "sale.advance.payment.inv", "create_invoices",
+        url,
+        db,
+        uid,
+        pw,
+        "sale.advance.payment.inv",
+        "create_invoices",
         args=[[wiz_id]],
         kwargs={"context": ctx},
     )
@@ -202,9 +222,18 @@ def main():
         so_name = so.get("name")
         if so_name:
             inv_ids = odoo_call(
-                url, db, uid, pw,
-                "account.move", "search",
-                args=[[["move_type", "=", "out_invoice"], ["invoice_origin", "=", so_name]]],
+                url,
+                db,
+                uid,
+                pw,
+                "account.move",
+                "search",
+                args=[
+                    [
+                        ["move_type", "=", "out_invoice"],
+                        ["invoice_origin", "=", so_name],
+                    ]
+                ],
                 kwargs={"limit": 10},
             )
             invoice_ids = inv_ids or []
@@ -214,8 +243,12 @@ def main():
 
     # 3) Postear invoice(s)
     odoo_call(
-        url, db, uid, pw,
-        "account.move", "action_post",
+        url,
+        db,
+        uid,
+        pw,
+        "account.move",
+        "action_post",
         args=[invoice_ids],
     )
 

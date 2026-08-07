@@ -11,13 +11,16 @@ DB_PATH = "/mnt/data/appdata/bridge/data/bridge.db"
 TIMEOUT = 30
 TOL = 1e-6
 
+
 def utc_now():
     # ISO UTC con Z
     return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
+
 def die(msg, code=1):
     print(msg, file=sys.stderr)
     sys.exit(code)
+
 
 def get_env(name):
     v = os.getenv(name)
@@ -25,16 +28,21 @@ def get_env(name):
         die(f"FALTA ENV {name}. Define {name} en tu entorno antes de correr apply.")
     return v
 
+
 def short(s, n=900):
     s = str(s)
     return s if len(s) <= n else s[:n] + "…"
 
+
 def get_flag(key):
     con = sqlite3.connect(DB_PATH, timeout=10)
     con.execute("PRAGMA busy_timeout=5000;")
-    row = con.execute("SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,)).fetchone()
+    row = con.execute(
+        "SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,)
+    ).fetchone()
     con.close()
     return str(row[0]) if row and row[0] is not None else "0"
+
 
 def read_bridge_delta(delta_id):
     con = sqlite3.connect(DB_PATH, timeout=10)
@@ -46,6 +54,7 @@ def read_bridge_delta(delta_id):
     con.close()
     return row
 
+
 def mark_applied(delta_id, odoo_ref):
     con = sqlite3.connect(DB_PATH, timeout=10)
     con.execute("PRAGMA busy_timeout=5000;")
@@ -56,7 +65,10 @@ def mark_applied(delta_id, odoo_ref):
     con.commit()
     con.close()
 
-def odoo_auth(session: requests.Session, base_url: str, db: str, user: str, password: str) -> int:
+
+def odoo_auth(
+    session: requests.Session, base_url: str, db: str, user: str, password: str
+) -> int:
     url = base_url.rstrip("/") + "/web/session/authenticate"
     payload = {
         "jsonrpc": "2.0",
@@ -68,13 +80,25 @@ def odoo_auth(session: requests.Session, base_url: str, db: str, user: str, pass
     r.raise_for_status()
     data = r.json()
     if "error" in data:
-        raise RuntimeError(f"auth_error: {short(json.dumps(data['error'], ensure_ascii=False), 1200)}")
+        raise RuntimeError(
+            f"auth_error: {short(json.dumps(data['error'], ensure_ascii=False), 1200)}"
+        )
     uid = (data.get("result") or {}).get("uid")
     if not uid:
-        raise RuntimeError(f"auth_failed_no_uid body={short(json.dumps(data, ensure_ascii=False), 1200)}")
+        raise RuntimeError(
+            f"auth_failed_no_uid body={short(json.dumps(data, ensure_ascii=False), 1200)}"
+        )
     return int(uid)
 
-def call_kw(session: requests.Session, base_url: str, model: str, method: str, args=None, kwargs=None):
+
+def call_kw(
+    session: requests.Session,
+    base_url: str,
+    model: str,
+    method: str,
+    args=None,
+    kwargs=None,
+):
     args = args or []
     kwargs = kwargs or {}
     url = base_url.rstrip("/") + f"/web/dataset/call_kw/{model}/{method}"
@@ -105,42 +129,74 @@ def call_kw(session: requests.Session, base_url: str, model: str, method: str, a
 
     return data["result"]
 
-def sum_qty_for_product_location(session, ODOO_URL, product_id: int, location_id: int) -> float:
-    q_ids = call_kw(
-        session, ODOO_URL,
-        "stock.quant", "search",
-        args=[[["product_id", "=", product_id], ["location_id", "=", location_id]]],
-        kwargs={},
-    ) or []
+
+def sum_qty_for_product_location(
+    session, ODOO_URL, product_id: int, location_id: int
+) -> float:
+    q_ids = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "stock.quant",
+            "search",
+            args=[[["product_id", "=", product_id], ["location_id", "=", location_id]]],
+            kwargs={},
+        )
+        or []
+    )
     if not q_ids:
         return 0.0
 
-    rows = call_kw(
-        session, ODOO_URL,
-        "stock.quant", "read",
-        args=[q_ids, ["quantity"]],
-        kwargs={},
-    ) or []
+    rows = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "stock.quant",
+            "read",
+            args=[q_ids, ["quantity"]],
+            kwargs={},
+        )
+        or []
+    )
     return float(sum((r.get("quantity") or 0.0) for r in rows))
 
+
 def _get_quants_detail(session, ODOO_URL, product_id: int, location_id: int):
-    q_ids = call_kw(
-        session, ODOO_URL,
-        "stock.quant", "search",
-        args=[[["product_id", "=", product_id], ["location_id", "=", location_id]]],
-        kwargs={},
-    ) or []
+    q_ids = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "stock.quant",
+            "search",
+            args=[[["product_id", "=", product_id], ["location_id", "=", location_id]]],
+            kwargs={},
+        )
+        or []
+    )
     if not q_ids:
         return [], []
 
-    fields = ["id", "quantity", "reserved_quantity", "inventory_quantity", "inventory_quantity_set", "in_date"]
-    rows = call_kw(
-        session, ODOO_URL,
-        "stock.quant", "read",
-        args=[q_ids, fields],
-        kwargs={},
-    ) or []
+    fields = [
+        "id",
+        "quantity",
+        "reserved_quantity",
+        "inventory_quantity",
+        "inventory_quantity_set",
+        "in_date",
+    ]
+    rows = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "stock.quant",
+            "read",
+            args=[q_ids, fields],
+            kwargs={},
+        )
+        or []
+    )
     return q_ids, rows
+
 
 def _classify_quants(rows):
     """
@@ -173,7 +229,10 @@ def _classify_quants(rows):
 
     return real, junk, unsafe
 
-def ensure_single_quant_or_manual_review(session, ODOO_URL, sku: str, product_id: int, location_id: int):
+
+def ensure_single_quant_or_manual_review(
+    session, ODOO_URL, sku: str, product_id: int, location_id: int
+):
     """
     Regla canónica:
     - Si hay múltiples quants pero solo 1 es real y el resto es basura segura => borra basura y ok.
@@ -186,19 +245,29 @@ def ensure_single_quant_or_manual_review(session, ODOO_URL, sku: str, product_id
     real, junk, unsafe = _classify_quants(rows)
 
     if unsafe:
-        die(f"MANUAL_REVIEW: hay quants UNSAFE para sku={sku} location_id={location_id}. unsafe={unsafe}")
+        die(
+            f"MANUAL_REVIEW: hay quants UNSAFE para sku={sku} location_id={location_id}. unsafe={unsafe}"
+        )
 
     if len(real) == 1:
         # Borra basura si existe
         if junk:
-            _ = call_kw(session, ODOO_URL, "stock.quant", "unlink", args=[junk], kwargs={})
-            print(f"[OK] Limpieza quants basura: borrados={len(junk)} ids={junk}", flush=True)
+            _ = call_kw(
+                session, ODOO_URL, "stock.quant", "unlink", args=[junk], kwargs={}
+            )
+            print(
+                f"[OK] Limpieza quants basura: borrados={len(junk)} ids={junk}",
+                flush=True,
+            )
         return real[0]
 
     if len(real) == 0 and junk:
         # Solo hay basura (quantity NULL). Lo más seguro: borrarla y seguir como si no hubiera quants.
         _ = call_kw(session, ODOO_URL, "stock.quant", "unlink", args=[junk], kwargs={})
-        print(f"[OK] Limpieza: solo basura encontrada, borrados={len(junk)} ids={junk}", flush=True)
+        print(
+            f"[OK] Limpieza: solo basura encontrada, borrados={len(junk)} ids={junk}",
+            flush=True,
+        )
         return None
 
     # >1 real => ambigüedad (lotes/paquetes/etc). No tocamos.
@@ -207,16 +276,24 @@ def ensure_single_quant_or_manual_review(session, ODOO_URL, sku: str, product_id
         f"No es seguro aplicar delta con 1 solo quant. (real={real})"
     )
 
+
 def main():
     ap = argparse.ArgumentParser(
         description="Apply ONE inbound_stock_deltas row to Odoo via /web/dataset/call_kw (safe + verify + auto-clean junk quants)."
     )
     ap.add_argument("--delta-id", required=True)
-    ap.add_argument("--location-id", type=int, default=0, help="Force internal stock.location id (0 = auto first internal).")
+    ap.add_argument(
+        "--location-id",
+        type=int,
+        default=0,
+        help="Force internal stock.location id (0 = auto first internal).",
+    )
     args = ap.parse_args()
 
     if get_flag("meli_inbound_apply_stock_enabled") != "1":
-        die("BLOQUEADO: meli_inbound_apply_stock_enabled != 1 (botón rojo sigue apagado)")
+        die(
+            "BLOQUEADO: meli_inbound_apply_stock_enabled != 1 (botón rojo sigue apagado)"
+        )
 
     row = read_bridge_delta(args.delta_id)
     if not row:
@@ -235,8 +312,10 @@ def main():
 
     # producto por default_code
     prod_ids = call_kw(
-        session, ODOO_URL,
-        "product.product", "search",
+        session,
+        ODOO_URL,
+        "product.product",
+        "search",
         args=[[["default_code", "=", sku]]],
         kwargs={"limit": 1},
     )
@@ -249,8 +328,10 @@ def main():
         location_id = int(args.location_id)
     else:
         loc_ids = call_kw(
-            session, ODOO_URL,
-            "stock.location", "search",
+            session,
+            ODOO_URL,
+            "stock.location",
+            "search",
             args=[[["usage", "=", "internal"]]],
             kwargs={"limit": 1},
         )
@@ -259,17 +340,23 @@ def main():
         location_id = int(loc_ids[0])
 
     # A) asegurar 1 quant (o ninguno => se crea 1)
-    quant_id = ensure_single_quant_or_manual_review(session, ODOO_URL, sku, product_id, location_id)
+    quant_id = ensure_single_quant_or_manual_review(
+        session, ODOO_URL, sku, product_id, location_id
+    )
 
     # B) calcular target absoluto
-    current_qty = sum_qty_for_product_location(session, ODOO_URL, product_id, location_id)
+    current_qty = sum_qty_for_product_location(
+        session, ODOO_URL, product_id, location_id
+    )
     target_qty = float(current_qty) + float(qty_delta)
 
     # Si no hay quant, creamos uno limpio
     if quant_id is None:
         qid = call_kw(
-            session, ODOO_URL,
-            "stock.quant", "create",
+            session,
+            ODOO_URL,
+            "stock.quant",
+            "create",
             args=[{"product_id": product_id, "location_id": location_id}],
             kwargs={},
         )
@@ -279,19 +366,26 @@ def main():
 
     # C) escribir inventario en el quant elegido (target absoluto)
     _ = call_kw(
-        session, ODOO_URL,
-        "stock.quant", "write",
-        args=[[int(quant_id)], {
-            "inventory_quantity": target_qty,
-            "inventory_quantity_set": True,
-        }],
+        session,
+        ODOO_URL,
+        "stock.quant",
+        "write",
+        args=[
+            [int(quant_id)],
+            {
+                "inventory_quantity": target_qty,
+                "inventory_quantity_set": True,
+            },
+        ],
         kwargs={},
     )
 
     # D) aplicar
     _ = call_kw(
-        session, ODOO_URL,
-        "stock.quant", "action_apply_inventory",
+        session,
+        ODOO_URL,
+        "stock.quant",
+        "action_apply_inventory",
         args=[[int(quant_id)]],
         kwargs={},
     )
@@ -310,6 +404,7 @@ def main():
         f"current_qty={current_qty} target_qty={target_qty} after_qty={after_qty} "
         f"location_id={location_id} odoo_ref=quant:{quant_id}"
     )
+
 
 if __name__ == "__main__":
     main()

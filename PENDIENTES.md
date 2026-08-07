@@ -2,7 +2,7 @@
 
 > **Para Claude:** este archivo es la **fuente de verdad única**. Al iniciar sesión: leerlo y recordar al usuario. Al terminar subtarea: actualizar tabla + checkbox + contadores + commit + push + PR + merge.
 
-**Última actualización:** 2026-05-08  
+**Última actualización:** 2026-05-08
 **Progreso:** 9/16 subtareas (56%) — Auditoría de seguridad 100% completa
 
 ---

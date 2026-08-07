@@ -17,7 +17,7 @@ en órdenes FULL y decidir CUÁNDO ejecutar el flujo contable canónico
 =====================================================================
 
 SOLO se neutraliza contabilidad cuando exista señal explícita de REFUND
-(dinero devuelto).  
+(dinero devuelto).
 Un “return” por sí solo NO garantiza refund.
 
 =====================================================================
