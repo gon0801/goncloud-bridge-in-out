@@ -30,7 +30,11 @@ def log(msg, **kv):
 
 def die(m, code=2, **kv):
     log("ERROR " + m, **kv)
-    write_audit(audit)
+    # `audit` se arma recien despues de autenticar contra Odoo. Si morimos
+    # antes (falta una env var, falla el auth) todavia no existe, y
+    # referenciarlo tiraba NameError que tapaba el error real.
+    if "audit" in globals():
+        write_audit(audit)
     sys.exit(code)
 
 

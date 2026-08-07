@@ -1,0 +1,9 @@
+# Config minima del repo. No declara un paquete instalable: el bridge se
+# despliega copiando archivos, no con pip install.
+#
+# Existe sobre todo para fijar la config de pytest en un solo lugar y para
+# que el workflow de CI encuentre un marcador de proyecto Python.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

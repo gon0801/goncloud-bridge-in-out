@@ -1,0 +1,14 @@
+# Dependencias de terceros que importa el codigo del bridge.
+# Sirven para dos cosas: instalar el entorno y habilitar el paso
+# "Run Python tests" del workflow de CI, que esta condicionado a que exista
+# este archivo (o pyproject.toml).
+#
+# NO incluye `odoo`: bridge_connector/ es un addon que corre dentro del
+# runtime de Odoo, no se instala por pip. Los tests no lo importan.
+cryptography
+defusedxml
+fastapi
+httpx
+pydantic
+redis
+requests
