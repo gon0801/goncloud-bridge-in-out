@@ -22,7 +22,6 @@ Uso:
 import os
 import sys
 import json
-import time
 import argparse
 import sqlite3
 import datetime
@@ -37,10 +36,11 @@ TIMEOUT = 30
 # Flags FULL (sellado)
 FULL_REQUIRED_FLAGS = {
     "meli_inbound_create_so_enabled": "1",
-    "meli_inbound_confirm_so_enabled": "0",          # FULL NO usa action_confirm
-    "meli_inbound_validate_picking_enabled": "0",    # FULL NO valida picking
-    "meli_inbound_apply_stock_enabled": "0",         # FULL NO aplica stock por deltas
+    "meli_inbound_confirm_so_enabled": "0",  # FULL NO usa action_confirm
+    "meli_inbound_validate_picking_enabled": "0",  # FULL NO valida picking
+    "meli_inbound_apply_stock_enabled": "0",  # FULL NO aplica stock por deltas
 }
+
 
 def die(msg: str, code: int = 2):
     print(f"[FULL_SO_APPLY] ERROR {msg}", file=sys.stderr, flush=True)
@@ -49,8 +49,7 @@ def die(msg: str, code: int = 2):
 
 def utc_now():
     return (
-        datetime.datetime
-        .now(timezone.utc)
+        datetime.datetime.now(datetime.timezone.utc)
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")
@@ -60,6 +59,7 @@ def utc_now():
 def short(s: Any, n: int = 900) -> str:
     s = str(s)
     return s if len(s) <= n else s[:n] + "…"
+
 
 def get_env(name: str, default: Optional[str] = None) -> str:
     v = os.getenv(name)
@@ -74,7 +74,9 @@ def db_flag_get(key: str) -> str:
     try:
         con = sqlite3.connect(DB_PATH, timeout=10)
         con.execute("PRAGMA busy_timeout=5000;")
-        row = con.execute("SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,)).fetchone()
+        row = con.execute(
+            "SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,)
+        ).fetchone()
         con.close()
         if not row or row[0] is None:
             return "0"
@@ -230,49 +232,86 @@ def extract_items(order: Dict[str, Any]) -> List[Tuple[str, int]]:
     return sorted(merged.items(), key=lambda x: x[0])
 
 
-def odoo_auth(session: requests.Session, base_url: str, db: str, user: str, password: str) -> int:
+def odoo_auth(
+    session: requests.Session, base_url: str, db: str, user: str, password: str
+) -> int:
     url = base_url.rstrip("/") + "/web/session/authenticate"
-    payload = {"jsonrpc": "2.0", "method": "call", "params": {"db": db, "login": user, "password": password}, "id": 1}
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {"db": db, "login": user, "password": password},
+        "id": 1,
+    }
     r = session.post(url, json=payload, timeout=TIMEOUT)
     r.raise_for_status()
     data = r.json()
     if "error" in data:
-        raise RuntimeError(f"auth_error: {short(json.dumps(data['error'], ensure_ascii=False), 1200)}")
+        raise RuntimeError(
+            f"auth_error: {short(json.dumps(data['error'], ensure_ascii=False), 1200)}"
+        )
     uid = (data.get("result") or {}).get("uid")
     if not uid:
-        raise RuntimeError(f"auth_failed_no_uid body={short(json.dumps(data, ensure_ascii=False), 1200)}")
+        raise RuntimeError(
+            f"auth_failed_no_uid body={short(json.dumps(data, ensure_ascii=False), 1200)}"
+        )
     return int(uid)
 
 
-def call_kw(session: requests.Session, base_url: str, model: str, method: str, args=None, kwargs=None):
+def call_kw(
+    session: requests.Session,
+    base_url: str,
+    model: str,
+    method: str,
+    args=None,
+    kwargs=None,
+):
     args = args or []
     kwargs = kwargs or {}
     url = base_url.rstrip("/") + f"/web/dataset/call_kw/{model}/{method}"
-    payload = {"jsonrpc": "2.0", "method": "call", "params": {"model": model, "method": method, "args": args, "kwargs": kwargs}, "id": 1}
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {"model": model, "method": method, "args": args, "kwargs": kwargs},
+        "id": 1,
+    }
     r = session.post(url, json=payload, timeout=TIMEOUT)
     r.raise_for_status()
     data = r.json()
     if "error" in data:
-        raise RuntimeError(f"odoo_error model={model} method={method} err={short(json.dumps(data['error'], ensure_ascii=False), 1800)}")
+        raise RuntimeError(
+            f"odoo_error model={model} method={method} err={short(json.dumps(data['error'], ensure_ascii=False), 1800)}"
+        )
     return data.get("result")
 
 
-def find_existing_so(session: requests.Session, ODOO_URL: str, ref: str) -> Optional[Tuple[int, str, str]]:
-    ids = call_kw(
-        session, ODOO_URL,
-        "sale.order", "search",
-        args=[[["client_order_ref", "=", ref]]],
-        kwargs={"limit": 1},
-    ) or []
+def find_existing_so(
+    session: requests.Session, ODOO_URL: str, ref: str
+) -> Optional[Tuple[int, str, str]]:
+    ids = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "sale.order",
+            "search",
+            args=[[["client_order_ref", "=", ref]]],
+            kwargs={"limit": 1},
+        )
+        or []
+    )
     if not ids:
         return None
     so_id = int(ids[0])
-    rows = call_kw(
-        session, ODOO_URL,
-        "sale.order", "read",
-        args=[[so_id], ["name", "state", "client_order_ref"]],
-        kwargs={},
-    ) or []
+    rows = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "sale.order",
+            "read",
+            args=[[so_id], ["name", "state", "client_order_ref"]],
+            kwargs={},
+        )
+        or []
+    )
     if not rows:
         return (so_id, "", "")
     r0 = rows[0]
@@ -280,12 +319,20 @@ def find_existing_so(session: requests.Session, ODOO_URL: str, ref: str) -> Opti
 
 
 def product_gate(session: requests.Session, ODOO_URL: str, sku: str) -> Tuple[int, str]:
-    rows = call_kw(
-        session, ODOO_URL,
-        "product.product", "search_read",
-        args=[[["default_code", "=", sku], ["active", "=", True]]],
-        kwargs={"fields": ["id", "default_code", "sell_on_meli", "name"], "limit": 1},
-    ) or []
+    rows = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "product.product",
+            "search_read",
+            args=[[["default_code", "=", sku], ["active", "=", True]]],
+            kwargs={
+                "fields": ["id", "default_code", "sell_on_meli", "name"],
+                "limit": 1,
+            },
+        )
+        or []
+    )
     if not rows:
         die(f"sku_not_in_odoo sku={sku}")
     p = rows[0]
@@ -305,14 +352,18 @@ def create_so_draft(
     note: str,
 ) -> Tuple[int, str]:
     so_id = call_kw(
-        session, ODOO_URL,
-        "sale.order", "create",
-        args=[{
-            "partner_id": partner_id,
-            "client_order_ref": ref,
-            "origin": ref,
-            "note": note,
-        }],
+        session,
+        ODOO_URL,
+        "sale.order",
+        "create",
+        args=[
+            {
+                "partner_id": partner_id,
+                "client_order_ref": ref,
+                "origin": ref,
+                "note": note,
+            }
+        ],
         kwargs={},
     )
     if not so_id:
@@ -322,31 +373,42 @@ def create_so_draft(
     # crear líneas con price_unit placeholder
     for product_id, qty in lines:
         _ = call_kw(
-            session, ODOO_URL,
-            "sale.order.line", "create",
-            args=[{
-                "order_id": so_id,
-                "product_id": int(product_id),
-                "product_uom_qty": float(qty),
-                "price_unit": 1.0,
-            }],
+            session,
+            ODOO_URL,
+            "sale.order.line",
+            "create",
+            args=[
+                {
+                    "order_id": so_id,
+                    "product_id": int(product_id),
+                    "product_uom_qty": float(qty),
+                    "price_unit": 1.0,
+                }
+            ],
             kwargs={},
         )
 
     # leer nombre
-    rows = call_kw(
-        session, ODOO_URL,
-        "sale.order", "read",
-        args=[[so_id], ["name"]],
-        kwargs={},
-    ) or []
+    rows = (
+        call_kw(
+            session,
+            ODOO_URL,
+            "sale.order",
+            "read",
+            args=[[so_id], ["name"]],
+            kwargs={},
+        )
+        or []
+    )
     so_name = ""
     if rows:
         so_name = str(rows[0].get("name") or "")
     return so_id, so_name
 
 
-def try_update_inbound_sales_orders(site: str, ml_order_id: str, status: str, so_id: int, so_name: str):
+def try_update_inbound_sales_orders(
+    site: str, ml_order_id: str, status: str, so_id: int, so_name: str
+):
     """
     No rompemos si la tabla no existe. Es “best effort” para auditoría.
     """
@@ -355,11 +417,24 @@ def try_update_inbound_sales_orders(site: str, ml_order_id: str, status: str, so
         con = sqlite3.connect(DB_PATH, timeout=10)
         con.execute("PRAGMA busy_timeout=5000;")
         # Si no existe tabla, esto falla y salimos silencioso.
-        con.execute("""
+        con.execute(
+            """
             INSERT OR IGNORE INTO inbound_sales_orders(dedupe_key, ml_order_id, site, status, odoo_so_id, odoo_name, created_at, updated_at)
             VALUES (?,?,?,?,?,?,?,?)
-        """, (dedupe_key, str(ml_order_id), str(site), str(status), int(so_id), str(so_name), utc_now(), utc_now()))
-        con.execute("""
+        """,
+            (
+                dedupe_key,
+                str(ml_order_id),
+                str(site),
+                str(status),
+                int(so_id),
+                str(so_name),
+                utc_now(),
+                utc_now(),
+            ),
+        )
+        con.execute(
+            """
             UPDATE inbound_sales_orders
                SET site=?,
                    status=?,
@@ -367,7 +442,9 @@ def try_update_inbound_sales_orders(site: str, ml_order_id: str, status: str, so
                    odoo_name=?,
                    updated_at=?
              WHERE dedupe_key=?
-        """, (str(site), str(status), int(so_id), str(so_name), utc_now(), dedupe_key))
+        """,
+            (str(site), str(status), int(so_id), str(so_name), utc_now(), dedupe_key),
+        )
         con.commit()
         con.close()
     except Exception:
@@ -378,8 +455,12 @@ def try_update_inbound_sales_orders(site: str, ml_order_id: str, status: str, so
 
 
 def main():
-    ap = argparse.ArgumentParser(description="FULL: create contable SO (draft) without stock/picking/procurement.")
-    ap.add_argument("--ml-order-id", required=True, help="numeric ML order id or SIM id")
+    ap = argparse.ArgumentParser(
+        description="FULL: create contable SO (draft) without stock/picking/procurement."
+    )
+    ap.add_argument(
+        "--ml-order-id", required=True, help="numeric ML order id or SIM id"
+    )
     ap.add_argument("--order-json-file", help="SIM only: order JSON file path")
     args = ap.parse_args()
 
@@ -422,8 +503,13 @@ def main():
     if ex:
         so_id, so_name, so_state = ex
         # Actualiza auditoría best-effort
-        try_update_inbound_sales_orders(site, ml_order_id, "created_full", so_id, so_name)
-        print(f"[FULL_SO_APPLY] OK already_created so_id={so_id} name={so_name} ref={ref} state={so_state}", flush=True)
+        try_update_inbound_sales_orders(
+            site, ml_order_id, "created_full", so_id, so_name
+        )
+        print(
+            f"[FULL_SO_APPLY] OK already_created so_id={so_id} name={so_name} ref={ref} state={so_state}",
+            flush=True,
+        )
         return
 
     # Gate SKUs + prepare lines
@@ -439,13 +525,18 @@ def main():
     )
 
     try:
-        so_id, so_name = create_so_draft(session, ODOO_URL, partner_id, ref, lines, note)
+        so_id, so_name = create_so_draft(
+            session, ODOO_URL, partner_id, ref, lines, note
+        )
     except Exception as e:
         die(f"odoo create draft SO failed: {e!r}")
 
     try_update_inbound_sales_orders(site, ml_order_id, "created_full", so_id, so_name)
 
-    print(f"[FULL_SO_APPLY] OK created so_id={so_id} name={so_name} ref={ref} lines_ok={len(lines)}", flush=True)
+    print(
+        f"[FULL_SO_APPLY] OK created so_id={so_id} name={so_name} ref={ref} lines_ok={len(lines)}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
