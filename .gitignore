@@ -68,3 +68,6 @@ amz_order_*.json
 .meli_last_code*
 *.BAD*
 .claude/
+
+# artefactos de escaneo de seguridad
+bandit_output.json

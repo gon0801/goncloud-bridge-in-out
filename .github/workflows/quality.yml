@@ -1,0 +1,50 @@
+# Generado por quality-kit (init-repo.ps1). Corre los mismos candados que
+# ya corren en tu maquina (pre-commit) mas las pruebas, en la nube, en cada
+# push y en cada pull request -- asi el repo queda protegido aunque alguien
+# (vos, otra IA, un colaborador) haga un commit sin pasar por los candados
+# locales, o desde una maquina que no los tiene instalados.
+name: Quality
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        if: hashFiles('pyproject.toml', 'requirements.txt') != ''
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Set up Node
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Install Python dependencies
+        if: hashFiles('requirements.txt') != ''
+        run: pip install -r requirements.txt
+
+      - name: Install Node dependencies
+        if: hashFiles('package-lock.json') != ''
+        run: npm ci
+
+      - name: Run pre-commit (todos los candados locales, sobre todo el repo)
+        uses: pre-commit/action@v3.0.1
+
+      - name: Run Python tests
+        if: hashFiles('pyproject.toml', 'requirements.txt') != ''
+        run: |
+          pip install pytest
+          pytest -q
+
+      - name: Run Node tests
+        if: hashFiles('package.json') != ''
+        run: npm test --if-present
