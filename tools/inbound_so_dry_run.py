@@ -27,7 +27,7 @@ import json
 import os
 import sqlite3
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 import requests
 import subprocess
@@ -50,7 +50,12 @@ TIMEOUT = 30
 # UTILS
 # -----------------------------
 def utc_now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -77,7 +82,9 @@ def ml_get_order(ml_order_id: str) -> Dict[str, Any]:
     url = f"{ML_API}/orders/{ml_order_id}"
     r = requests.get(url, headers=h, timeout=TIMEOUT)
     if r.status_code != 200:
-        raise RuntimeError(f"ml_get_order_failed status={r.status_code} body={r.text[:500]}")
+        raise RuntimeError(
+            f"ml_get_order_failed status={r.status_code} body={r.text[:500]}"
+        )
     data = r.json()
     if not isinstance(data, dict):
         raise RuntimeError("ml_get_order_bad_json")
@@ -147,10 +154,19 @@ def psql(sql: str) -> str:
     Devuelve stdout strip.
     """
     cmd = [
-        "sudo", "docker", "exec", "-i",
+        "sudo",
+        "docker",
+        "exec",
+        "-i",
         ODOO_DB_CONTAINER,
-        "psql", "-U", ODOO_DB_USER, "-d", ODOO_DB_NAME,
-        "-At", "-c", sql
+        "psql",
+        "-U",
+        ODOO_DB_USER,
+        "-d",
+        ODOO_DB_NAME,
+        "-At",
+        "-c",
+        sql,
     ]
     try:
         out = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
@@ -259,10 +275,13 @@ CREATE INDEX IF NOT EXISTS idx_inbound_sales_orders_ml_order_id
     con.close()
 
 
-def upsert_inbound_sales_orders(dedupe_key: str, ml_order_id: str, site: str, status: str) -> None:
+def upsert_inbound_sales_orders(
+    dedupe_key: str, ml_order_id: str, site: str, status: str
+) -> None:
     con = sqlite3.connect(BRIDGE_DB, timeout=10)
     con.execute("PRAGMA busy_timeout=5000;")
-    con.execute("""
+    con.execute(
+        """
 INSERT INTO inbound_sales_orders(dedupe_key, ml_order_id, site, status, updated_at)
 VALUES(?, ?, ?, ?, ?)
 ON CONFLICT(dedupe_key) DO UPDATE SET
@@ -270,7 +289,9 @@ ON CONFLICT(dedupe_key) DO UPDATE SET
   site=excluded.site,
   status=excluded.status,
   updated_at=excluded.updated_at;
-""", (dedupe_key, ml_order_id, site, status, utc_now_iso()))
+""",
+        (dedupe_key, ml_order_id, site, status, utc_now_iso()),
+    )
     con.commit()
     con.close()
 
@@ -279,7 +300,9 @@ ON CONFLICT(dedupe_key) DO UPDATE SET
 # MAIN
 # -----------------------------
 def main():
-    ap = argparse.ArgumentParser(description="Dry-run: plan SO en Odoo para una orden ML (NO crea SO).")
+    ap = argparse.ArgumentParser(
+        description="Dry-run: plan SO en Odoo para una orden ML (NO crea SO)."
+    )
     ap.add_argument("--ml-order-id", required=True)
     args = ap.parse_args()
 
@@ -314,32 +337,38 @@ def main():
         info = odoo_product_info(sku)
 
         if not info["exists"]:
-            blocked_items.append({
-                "sku": sku,
-                "qty": qty,
-                "reason": "sku_not_in_odoo",
-            })
+            blocked_items.append(
+                {
+                    "sku": sku,
+                    "qty": qty,
+                    "reason": "sku_not_in_odoo",
+                }
+            )
             continue
 
         # CANÓNICO: si sell_on_meli = false => bloquea (permiso/intención)
         if not info["sell_on_meli"]:
-            blocked_items.append({
-                "sku": sku,
-                "qty": qty,
-                "reason": "sku_not_allowed_for_meli",
-                "product_id": info["product_id"],
-                "name": info["name"],
-            })
+            blocked_items.append(
+                {
+                    "sku": sku,
+                    "qty": qty,
+                    "reason": "sku_not_allowed_for_meli",
+                    "product_id": info["product_id"],
+                    "name": info["name"],
+                }
+            )
             continue
 
-        so_lines_ok.append({
-            "sku": sku,
-            "qty": qty,
-            "product_id": info["product_id"],
-            "name": info["name"],
-            "is_kit_phantom": bool(info["is_kit_phantom"]),
-            "phantom_bom_count": int(info["phantom_bom_count"]),
-        })
+        so_lines_ok.append(
+            {
+                "sku": sku,
+                "qty": qty,
+                "product_id": info["product_id"],
+                "name": info["name"],
+                "is_kit_phantom": bool(info["is_kit_phantom"]),
+                "phantom_bom_count": int(info["phantom_bom_count"]),
+            }
+        )
 
     # 4) Recomendación
     # Si hay al menos un kit phantom => SO recomendado sí o sí.

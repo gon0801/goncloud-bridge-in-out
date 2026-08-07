@@ -15,20 +15,22 @@ import sys
 import time
 import hashlib
 import threading
+import redis
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # S3: graceful shutdown — set by SIGTERM/SIGINT handler, checked in main loop
 _shutdown_requested = threading.Event()
+
 
 def _handle_shutdown(signum, frame):
     # Minimal signal handler — no locks, no logging. Main loop logs on check.
     _shutdown_requested.set()
 
+
 signal.signal(signal.SIGTERM, _handle_shutdown)
 signal.signal(signal.SIGINT, _handle_shutdown)
 
-import redis
 
 # =========================
 # CONFIG — Environment-driven, zero hardcode
@@ -38,30 +40,35 @@ class Config:
     DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
     REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
     TOKEN_FILE = os.getenv("MELI_TOKEN_FILE", "/data/.meli_tokens.json")
-    
+
     # Queues (Redis)
-    QUEUE = "ml_orders_jobs"           # FIFO: trabajos pendientes
-    PROCESSING = "ml_orders_processing" # Jobs actualmente en proceso (para observabilidad)
-    DEAD_LETTER = "ml_orders_dead"      # Jobs fallidos permanentemente
-    
+    QUEUE = "ml_orders_jobs"  # FIFO: trabajos pendientes
+    PROCESSING = (
+        "ml_orders_processing"  # Jobs actualmente en proceso (para observabilidad)
+    )
+    DEAD_LETTER = "ml_orders_dead"  # Jobs fallidos permanentemente
+
     # Timeouts (segundos)
-    LOCK_TIMEOUT = 600          # 10 min: tiempo máximo de procesamiento antes de considerar stale
-    HEARTBEAT_INTERVAL = 30     # 30 seg: frecuencia de heartbeat para jobs largos
-    REAPER_INTERVAL = 30        # 30 seg: frecuencia de limpieza de locks stale
-    
+    LOCK_TIMEOUT = (
+        600  # 10 min: tiempo máximo de procesamiento antes de considerar stale
+    )
+    HEARTBEAT_INTERVAL = 30  # 30 seg: frecuencia de heartbeat para jobs largos
+    REAPER_INTERVAL = 30  # 30 seg: frecuencia de limpieza de locks stale
+
     # Retry policy
     MAX_RETRIES = 3
     RETRY_DELAY_BASE = 2
-    
+
     # Worker identity
     WORKER_ID = f"{os.getpid()}@{os.uname().nodename}"
     WORKER_START_TIME = datetime.now(timezone.utc).isoformat()
-    
+
     # Odoo (lazy load desde DB)
     ODOO_URL: Optional[str] = None
     ODOO_DB: Optional[str] = None
     ODOO_USER: Optional[str] = None
     ODOO_PASS: Optional[str] = None
+
 
 # Estados MeLi que disparan el flujo "paid" (process_fbm/process_full).
 # Sin "confirmed" en process_full, una orden FULL pre-aprobación quedaba con
@@ -69,13 +76,14 @@ class Config:
 PAID_STATES = ("paid", "approved", "confirmed")
 CANCELLED_STATES = ("cancelled", "refunded")
 
+
 # =========================
 # DATABASE — SQLite con WAL, optimizado para concurrencia
 # =========================
 class Database:
-    _instance: Optional['Database'] = None
+    _instance: Optional["Database"] = None
     _lock = threading.Lock()
-    
+
     def __new__(cls, path: str):
         if cls._instance is None:
             with cls._lock:
@@ -83,72 +91,73 @@ class Database:
                     cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self, path: str):
         if self._initialized:
             return
-            
+
         self.path = path
         self._local = threading.local()
         self._writer_lock = threading.Lock()
-        
+
         # Conexión inicial para crear tablas
         conn = self._create_connection()
         self._ensure_tables(conn)
         conn.close()
-        
+
         self._initialized = True
-    
+
     def _create_connection(self) -> sqlite3.Connection:
         """Crea conexión optimizada para alta concurrencia"""
         conn = sqlite3.connect(
-            self.path,
-            timeout=60,
-            isolation_level=None,
-            check_same_thread=False
+            self.path, timeout=60, isolation_level=None, check_same_thread=False
         )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=60000")
         conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
-        conn.execute("PRAGMA cache_size=-65536")    # 64MB page cache
+        conn.execute("PRAGMA cache_size=-65536")  # 64MB page cache
         conn.row_factory = sqlite3.Row
         return conn
-    
+
     def _get_conn(self) -> sqlite3.Connection:
         """Thread-local connection pooling"""
-        if not hasattr(self._local, 'conn') or self._local.conn is None:
+        if not hasattr(self._local, "conn") or self._local.conn is None:
             self._local.conn = self._create_connection()
         return self._local.conn
-    
-    def execute(self, sql: str, params: tuple = (), use_writer_lock: bool = False) -> sqlite3.Cursor:
+
+    def execute(
+        self, sql: str, params: tuple = (), use_writer_lock: bool = False
+    ) -> sqlite3.Cursor:
         """Ejecución con retry exponencial y jitter"""
         conn = self._get_conn()
-        
+
         if use_writer_lock:
             with self._writer_lock:
                 return self._execute_with_retry(conn, sql, params)
         return self._execute_with_retry(conn, sql, params)
-    
-    def _execute_with_retry(self, conn: sqlite3.Connection, sql: str, params: tuple, max_retries: int = 5) -> sqlite3.Cursor:
+
+    def _execute_with_retry(
+        self, conn: sqlite3.Connection, sql: str, params: tuple, max_retries: int = 5
+    ) -> sqlite3.Cursor:
         for attempt in range(max_retries):
             try:
                 return conn.execute(sql, params)
             except sqlite3.OperationalError as e:
                 if "busy" in str(e).lower() and attempt < max_retries - 1:
                     # Jitter: 100ms, 200ms, 400ms, 800ms, 1600ms + random(0-100ms)
-                    sleep_time = (0.1 * (2 ** attempt)) + (hash(str(params)) % 100 / 1000)
+                    sleep_time = (0.1 * (2**attempt)) + (hash(str(params)) % 100 / 1000)
                     time.sleep(sleep_time)
                     continue
                 raise
-    
+
     def transaction(self):
         return Transaction(self._get_conn(), self._writer_lock)
-    
+
     def _ensure_tables(self, conn: sqlite3.Connection):
         """Schema v8.4: 4 tablas core"""
-        
+
         # 1. PAYLOAD PERSISTENTE — El fix crítico para reaper
         conn.execute("""
             CREATE TABLE IF NOT EXISTS inbound_job_payloads (
@@ -160,10 +169,10 @@ class Database:
             )
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_payloads_expires 
+            CREATE INDEX IF NOT EXISTS idx_payloads_expires
             ON inbound_job_payloads(expires_at)
         """)
-        
+
         # 2. LOCKS TRANSIENTES — Coordinación entre workers
         conn.execute("""
             CREATE TABLE IF NOT EXISTS inbound_processing_locks (
@@ -175,10 +184,10 @@ class Database:
             )
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_locks_worker 
+            CREATE INDEX IF NOT EXISTS idx_locks_worker
             ON inbound_processing_locks(worker_id)
         """)
-        
+
         # 3. AUDIT PERMANENTE — Historial inmutable de resultados
         conn.execute("""
             CREATE TABLE IF NOT EXISTS processed_inbound_events (
@@ -191,10 +200,10 @@ class Database:
             )
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_audit_result_time 
+            CREATE INDEX IF NOT EXISTS idx_audit_result_time
             ON processed_inbound_events(result, processed_at)
         """)
-        
+
         # 4. ESTADO DE ÓRDENES — Último estado conocido por order_id
         conn.execute("""
             CREATE TABLE IF NOT EXISTS inbound_orders_state (
@@ -207,7 +216,7 @@ class Database:
                 logistic_type TEXT
             )
         """)
-        
+
         # 5. MÉTRICAS HORARIAS — Agregación para dashboards
         conn.execute("""
             CREATE TABLE IF NOT EXISTS inbound_metrics (
@@ -233,18 +242,19 @@ class Database:
         except Exception:
             pass  # sku_mapping puede no existir aún en este contexto
 
+
 class Transaction:
     def __init__(self, conn: sqlite3.Connection, writer_lock: threading.Lock):
         self.conn = conn
         self.writer_lock = writer_lock
         self.active = False
-    
+
     def __enter__(self):
         self.writer_lock.acquire()
         self.conn.execute("BEGIN IMMEDIATE")
         self.active = True
         return self.conn
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
             if exc_type is None:
@@ -255,39 +265,39 @@ class Transaction:
             self.active = False
             self.writer_lock.release()
 
+
 # Singleton global
 db: Optional[Database] = None
+
 
 def init_db():
     global db
     db = Database(Config.DB_PATH)
-    
+
     # Lazy load Odoo config
     Config.ODOO_URL = get_setting("odoo_url", "http://odoo-odoo-1:8069")
     Config.ODOO_DB = get_setting("odoo_db", "")
     Config.ODOO_USER = get_setting("odoo_user", "")
     Config.ODOO_PASS = get_setting("odoo_password", "")
 
+
 # =========================
 # LOGGING — Estructurado, con contexto de worker
 # =========================
 def log(msg: str, level: str = "INFO", extra: dict = None):
     ts = datetime.now(timezone.utc).isoformat()
-    entry = {
-        "ts": ts,
-        "level": level,
-        "worker": Config.WORKER_ID,
-        "msg": msg
-    }
+    entry = {"ts": ts, "level": level, "worker": Config.WORKER_ID, "msg": msg}
     if extra:
         entry.update(extra)
     print(json.dumps(entry), flush=True)
+
 
 # =========================
 # SETTINGS — Cache local con fallback a DB
 # =========================
 _settings_cache: Dict[str, Tuple[str, datetime]] = {}
 _settings_ttl = timedelta(seconds=30)
+
 
 def get_setting(key: str, default: str = "") -> str:
     try:
@@ -296,30 +306,35 @@ def get_setting(key: str, default: str = "") -> str:
             value, cached_at = _settings_cache[key]
             if datetime.now(timezone.utc) - cached_at < _settings_ttl:
                 return value
-        
+
         # Cache miss o expirado
-        row = db.execute("SELECT value FROM bridge_settings WHERE key=?", (key,)).fetchone()
+        row = db.execute(
+            "SELECT value FROM bridge_settings WHERE key=?", (key,)
+        ).fetchone()
         value = str(row[0]) if row and row[0] else default
-        
+
         _settings_cache[key] = (value, datetime.now(timezone.utc))
         return value
     except Exception as e:
         log(f"Settings error for {key}: {e}", "ERROR")
         return default
 
+
 def is_enabled(key: str) -> bool:
     return get_setting(key, "0") == "1"
+
 
 # =========================
 # MÉTRICAS — Agregación eficiente
 # =========================
 _INBOUND_METRIC_SQL = {
-    "processed":     "INSERT INTO inbound_metrics (hour, processed) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET processed = processed + 1",
+    "processed": "INSERT INTO inbound_metrics (hour, processed) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET processed = processed + 1",
     "manual_review": "INSERT INTO inbound_metrics (hour, manual_review) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET manual_review = manual_review + 1",
-    "dead":          "INSERT INTO inbound_metrics (hour, dead) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET dead = dead + 1",
-    "errors":        "INSERT INTO inbound_metrics (hour, errors) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET errors = errors + 1",
-    "retries":       "INSERT INTO inbound_metrics (hour, retries) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET retries = retries + 1",
+    "dead": "INSERT INTO inbound_metrics (hour, dead) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET dead = dead + 1",
+    "errors": "INSERT INTO inbound_metrics (hour, errors) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET errors = errors + 1",
+    "retries": "INSERT INTO inbound_metrics (hour, retries) VALUES (?, 1) ON CONFLICT(hour) DO UPDATE SET retries = retries + 1",
 }
+
 
 def record_metric(result_type: str, processing_time_ms: Optional[int] = None):
     hour = datetime.now().strftime("%Y-%m-%d-%H")
@@ -327,12 +342,13 @@ def record_metric(result_type: str, processing_time_ms: Optional[int] = None):
 
     try:
         db.execute(_INBOUND_METRIC_SQL[column], (hour,))
-        
+
         if processing_time_ms and column == "processed":
             # Podríamos trackear percentiles en tabla separada si se necesita
             pass
     except Exception as e:
         log(f"Metric error: {e}", "ERROR")
+
 
 # =========================
 # PAYLOAD PERSISTENCE — Fix crítico v8.4
@@ -346,23 +362,27 @@ def persist_payload(dedupe_key: str, job: dict) -> str:
     payload_hash = hashlib.sha256(payload_json.encode()).hexdigest()
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(days=7)).isoformat()  # TTL 7 días
-    
+
     try:
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO inbound_job_payloads (dedupe_key, payload_json, payload_hash, created_at, expires_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(dedupe_key) DO UPDATE SET
-                payload_json = CASE 
-                    WHEN excluded.payload_hash != inbound_job_payloads.payload_hash 
-                    THEN excluded.payload_json 
-                    ELSE inbound_job_payloads.payload_json 
+                payload_json = CASE
+                    WHEN excluded.payload_hash != inbound_job_payloads.payload_hash
+                    THEN excluded.payload_json
+                    ELSE inbound_job_payloads.payload_json
                 END,
                 expires_at = excluded.expires_at
-        """, (dedupe_key, payload_json, payload_hash, now.isoformat(), expires_at))
+        """,
+            (dedupe_key, payload_json, payload_hash, now.isoformat(), expires_at),
+        )
         return payload_hash
     except Exception as e:
         log(f"Payload persistence failed for {dedupe_key}: {e}", "ERROR")
         raise
+
 
 def get_payload(dedupe_key: str) -> Optional[Tuple[dict, str]]:
     """
@@ -372,28 +392,29 @@ def get_payload(dedupe_key: str) -> Optional[Tuple[dict, str]]:
     try:
         row = db.execute(
             "SELECT payload_json, payload_hash FROM inbound_job_payloads WHERE dedupe_key=?",
-            (dedupe_key,)
+            (dedupe_key,),
         ).fetchone()
-        
+
         if not row:
             return None
-        
+
         return json.loads(row["payload_json"]), row["payload_hash"]
     except Exception as e:
         log(f"Payload retrieval failed for {dedupe_key}: {e}", "ERROR")
         return None
 
+
 def cleanup_expired_payloads():
     """Limpia payloads expirados (llamar periódicamente desde reaper)"""
     try:
         cursor = db.execute(
-            "DELETE FROM inbound_job_payloads WHERE expires_at < datetime('now')",
-            ()
+            "DELETE FROM inbound_job_payloads WHERE expires_at < datetime('now')", ()
         )
         if cursor.rowcount > 0:
             log(f"Cleaned up {cursor.rowcount} expired payloads", "INFO")
     except Exception as e:
         log(f"Payload cleanup error: {e}", "ERROR")
+
 
 # =========================
 # LOCK MANAGEMENT — Atomic, stealable, with heartbeat
@@ -404,64 +425,78 @@ def acquire_lock(dedupe_key: str, payload_hash: str) -> bool:
     Roba locks stale automáticamente.
     """
     now = datetime.now(timezone.utc).isoformat()
-    stale_threshold = (datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)).isoformat()
-    
+    stale_threshold = (
+        datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)
+    ).isoformat()
+
     try:
         with db.transaction():
             # UPSERT atómico: insertar nuevo o robar stale
-            cursor = db.execute("""
-                INSERT INTO inbound_processing_locks 
+            db.execute(
+                """
+                INSERT INTO inbound_processing_locks
                     (dedupe_key, claimed_at, worker_id, payload_hash, heartbeat_at)
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(dedupe_key) DO UPDATE SET
-                    claimed_at = CASE 
+                    claimed_at = CASE
                         WHEN inbound_processing_locks.claimed_at < ? THEN ?
                         ELSE inbound_processing_locks.claimed_at
                     END,
-                    worker_id = CASE 
+                    worker_id = CASE
                         WHEN inbound_processing_locks.claimed_at < ? THEN ?
                         ELSE inbound_processing_locks.worker_id
                     END,
-                    payload_hash = CASE 
+                    payload_hash = CASE
                         WHEN inbound_processing_locks.claimed_at < ? THEN ?
                         ELSE inbound_processing_locks.payload_hash
                     END,
-                    heartbeat_at = CASE 
+                    heartbeat_at = CASE
                         WHEN inbound_processing_locks.claimed_at < ? THEN ?
                         ELSE inbound_processing_locks.heartbeat_at
                     END
                 WHERE inbound_processing_locks.claimed_at < ?
-            """, (
-                dedupe_key, now, Config.WORKER_ID, payload_hash, now,  # INSERT
-                stale_threshold, now,  # UPDATE claimed_at
-                stale_threshold, Config.WORKER_ID,  # UPDATE worker_id
-                stale_threshold, payload_hash,  # UPDATE payload_hash
-                stale_threshold, now,  # UPDATE heartbeat_at
-                stale_threshold  # WHERE condition
-            ))
-            
+            """,
+                (
+                    dedupe_key,
+                    now,
+                    Config.WORKER_ID,
+                    payload_hash,
+                    now,  # INSERT
+                    stale_threshold,
+                    now,  # UPDATE claimed_at
+                    stale_threshold,
+                    Config.WORKER_ID,  # UPDATE worker_id
+                    stale_threshold,
+                    payload_hash,  # UPDATE payload_hash
+                    stale_threshold,
+                    now,  # UPDATE heartbeat_at
+                    stale_threshold,  # WHERE condition
+                ),
+            )
+
             # Verificar si somos dueños del lock
             row = db.execute(
                 "SELECT worker_id, claimed_at FROM inbound_processing_locks WHERE dedupe_key=?",
-                (dedupe_key,)
+                (dedupe_key,),
             ).fetchone()
-            
+
             if not row:
                 return False
-            
+
             is_mine = row["worker_id"] == Config.WORKER_ID
             is_fresh = row["claimed_at"] == now
-            
+
             if is_mine and is_fresh:
                 log(f"Lock acquired: {dedupe_key}", "DEBUG")
                 return True
             else:
                 log(f"Lock busy: {dedupe_key} held by {row['worker_id']}", "DEBUG")
                 return False
-                
+
     except Exception as e:
         log(f"Lock acquisition error: {dedupe_key}: {e}", "ERROR")
         return False
+
 
 def update_heartbeat(dedupe_key: str):
     """Actualiza heartbeat para jobs de larga duración"""
@@ -469,20 +504,22 @@ def update_heartbeat(dedupe_key: str):
         now = datetime.now(timezone.utc).isoformat()
         db.execute(
             "UPDATE inbound_processing_locks SET heartbeat_at=? WHERE dedupe_key=? AND worker_id=?",
-            (now, dedupe_key, Config.WORKER_ID)
+            (now, dedupe_key, Config.WORKER_ID),
         )
     except Exception as e:
         log(f"Heartbeat error for {dedupe_key}: {e}", "ERROR")
+
 
 def release_lock(dedupe_key: str):
     """Libera lock al completar (éxito o fallo)"""
     try:
         db.execute(
             "DELETE FROM inbound_processing_locks WHERE dedupe_key=? AND worker_id=?",
-            (dedupe_key, Config.WORKER_ID)
+            (dedupe_key, Config.WORKER_ID),
         )
     except Exception as e:
         log(f"Lock release error: {dedupe_key}: {e}", "ERROR")
+
 
 def is_already_completed(dedupe_key: str) -> bool:
     """Verifica si ya fue procesado exitosamente (audit table).
@@ -501,14 +538,21 @@ def is_already_completed(dedupe_key: str) -> bool:
     try:
         row = db.execute(
             "SELECT 1 FROM processed_inbound_events WHERE dedupe_key=? AND result IN ('success', 'dead')",
-            (dedupe_key,)
+            (dedupe_key,),
         ).fetchone()
         return row is not None
     except Exception as e:
         log(f"Completion check error: {dedupe_key}: {e}", "ERROR")
         return False  # Conservador: si no podemos verificar, asumimos no completado
 
-def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_ms: Optional[int] = None, lock_key: Optional[str] = None):
+
+def mark_completed(
+    dedupe_key: str,
+    result: str,
+    detail: dict,
+    processing_time_ms: Optional[int] = None,
+    lock_key: Optional[str] = None,
+):
     """
     Marca job como completado en audit table.
     Libera lock y limpia payload (opcional).
@@ -521,7 +565,8 @@ def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_m
     try:
         with db.transaction():
             # Insertar en audit
-            db.execute("""
+            db.execute(
+                """
                 INSERT INTO processed_inbound_events
                     (dedupe_key, processed_at, result, detail_json, worker_id, processing_time_ms)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -531,30 +576,33 @@ def mark_completed(dedupe_key: str, result: str, detail: dict, processing_time_m
                     detail_json=excluded.detail_json,
                     worker_id=excluded.worker_id,
                     processing_time_ms=excluded.processing_time_ms
-            """, (
-                dedupe_key,
-                datetime.now(timezone.utc).isoformat(),
-                result,
-                json.dumps(detail),
-                Config.WORKER_ID,
-                processing_time_ms
-            ))
+            """,
+                (
+                    dedupe_key,
+                    datetime.now(timezone.utc).isoformat(),
+                    result,
+                    json.dumps(detail),
+                    Config.WORKER_ID,
+                    processing_time_ms,
+                ),
+            )
 
             # Liberar lock
             db.execute(
                 "DELETE FROM inbound_processing_locks WHERE dedupe_key=?",
-                (effective_lock_key,)
+                (effective_lock_key,),
             )
-            
+
             # Opcional: limpiar payload inmediatamente (ahorro de espacio)
             # db.execute("DELETE FROM inbound_job_payloads WHERE dedupe_key=?", (dedupe_key,))
-        
+
         record_metric(result, processing_time_ms)
         log(f"Completed: {dedupe_key} = {result}", "INFO", {"detail": detail})
-        
+
     except Exception as e:
         log(f"CRITICAL: mark_completed failed: {dedupe_key}: {e}", "CRITICAL")
         # No relanzar: mejor perder audit que crashar el worker
+
 
 # =========================
 # REAPER — Recuperación autónoma con payload real
@@ -565,12 +613,14 @@ def reaper_loop(redis_client: redis.Redis):
     Fix v8.4: Usa tabla inbound_job_payloads, no reconstrucción ad-hoc.
     """
     log("Reaper started", "INFO")
-    
+
     while True:
         try:
             time.sleep(Config.REAPER_INTERVAL)
-            
-            stale_threshold = (datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)).isoformat()
+
+            stale_threshold = (
+                datetime.now(timezone.utc) - timedelta(seconds=Config.LOCK_TIMEOUT)
+            ).isoformat()
 
             # 1. Encontrar locks stale — S3: respeta heartbeat_at si existe.
             # Un job con heartbeat reciente está vivo aunque claimed_at sea viejo.
@@ -580,83 +630,104 @@ def reaper_loop(redis_client: redis.Redis):
                    WHERE claimed_at < ?
                      AND (heartbeat_at IS NULL OR heartbeat_at < ?)
                    LIMIT 100""",
-                (stale_threshold, stale_threshold)
+                (stale_threshold, stale_threshold),
             ).fetchall()
-            
+
             if not stale_locks:
                 continue
-            
+
             log(f"Reaper found {len(stale_locks)} stale locks", "WARN")
-            
+
             for lock in stale_locks:
                 dedupe_key = lock["dedupe_key"]
                 old_worker = lock["worker_id"]
                 expected_hash = lock["payload_hash"]
-                
+
                 try:
                     with db.transaction():
                         # Verificar que sigue siendo stale (race condition check)
                         current = db.execute(
                             "SELECT claimed_at FROM inbound_processing_locks WHERE dedupe_key=?",
-                            (dedupe_key,)
+                            (dedupe_key,),
                         ).fetchone()
-                        
+
                         if not current or current["claimed_at"] > stale_threshold:
                             continue  # Ya fue actualizado por otro
-                        
+
                         # Eliminar lock stale
-                        db.execute("DELETE FROM inbound_processing_locks WHERE dedupe_key=?", (dedupe_key,))
-                        
+                        db.execute(
+                            "DELETE FROM inbound_processing_locks WHERE dedupe_key=?",
+                            (dedupe_key,),
+                        )
+
                         # RECUPERAR PAYLOAD REAL — Fix crítico v8.4
                         payload_data = get_payload(dedupe_key)
-                        
+
                         if payload_data:
                             job, stored_hash = payload_data
-                            
+
                             # Validar integridad
                             if stored_hash != expected_hash:
-                                log(f"Hash mismatch for {dedupe_key}: expected {expected_hash[:16]}..., got {stored_hash[:16]}...", "ERROR")
+                                log(
+                                    f"Hash mismatch for {dedupe_key}: expected {expected_hash[:16]}..., got {stored_hash[:16]}...",
+                                    "ERROR",
+                                )
                                 # Enviar a manual review en lugar de reencolar
-                                mark_completed(dedupe_key, "manual_review", {
-                                    "reason": "payload_integrity_error",
-                                    "expected_hash_prefix": expected_hash[:16],
-                                    "stored_hash_prefix": stored_hash[:16]
-                                })
+                                mark_completed(
+                                    dedupe_key,
+                                    "manual_review",
+                                    {
+                                        "reason": "payload_integrity_error",
+                                        "expected_hash_prefix": expected_hash[:16],
+                                        "stored_hash_prefix": stored_hash[:16],
+                                    },
+                                )
                                 continue
-                            
+
                             # Incrementar contador de reaps
                             reap_count = job.get("_reap_count", 0) + 1
                             job["_reap_count"] = reap_count
                             job["_reaped"] = True
                             job["_reaped_at"] = datetime.now(timezone.utc).isoformat()
                             job["_original_worker"] = old_worker
-                            
+
                             # Guardar payload actualizado
                             persist_payload(dedupe_key, job)
-                            
+
                             # REENCOLAR CON FIFO CORRECTO (rpush) — Fix v8.4
                             redis_client.rpush(Config.QUEUE, json.dumps(job))
-                            
-                            log(f"Reaper requeued: {dedupe_key} (reap #{reap_count}, was {old_worker})", "INFO")
-                            
+
+                            log(
+                                f"Reaper requeued: {dedupe_key} (reap #{reap_count}, was {old_worker})",
+                                "INFO",
+                            )
+
                             # Si ha sido reapeado muchas veces, alertar
                             if reap_count >= 3:
-                                log(f"Job reaped {reap_count} times: {dedupe_key}", "WARN", {
-                                    "dedupe_key": dedupe_key,
-                                    "reap_count": reap_count,
-                                    "job_preview": json.dumps(job)[:200]
-                                })
+                                log(
+                                    f"Job reaped {reap_count} times: {dedupe_key}",
+                                    "WARN",
+                                    {
+                                        "dedupe_key": dedupe_key,
+                                        "reap_count": reap_count,
+                                        "job_preview": json.dumps(job)[:200],
+                                    },
+                                )
                         else:
                             # Payload perdido (expirado o corrupción)
                             log(f"Payload lost for stale lock: {dedupe_key}", "ERROR")
-                            mark_completed(dedupe_key, "dead", {
-                                "reason": "payload_lost",
-                                "original_worker": old_worker
-                            })
-                            
+                            mark_completed(
+                                dedupe_key,
+                                "dead",
+                                {
+                                    "reason": "payload_lost",
+                                    "original_worker": old_worker,
+                                },
+                            )
+
                 except Exception as e:
                     log(f"Reaper error for {dedupe_key}: {e}", "ERROR")
-            
+
             # 2. Cleanup de payloads expirados
             cleanup_expired_payloads()
 
@@ -664,7 +735,10 @@ def reaper_loop(redis_client: redis.Redis):
             # if the list grows large it means entries are leaking (old bug or crash).
             proc_len = redis_client.llen(Config.PROCESSING)
             if proc_len > 500:
-                log(f"ml_orders_processing suspiciously large ({proc_len}), trimming to 200", "WARN")
+                log(
+                    f"ml_orders_processing suspiciously large ({proc_len}), trimming to 200",
+                    "WARN",
+                )
                 redis_client.ltrim(Config.PROCESSING, 0, 199)
             # Keep dead letter capped (already done inline but also enforce here)
             redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
@@ -672,6 +746,7 @@ def reaper_loop(redis_client: redis.Redis):
         except Exception as e:
             log(f"Reaper fatal error: {e}", "ERROR")
             time.sleep(5)
+
 
 # =========================
 # MERCADOLIBRE API — Con retry y circuit breaker pattern
@@ -689,13 +764,17 @@ def ml_token() -> str:
         raise RuntimeError("token_file_missing_access_token")
     return token
 
+
 _ML_REFRESH_LOCK_FILE = Config.TOKEN_FILE + ".refresh.lock"
-_MELI_REAUTH_SENTINEL = Config.TOKEN_FILE.replace(".meli_tokens.json", ".meli_reauth_required")
+_MELI_REAUTH_SENTINEL = Config.TOKEN_FILE.replace(
+    ".meli_tokens.json", ".meli_reauth_required"
+)
 
 # D7.2: circuit breaker state — opens after 5 consecutive ml_get() failures
 _ML_CIRCUIT: dict = {"failures": 0, "open_until": 0.0}
 _ML_CIRCUIT_THRESHOLD = 5
 _ML_CIRCUIT_COOLDOWN_S = 120  # 2 min cooldown before half-open probe
+
 
 def ml_refresh_token() -> str:
     """Inline token refresh using credentials stored in the token file.
@@ -716,7 +795,9 @@ def ml_refresh_token() -> str:
         client_id = tok.get("client_id")
         client_secret = tok.get("client_secret")
         if not refresh_token or not client_id or not client_secret:
-            raise RuntimeError("token_refresh_skipped: missing credentials in token file")
+            raise RuntimeError(
+                "token_refresh_skipped: missing credentials in token file"
+            )
 
         resp = _req.post(
             "https://api.mercadolibre.com/oauth/token",
@@ -737,15 +818,19 @@ def ml_refresh_token() -> str:
             if err_body.get("error") == "invalid_grant" or "invalid_grant" in resp.text:
                 try:
                     with open(_MELI_REAUTH_SENTINEL, "w") as _sf:
-                        _sf.write(f"invalid_grant detected at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+                        _sf.write(
+                            f"invalid_grant detected at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
+                        )
                 except Exception:
                     pass
-                raise RuntimeError("token_refresh_invalid_grant: refresh token revoked or expired — re-authorize via /oauth/start")
+                raise RuntimeError(
+                    "token_refresh_invalid_grant: refresh token revoked or expired — re-authorize via /oauth/start"
+                )
             raise RuntimeError(f"token_refresh_failed: HTTP {resp.status_code}")
 
         new_tok = resp.json()
         if not new_tok.get("access_token"):
-            raise RuntimeError(f"token_refresh_failed: no access_token in response")
+            raise RuntimeError("token_refresh_failed: no access_token in response")
 
         # Persist — carry forward fields not returned by MeLi (client_id/secret, user_id)
         new_tok.setdefault("client_id", client_id)
@@ -756,11 +841,15 @@ def ml_refresh_token() -> str:
         new_tok["expires_at"] = now + int(new_tok.get("expires_in", 0))
         with open(Config.TOKEN_FILE, "w") as f:
             json.dump(new_tok, f, indent=2)
-        log(f"ML token refreshed inline access_prefix={new_tok['access_token'][:12]}", "INFO")
+        log(
+            f"ML token refreshed inline access_prefix={new_tok['access_token'][:12]}",
+            "INFO",
+        )
         return new_tok["access_token"]
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
+
 
 def ml_get(path: str, retries: int = 0) -> dict:
     import requests  # Import local para no fallar si no está disponible al inicio
@@ -769,7 +858,9 @@ def ml_get(path: str, retries: int = 0) -> dict:
     _now = time.time()
     if _ML_CIRCUIT["open_until"] > _now:
         remaining = int(_ML_CIRCUIT["open_until"] - _now)
-        raise RuntimeError(f"ml_circuit_open: MeLi API circuit open for {remaining}s more after {_ML_CIRCUIT['failures']} failures")
+        raise RuntimeError(
+            f"ml_circuit_open: MeLi API circuit open for {remaining}s more after {_ML_CIRCUIT['failures']} failures"
+        )
 
     token = ml_token()
     url = f"https://api.mercadolibre.com{path}"
@@ -799,15 +890,27 @@ def ml_get(path: str, retries: int = 0) -> dict:
                 if r.status_code in (429, 500, 502, 503, 504):
                     if attempt < retries:
                         if r.status_code == 429:
-                            reset_ts = int(r.headers.get("X-RateLimit-Reset", "0") or "0")
+                            reset_ts = int(
+                                r.headers.get("X-RateLimit-Reset", "0") or "0"
+                            )
                             now_ts = int(time.time())
-                            sleep_time = max(reset_ts - now_ts, 1) if reset_ts > now_ts else Config.RETRY_DELAY_BASE * (2 ** attempt)
+                            sleep_time = (
+                                max(reset_ts - now_ts, 1)
+                                if reset_ts > now_ts
+                                else Config.RETRY_DELAY_BASE * (2**attempt)
+                            )
                             sleep_time = min(sleep_time, 300)  # cap 5 min
                             remaining = r.headers.get("X-RateLimit-Remaining", "?")
-                            log(f"ML API 429 rate-limited remaining={remaining} sleeping={sleep_time}s", "WARN")
+                            log(
+                                f"ML API 429 rate-limited remaining={remaining} sleeping={sleep_time}s",
+                                "WARN",
+                            )
                         else:
-                            sleep_time = Config.RETRY_DELAY_BASE * (2 ** attempt)
-                            log(f"ML API retry: {r.status_code} attempt {attempt+1}/{retries}", "WARN")
+                            sleep_time = Config.RETRY_DELAY_BASE * (2**attempt)
+                            log(
+                                f"ML API retry: {r.status_code} attempt {attempt + 1}/{retries}",
+                                "WARN",
+                            )
                         time.sleep(sleep_time)
                         continue
 
@@ -815,13 +918,13 @@ def ml_get(path: str, retries: int = 0) -> dict:
 
             except requests.exceptions.Timeout:
                 if attempt < retries:
-                    time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
+                    time.sleep(Config.RETRY_DELAY_BASE * (2**attempt))
                     continue
                 raise RuntimeError(f"ML API timeout after {retries} retries")
 
             except requests.exceptions.RequestException as e:
                 if attempt < retries:
-                    time.sleep(Config.RETRY_DELAY_BASE * (2 ** attempt))
+                    time.sleep(Config.RETRY_DELAY_BASE * (2**attempt))
                     continue
                 raise RuntimeError(f"ML API exception: {e}")
 
@@ -830,8 +933,12 @@ def ml_get(path: str, retries: int = 0) -> dict:
         _ML_CIRCUIT["failures"] += 1
         if _ML_CIRCUIT["failures"] >= _ML_CIRCUIT_THRESHOLD:
             _ML_CIRCUIT["open_until"] = time.time() + _ML_CIRCUIT_COOLDOWN_S
-            log(f"ML circuit OPENED after {_ML_CIRCUIT['failures']} failures — cooling {_ML_CIRCUIT_COOLDOWN_S}s", "ERROR")
+            log(
+                f"ML circuit OPENED after {_ML_CIRCUIT['failures']} failures — cooling {_ML_CIRCUIT_COOLDOWN_S}s",
+                "ERROR",
+            )
         raise
+
 
 # =========================
 # BUSINESS LOGIC — Idempotente, con validación de SKU
@@ -843,15 +950,16 @@ def is_full(order: dict, shipment: Optional[dict]) -> Optional[bool]:
         return True
     if lt in ("cross_docking", "drop_off", "xd_drop_off"):
         return False
-    
+
     if lt is None and shipment:
         lt = shipment.get("logistic_type")
         if lt == "fulfillment":
             return True
         if lt in ("cross_docking", "drop_off", "xd_drop_off"):
             return False
-    
+
     return None
+
 
 def is_allowed_sku(sku: str) -> bool:
     """Fail-closed: si no puede verificar, rechaza.
@@ -869,21 +977,18 @@ def is_allowed_sku(sku: str) -> bool:
             return True
 
         row = db.execute(
-            "SELECT 1 FROM inbound_allowed_skus WHERE sku=? AND enabled=1",
-            (sku,)
+            "SELECT 1 FROM inbound_allowed_skus WHERE sku=? AND enabled=1", (sku,)
         ).fetchone()
         if row:
             return True
 
         # Fallback: SKU con mapping activo en sku_mapping siempre se permite
-        row = db.execute(
-            "SELECT 1 FROM sku_mapping WHERE sku=?",
-            (sku,)
-        ).fetchone()
+        row = db.execute("SELECT 1 FROM sku_mapping WHERE sku=?", (sku,)).fetchone()
         return row is not None
     except Exception as e:
         log(f"SKU allowlist error: {e}", "ERROR")
         return False
+
 
 def parse_items(order: dict) -> List[dict]:
     """Extrae SKUs válidos de la orden"""
@@ -902,13 +1007,15 @@ def parse_items(order: dict) -> List[dict]:
         if item_id and var_id:
             row = db.execute(
                 "SELECT sku FROM sku_mapping WHERE channel='meli' AND remote_item_id=? AND remote_variation_id=?",
-                (item_id, var_id)
+                (item_id, var_id),
             ).fetchone()
             sku = row[0] if row else None
 
         # 2. Fallback: campo seller_sku directo en el item (campo top-level de la API de MeLi)
         if not sku:
-            sku = (item.get("seller_sku") or item.get("SELLER_SKU") or "").strip() or None
+            sku = (
+                item.get("seller_sku") or item.get("SELLER_SKU") or ""
+            ).strip() or None
 
         # 3. Fallback: seller_sku dentro del array attributes
         if not sku:
@@ -919,22 +1026,27 @@ def parse_items(order: dict) -> List[dict]:
 
         if not sku:
             continue
-            
+
         sku = sku.strip()
-        
+
         try:
             qty = int(it.get("quantity", 0))
-        except:
+        except Exception:
             qty = 0
-        
+
         if qty <= 0 or not is_allowed_sku(sku):
             continue
-        
-        items.append({"sku": sku, "qty": qty, "item_id": item_id, "variation_id": var_id})
-    
+
+        items.append(
+            {"sku": sku, "qty": qty, "item_id": item_id, "variation_id": var_id}
+        )
+
     return items
 
-def run_tool(tool_name: str, env_vars: dict, lock_key: Optional[str] = None) -> Tuple[int, str, str]:
+
+def run_tool(
+    tool_name: str, env_vars: dict, lock_key: Optional[str] = None
+) -> Tuple[int, str, str]:
     """
     Ejecuta tool externa con idempotencia garantizada por CLIENT_ORDER_REF.
     S3: Mantiene heartbeat activo durante la ejecución para que el reaper
@@ -943,7 +1055,7 @@ def run_tool(tool_name: str, env_vars: dict, lock_key: Optional[str] = None) -> 
     tool_paths = [
         f"/data/{tool_name}.py",
         f"/mnt/data/appdata/bridge/tools/{tool_name}.py",
-        f"./tools/{tool_name}.py"
+        f"./tools/{tool_name}.py",
     ]
 
     tool_path = next((p for p in tool_paths if os.path.exists(p)), None)
@@ -951,46 +1063,45 @@ def run_tool(tool_name: str, env_vars: dict, lock_key: Optional[str] = None) -> 
         return -1, "", f"Tool not found: {tool_name}"
 
     env = os.environ.copy()
-    env.update({
-        "ODOO_URL": Config.ODOO_URL or "",
-        "ODOO_DB": Config.ODOO_DB or "",
-        "ODOO_USER": Config.ODOO_USER or "",
-        "ODOO_PASS": Config.ODOO_PASS or "",
-    })
+    env.update(
+        {
+            "ODOO_URL": Config.ODOO_URL or "",
+            "ODOO_DB": Config.ODOO_DB or "",
+            "ODOO_USER": Config.ODOO_USER or "",
+            "ODOO_PASS": Config.ODOO_PASS or "",
+        }
+    )
     env.update(env_vars)
 
     # S3: heartbeat thread — keeps lock alive for long-running tools
     _hb_stop = threading.Event()
+
     def _heartbeat_worker():
         while not _hb_stop.wait(timeout=Config.HEARTBEAT_INTERVAL):
             if lock_key:
                 update_heartbeat(lock_key)
+
     hb_thread = None
     if lock_key:
         hb_thread = threading.Thread(target=_heartbeat_worker, daemon=True)
         hb_thread.start()
 
     try:
-        start = time.time()
         p = subprocess.run(
-            ["python3", tool_path],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=180
+            ["python3", tool_path], env=env, capture_output=True, text=True, timeout=180
         )
-        elapsed_ms = int((time.time() - start) * 1000)
 
         if p.returncode != 0:
-            log(f"Tool failed: {tool_name} rc={p.returncode}", "ERROR", {
-                "stderr": p.stderr[-500:],
-                "stdout": p.stdout[-500:]
-            })
+            log(
+                f"Tool failed: {tool_name} rc={p.returncode}",
+                "ERROR",
+                {"stderr": p.stderr[-500:], "stdout": p.stdout[-500:]},
+            )
 
         return p.returncode, p.stdout, p.stderr
 
     except subprocess.TimeoutExpired:
-        return -2, "", f"Timeout after 180s"
+        return -2, "", "Timeout after 180s"
     except Exception as e:
         return -3, "", str(e)
     finally:
@@ -998,7 +1109,16 @@ def run_tool(tool_name: str, env_vars: dict, lock_key: Optional[str] = None) -> 
         if hb_thread:
             hb_thread.join(timeout=5)
 
-def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str, lock_key: str):
+
+def process_full(
+    order: dict,
+    order_id: str,
+    site: str,
+    state: str,
+    dedupe_key: str,
+    visible_ref: str,
+    lock_key: str,
+):
     """Procesa orden Fulfillment.
 
     `dedupe_key` es action-aware (`ml:{id}:paid` / `ml:{id}:cancelled`) — usado para audit/idempotency.
@@ -1010,106 +1130,191 @@ def process_full(order: dict, order_id: str, site: str, state: str, dedupe_key: 
     # Estados terminales negativos
     if state in CANCELLED_STATES:
         if not is_enabled("meli_inbound_full_refunds_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key)
+            mark_completed(
+                dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key
+            )
             return
 
-        rc, out, err = run_tool("inbound_full_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref}, lock_key=lock_key)
+        rc, out, err = run_tool(
+            "inbound_full_so_refund_and_cancel",
+            {"CLIENT_ORDER_REF": ref},
+            lock_key=lock_key,
+        )
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
-        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
+        mark_completed(
+            dedupe_key,
+            result,
+            {"ref": ref, "rc": rc, "error": err[:500]},
+            processing_time,
+            lock_key=lock_key,
+        )
         return
 
     # Estados positivos
     if state in PAID_STATES:
         if not is_enabled("meli_inbound_full_paid_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"}, lock_key=lock_key)
+            mark_completed(
+                dedupe_key, "skipped", {"reason": "paid_disabled"}, lock_key=lock_key
+            )
             return
 
         buyer = order.get("buyer") or {}
         buyer_name = (buyer.get("nickname") or buyer.get("first_name") or "").strip()
         buyer_last = (buyer.get("last_name") or "").strip()
-        full_name = (f"{buyer_name} {buyer_last}".strip() if buyer_last else buyer_name)
+        full_name = f"{buyer_name} {buyer_last}".strip() if buyer_last else buyer_name
 
         so_note = f"MercadoLibre FULL | ORDER={visible_ref} | {full_name or 'N/A'}"
 
-        rc, out, err = run_tool("inbound_full_paid_one_shot_no_stock", {
-            "CLIENT_ORDER_REF": ref,
-            "ORDER_JSON": json.dumps(order),
-            "SITE_ID": site,
-            "SO_NOTE": so_note,
-            "WAREHOUSE_NAME": get_setting("warehouse_meli_full"),
-        }, lock_key=lock_key)
+        rc, out, err = run_tool(
+            "inbound_full_paid_one_shot_no_stock",
+            {
+                "CLIENT_ORDER_REF": ref,
+                "ORDER_JSON": json.dumps(order),
+                "SITE_ID": site,
+                "SO_NOTE": so_note,
+                "WAREHOUSE_NAME": get_setting("warehouse_meli_full"),
+            },
+            lock_key=lock_key,
+        )
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
-        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
+        mark_completed(
+            dedupe_key,
+            result,
+            {"ref": ref, "rc": rc, "error": err[:500]},
+            processing_time,
+            lock_key=lock_key,
+        )
         return
 
     # Estado desconocido — marcar review en lugar de dejar el lock activo (M2 backstop).
-    mark_completed(dedupe_key, "manual_review", {"reason": "unsupported_state", "state": state}, lock_key=lock_key)
+    mark_completed(
+        dedupe_key,
+        "manual_review",
+        {"reason": "unsupported_state", "state": state},
+        lock_key=lock_key,
+    )
 
-def process_fbm(order: dict, order_id: str, site: str, state: str, dedupe_key: str, visible_ref: str, lock_key: str):
+
+def process_fbm(
+    order: dict,
+    order_id: str,
+    site: str,
+    state: str,
+    dedupe_key: str,
+    visible_ref: str,
+    lock_key: str,
+):
     """Procesa orden FBM (Fulfillment by Merchant)."""
     ref = f"MLFBM:{site}:{visible_ref}"
     start_time = time.time()
 
     if state in CANCELLED_STATES:
         if not is_enabled("meli_inbound_fbm_refunds_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key)
+            mark_completed(
+                dedupe_key, "skipped", {"reason": "refunds_disabled"}, lock_key=lock_key
+            )
             return
 
-        rc, out, err = run_tool("inbound_fbm_so_refund_and_cancel", {"CLIENT_ORDER_REF": ref}, lock_key=lock_key)
+        rc, out, err = run_tool(
+            "inbound_fbm_so_refund_and_cancel",
+            {"CLIENT_ORDER_REF": ref},
+            lock_key=lock_key,
+        )
         result = "success" if rc == 0 else "manual_review"
         processing_time = int((time.time() - start_time) * 1000)
-        mark_completed(dedupe_key, result, {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
+        mark_completed(
+            dedupe_key,
+            result,
+            {"ref": ref, "rc": rc, "error": err[:500]},
+            processing_time,
+            lock_key=lock_key,
+        )
         return
 
     if state in PAID_STATES:
         if not is_enabled("meli_inbound_fbm_paid_enabled"):
-            mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"}, lock_key=lock_key)
+            mark_completed(
+                dedupe_key, "skipped", {"reason": "paid_disabled"}, lock_key=lock_key
+            )
             return
 
         items = parse_items(order)
         if not items:
-            mark_completed(dedupe_key, "manual_review", {"reason": "no_valid_items"}, lock_key=lock_key)
+            mark_completed(
+                dedupe_key,
+                "manual_review",
+                {"reason": "no_valid_items"},
+                lock_key=lock_key,
+            )
             return
 
         buyer = order.get("buyer") or {}
         buyer_name = (buyer.get("nickname") or buyer.get("first_name") or "").strip()
         buyer_last = (buyer.get("last_name") or "").strip()
-        full_name = (buyer_name + (" " + buyer_last if buyer_last else "")).strip() or "UNKNOWN"
+        full_name = (
+            buyer_name + (" " + buyer_last if buyer_last else "")
+        ).strip() or "UNKNOWN"
 
         so_note = f"MercadoLibre FBM | ORDER={visible_ref} | {full_name or 'N/A'}"
 
-        rc, out, err = run_tool("inbound_fbm_so_apply_paid_one_shot", {
-            "CLIENT_ORDER_REF": ref,
-            "ORDER_JSON": json.dumps(order),
-            "SITE_ID": site,
-            "SO_NOTE": so_note,
-        }, lock_key=lock_key)
+        rc, out, err = run_tool(
+            "inbound_fbm_so_apply_paid_one_shot",
+            {
+                "CLIENT_ORDER_REF": ref,
+                "ORDER_JSON": json.dumps(order),
+                "SITE_ID": site,
+                "SO_NOTE": so_note,
+            },
+            lock_key=lock_key,
+        )
 
         processing_time = int((time.time() - start_time) * 1000)
         if rc == 0:
-            mark_completed(dedupe_key, "success", {"ref": ref, "items": len(items)}, processing_time, lock_key=lock_key)
+            mark_completed(
+                dedupe_key,
+                "success",
+                {"ref": ref, "items": len(items)},
+                processing_time,
+                lock_key=lock_key,
+            )
         else:
-            mark_completed(dedupe_key, "manual_review", {"ref": ref, "rc": rc, "error": err[:500]}, processing_time, lock_key=lock_key)
+            mark_completed(
+                dedupe_key,
+                "manual_review",
+                {"ref": ref, "rc": rc, "error": err[:500]},
+                processing_time,
+                lock_key=lock_key,
+            )
         return
 
     # Estado desconocido — marcar review en lugar de dejar el lock activo (M2 backstop).
-    mark_completed(dedupe_key, "manual_review", {"reason": "unsupported_state", "state": state}, lock_key=lock_key)
+    mark_completed(
+        dedupe_key,
+        "manual_review",
+        {"reason": "unsupported_state", "state": state},
+        lock_key=lock_key,
+    )
+
 
 # =========================
 # MAIN LOOP — FIFO correcto, heartbeat, graceful degradation
 # =========================
 def main():
     init_db()
-    log(f"Worker started: {Config.WORKER_ID}", "INFO", {
-        "start_time": Config.WORKER_START_TIME,
-        "db": Config.DB_PATH,
-        "queue": Config.QUEUE
-    })
-    
+    log(
+        f"Worker started: {Config.WORKER_ID}",
+        "INFO",
+        {
+            "start_time": Config.WORKER_START_TIME,
+            "db": Config.DB_PATH,
+            "queue": Config.QUEUE,
+        },
+    )
+
     redis_client = redis.Redis.from_url(Config.REDIS_URL, decode_responses=True)
-    
+
     # Verificar conectividad
     try:
         redis_client.ping()
@@ -1117,75 +1322,87 @@ def main():
     except Exception as e:
         log(f"Redis connection failed: {e}", "CRITICAL")
         sys.exit(1)
-    
+
     # Iniciar reaper thread
-    reaper_thread = threading.Thread(target=reaper_loop, args=(redis_client,), daemon=True)
+    reaper_thread = threading.Thread(
+        target=reaper_loop, args=(redis_client,), daemon=True
+    )
     reaper_thread.start()
-    
+
     # Métricas periódicas
     def metrics_reporter():
         while True:
             time.sleep(300)  # 5 minutos
             try:
-                locks = db.execute("SELECT COUNT(*) FROM inbound_processing_locks").fetchone()[0]
-                payloads = db.execute("SELECT COUNT(*) FROM inbound_job_payloads").fetchone()[0]
+                locks = db.execute(
+                    "SELECT COUNT(*) FROM inbound_processing_locks"
+                ).fetchone()[0]
+                payloads = db.execute(
+                    "SELECT COUNT(*) FROM inbound_job_payloads"
+                ).fetchone()[0]
                 completed_1h = db.execute(
                     "SELECT COUNT(*) FROM processed_inbound_events WHERE processed_at > datetime('now', '-1 hour')"
                 ).fetchone()[0]
-                
+
                 q_len = redis_client.llen(Config.QUEUE)
                 proc_len = redis_client.llen(Config.PROCESSING)
                 dlq_len = redis_client.llen(Config.DEAD_LETTER)
-                
-                log("Metrics snapshot", "INFO", {
-                    "db_locks": locks,
-                    "db_payloads": payloads,
-                    "completed_1h": completed_1h,
-                    "redis_queue": q_len,
-                    "redis_processing": proc_len,
-                    "redis_dlq": dlq_len
-                })
+
+                log(
+                    "Metrics snapshot",
+                    "INFO",
+                    {
+                        "db_locks": locks,
+                        "db_payloads": payloads,
+                        "completed_1h": completed_1h,
+                        "redis_queue": q_len,
+                        "redis_processing": proc_len,
+                        "redis_dlq": dlq_len,
+                    },
+                )
             except Exception as e:
                 log(f"Metrics error: {e}", "ERROR")
-    
+
     threading.Thread(target=metrics_reporter, daemon=True).start()
-    
+
     # Main processing loop — S3: exits cleanly on SIGTERM after current job finishes
     while not _shutdown_requested.is_set():
         if not is_enabled("meli_inbound_enabled"):
             _shutdown_requested.wait(timeout=2)
             continue
-        
+
         item = None
         dedupe_key = None
         lock_key = None
-        processing_start = None
-        
+
         try:
             # FIFO correcto: BRPOP (derecha) → LPUSH (izquierda) en processing
             # Pero para mantener FIFO en requeue, usamos RPUSH
             item = redis_client.brpop(Config.QUEUE, timeout=5)
             if not item:
                 continue
-            
+
             # brpop retorna (queue_name, item)
             _, item_data = item
-            
-            processing_start = time.time()
-            
+
             # Parsear job
             try:
                 job = json.loads(item_data)
             except json.JSONDecodeError:
-                log(f"Invalid JSON in queue", "ERROR", {"preview": str(item_data)[:200]})
-                redis_client.lpush(Config.DEAD_LETTER, json.dumps({
-                    "raw": str(item_data)[:1000],
-                    "error": "json_decode_error",
-                    "ts": datetime.now(timezone.utc).isoformat()
-                }))
+                log("Invalid JSON in queue", "ERROR", {"preview": str(item_data)[:200]})
+                redis_client.lpush(
+                    Config.DEAD_LETTER,
+                    json.dumps(
+                        {
+                            "raw": str(item_data)[:1000],
+                            "error": "json_decode_error",
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ),
+                )
                 redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
                 continue
-            
+
             # Generar/extraer dedupe_key
             dedupe_key = job.get("dedupe_key")
             if not dedupe_key:
@@ -1194,9 +1411,11 @@ def main():
                 if m:
                     dedupe_key = f"ml:{m.group(1)}"
                 else:
-                    dedupe_key = f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
+                    dedupe_key = (
+                        f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
+                    )
                 job["dedupe_key"] = dedupe_key
-            
+
             # 1. Persistir payload ANTES de cualquier operación — Fix v8.4
             payload_hash = persist_payload(dedupe_key, job)
 
@@ -1211,10 +1430,11 @@ def main():
                 # FIX v8.4: FIFO correcto — usar RPUSH, no LPUSH
                 job["_retry_delay"] = job.get("_retry_delay", 0) + 1
                 redis_client.rpush(Config.QUEUE, json.dumps(job))
-                log(f"Lock busy: requeued with delay", "DEBUG", {
-                    "dedupe_key": dedupe_key,
-                    "delay": job["_retry_delay"]
-                })
+                log(
+                    "Lock busy: requeued with delay",
+                    "DEBUG",
+                    {"dedupe_key": dedupe_key, "delay": job["_retry_delay"]},
+                )
                 time.sleep(min(job["_retry_delay"], 10))  # Backoff creciente, max 10s
                 continue
 
@@ -1224,33 +1444,43 @@ def main():
 
             # Tenemos el lock — agregar a processing list para observabilidad
             # _proc_entry se reutiliza en todos los lrem para que el string coincida exactamente
-            _proc_entry = json.dumps({
-                "dedupe_key": dedupe_key,
-                "worker": Config.WORKER_ID,
-                "started_at": datetime.now(timezone.utc).isoformat(),
-                "payload_hash": payload_hash[:16]
-            })
+            _proc_entry = json.dumps(
+                {
+                    "dedupe_key": dedupe_key,
+                    "worker": Config.WORKER_ID,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "payload_hash": payload_hash[:16],
+                }
+            )
             redis_client.lpush(Config.PROCESSING, _proc_entry)
-            
-            log(f"Processing started", "INFO", {
-                "dedupe_key": dedupe_key,
-                "retry_count": job.get("_retry_count", 0),
-                "reaped": job.get("_reaped", False)
-            })
-            
+
+            log(
+                "Processing started",
+                "INFO",
+                {
+                    "dedupe_key": dedupe_key,
+                    "retry_count": job.get("_retry_count", 0),
+                    "reaped": job.get("_reaped", False),
+                },
+            )
+
             # 4. Extraer o fetchear orden
             order = job.get("order_json")
-            
+
             if not order:
                 # Necesitamos fetchear de ML
                 resource = job.get("resource", "")
                 m = re.match(r"^/orders/([A-Z0-9\-]+)$", resource)
-                
+
                 if not m:
-                    mark_completed(dedupe_key, "dead", {"reason": "bad_resource", "resource": resource})
+                    mark_completed(
+                        dedupe_key,
+                        "dead",
+                        {"reason": "bad_resource", "resource": resource},
+                    )
                     redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                     continue
-                
+
                 try:
                     order = ml_get(f"/orders/{m.group(1)}", retries=2)
                 except Exception as e:
@@ -1264,16 +1494,25 @@ def main():
                     # que el refresh complete. Solo dead cuando se rebasan los
                     # MAX_RETRIES, igual que cualquier otra falla.
                     if retry_count >= Config.MAX_RETRIES:
-                        mark_completed(dedupe_key, "dead", {
-                            "reason": "ml_fetch_failed",
-                            "error": error_msg,
-                            "retries": retry_count
-                        })
-                        redis_client.lpush(Config.DEAD_LETTER, json.dumps({
-                            "job": job,
-                            "error": error_msg,
-                            "failed_at": "ml_fetch"
-                        }))
+                        mark_completed(
+                            dedupe_key,
+                            "dead",
+                            {
+                                "reason": "ml_fetch_failed",
+                                "error": error_msg,
+                                "retries": retry_count,
+                            },
+                        )
+                        redis_client.lpush(
+                            Config.DEAD_LETTER,
+                            json.dumps(
+                                {
+                                    "job": job,
+                                    "error": error_msg,
+                                    "failed_at": "ml_fetch",
+                                }
+                            ),
+                        )
                         redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
                     else:
                         # Reintentar con backoff.
@@ -1285,12 +1524,16 @@ def main():
                         job["_retry_count"] = retry_count + 1
                         redis_client.rpush(Config.QUEUE, json.dumps(job))
                         release_lock(dedupe_key)
-                        log(f"ML fetch failed: retry scheduled", "WARN", {
-                            "dedupe_key": dedupe_key,
-                            "retry": job["_retry_count"],
-                            "error": error_msg
-                        })
-                    
+                        log(
+                            "ML fetch failed: retry scheduled",
+                            "WARN",
+                            {
+                                "dedupe_key": dedupe_key,
+                                "retry": job["_retry_count"],
+                                "error": error_msg,
+                            },
+                        )
+
                     redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                     continue
 
@@ -1301,7 +1544,9 @@ def main():
             pack_id = str(order.get("pack_id")) if order.get("pack_id") else None
             # --- Visible reference for ops: prefer pack_id, fallback to order_id ---
             visible_ref = pack_id if pack_id else order_id
-            log(f"Visible ref computed | order_id={order_id} | pack_id={pack_id} | visible_ref={visible_ref}")
+            log(
+                f"Visible ref computed | order_id={order_id} | pack_id={pack_id} | visible_ref={visible_ref}"
+            )
 
             # M5: action-aware idempotency.
             # Pre-fix: dedupe_key=`ml:{order_id}` → "cancelled" tras "paid success" era silenciado.
@@ -1315,13 +1560,18 @@ def main():
             dedupe_key = f"{lock_key}:{action}"
 
             if is_already_completed(dedupe_key):
-                log(f"Dedupe action: already completed", "DEBUG", {"dedupe_key": dedupe_key})
+                log(
+                    "Dedupe action: already completed",
+                    "DEBUG",
+                    {"dedupe_key": dedupe_key},
+                )
                 release_lock(lock_key)
                 redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                 continue
 
             # Guardar estado
-            db.execute("""
+            db.execute(
+                """
                 INSERT INTO inbound_orders_state (order_id, site, last_state, last_seen_at, pack_id, logistic_type)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET
@@ -1329,48 +1579,67 @@ def main():
                     last_seen_at=excluded.last_seen_at,
                     pack_id=COALESCE(excluded.pack_id, pack_id),
                     logistic_type=COALESCE(excluded.logistic_type, logistic_type)
-            """, (
-                order_id, site, state,
-                datetime.now(timezone.utc).isoformat(),
-                pack_id,
-                order.get("logistic_type")
-            ))
+            """,
+                (
+                    order_id,
+                    site,
+                    state,
+                    datetime.now(timezone.utc).isoformat(),
+                    pack_id,
+                    order.get("logistic_type"),
+                ),
+            )
 
             # Detectar tipo logístico
             shipment = None
             if order.get("shipping", {}).get("id"):
                 try:
-                    shipment = ml_get(f"/shipments/{order['shipping']['id']}", retries=1)
+                    shipment = ml_get(
+                        f"/shipments/{order['shipping']['id']}", retries=1
+                    )
                 except Exception as e:
-                    log(f"Shipment fetch warning", "WARN", {"error": str(e)})
+                    log("Shipment fetch warning", "WARN", {"error": str(e)})
 
             full = is_full(order, shipment)
 
             if full is None:
-                mark_completed(dedupe_key, "manual_review", {
-                    "order_id": order_id,
-                    "reason": "unknown_logistic_type",
-                    "logistic_type": order.get("logistic_type")
-                }, lock_key=lock_key)
+                mark_completed(
+                    dedupe_key,
+                    "manual_review",
+                    {
+                        "order_id": order_id,
+                        "reason": "unknown_logistic_type",
+                        "logistic_type": order.get("logistic_type"),
+                    },
+                    lock_key=lock_key,
+                )
                 redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                 continue
 
             # Ejecutar lógica de negocio
             if full:
-                process_full(order, order_id, site, state, dedupe_key, visible_ref, lock_key)
+                process_full(
+                    order, order_id, site, state, dedupe_key, visible_ref, lock_key
+                )
             else:
-                process_fbm(order, order_id, site, state, dedupe_key, visible_ref, lock_key)
+                process_fbm(
+                    order, order_id, site, state, dedupe_key, visible_ref, lock_key
+                )
 
             # Limpiar de processing list
             redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
-            
+
         except Exception as e:
-            log(f"Unhandled exception", "CRITICAL", {
-                "error": str(e),
-                "dedupe_key": dedupe_key,
-                "traceback": str(sys.exc_info()[2])
-            })
-            
+            log(
+                "Unhandled exception",
+                "CRITICAL",
+                {
+                    "error": str(e),
+                    "dedupe_key": dedupe_key,
+                    "traceback": str(sys.exc_info()[2]),
+                },
+            )
+
             if dedupe_key:
                 try:
                     job = json.loads(item_data) if item else {}
@@ -1380,15 +1649,22 @@ def main():
                     effective_lock = lock_key if lock_key is not None else dedupe_key
 
                     if retry_count >= Config.MAX_RETRIES:
-                        mark_completed(dedupe_key, "dead", {
-                            "reason": "unhandled_exception",
-                            "error": str(e)
-                        }, lock_key=effective_lock)
-                        redis_client.lpush(Config.DEAD_LETTER, json.dumps({
-                            "job": job,
-                            "error": str(e),
-                            "traceback": str(sys.exc_info())
-                        }))
+                        mark_completed(
+                            dedupe_key,
+                            "dead",
+                            {"reason": "unhandled_exception", "error": str(e)},
+                            lock_key=effective_lock,
+                        )
+                        redis_client.lpush(
+                            Config.DEAD_LETTER,
+                            json.dumps(
+                                {
+                                    "job": job,
+                                    "error": str(e),
+                                    "traceback": str(sys.exc_info()),
+                                }
+                            ),
+                        )
                         redis_client.ltrim(Config.DEAD_LETTER, 0, 9999)
                     else:
                         # Bug M1 fix: rpush ANTES de release_lock (ver comment
@@ -1398,13 +1674,14 @@ def main():
                         release_lock(effective_lock)
 
                     redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
-                except:
+                except Exception:
                     pass
-            
+
             time.sleep(1)
 
     log("Graceful shutdown complete", "INFO", {"worker": Config.WORKER_ID})
     sys.exit(0)
+
 
 if __name__ == "__main__":
     main()

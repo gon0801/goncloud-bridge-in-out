@@ -7,19 +7,25 @@ import time
 import uuid
 import urllib.parse
 import hashlib
-import defusedxml.xmlrpc as _defusedxml_xmlrpc; _defusedxml_xmlrpc.monkey_patch()
-from contextvars import ContextVar
-from datetime import datetime, timezone
-from contextlib import closing
-from typing import List, Optional
+import defusedxml.xmlrpc as _defusedxml_xmlrpc
 
-import redis
-import requests
-from fastapi import FastAPI, Request, Header, Depends
-from fastapi.responses import RedirectResponse, JSONResponse
-from pydantic import BaseModel, Field
+# monkey_patch() DEBE correr antes de importar xmlrpc.client: parcha el parser
+# XML de la stdlib contra entidades maliciosas. Como es una sentencia a nivel
+# de modulo, ruff marca E402 en TODO import posterior; por eso los imports que
+# siguen llevan `noqa: E402`. No los muevas arriba: romperias la mitigacion.
+_defusedxml_xmlrpc.monkey_patch()
+from contextvars import ContextVar  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+from contextlib import closing  # noqa: E402
+from typing import List, Optional  # noqa: E402
 
-from auth_middleware import require_secret
+import redis  # noqa: E402
+import requests  # noqa: E402
+from fastapi import FastAPI, Request, Header, Depends  # noqa: E402
+from fastapi.responses import RedirectResponse, JSONResponse  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
+
+from auth_middleware import require_secret  # noqa: E402
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
@@ -45,7 +51,7 @@ logger = logging.getLogger(__name__)
 # oauth (/oauth/*) tienen sus propios mecanismos de validación. La cookie
 # `csrf_token` se setea en cada respuesta; el JS frontend lee la cookie y
 # manda `X-CSRF-Token` header en mutaciones (ver setup.html → csrf.js).
-import secrets as _bridge_secrets
+import secrets as _bridge_secrets  # noqa: E402
 
 _BRIDGE_CSRF_COOKIE = "csrf_token"
 _BRIDGE_CSRF_EXEMPT_PREFIX = ("/webhooks/", "/oauth/", "/health", "/static")
@@ -71,6 +77,7 @@ def _bridge_ensure_csrf(request, response):
 @app.middleware("http")
 async def _bridge_csrf_middleware(request: Request, call_next):
     import hmac as _hmac_local
+
     path = request.url.path or ""
     method = request.method.upper()
     is_exempt_path = any(path.startswith(p) for p in _BRIDGE_CSRF_EXEMPT_PREFIX)
@@ -84,16 +91,21 @@ async def _bridge_csrf_middleware(request: Request, call_next):
         if has_cf_access and not has_secret_header:
             cookie_token = request.cookies.get(_BRIDGE_CSRF_COOKIE, "")
             header_token = request.headers.get("x-csrf-token", "")
-            if not cookie_token or not header_token or \
-               not _hmac_local.compare_digest(cookie_token, header_token):
-                return JSONResponse(status_code=403,
-                    content={"error": "CSRF token missing or invalid"})
+            if (
+                not cookie_token
+                or not header_token
+                or not _hmac_local.compare_digest(cookie_token, header_token)
+            ):
+                return JSONResponse(
+                    status_code=403, content={"error": "CSRF token missing or invalid"}
+                )
     response = await call_next(request)
     # Setear cookie en cualquier respuesta que no sea exempt path (incluido
     # GETs autenticados, así el setup wizard recibe token desde el primer load).
     if not is_exempt_path:
         _bridge_ensure_csrf(request, response)
     return response
+
 
 _CSP_POLICY = (
     "default-src 'self'; "
@@ -107,6 +119,7 @@ _CSP_POLICY = (
 # D5.2: correlation ID on every request — set as ContextVar so downstream
 # code can read it, echoed in X-Request-ID response header for log correlation.
 _request_id: ContextVar[str] = ContextVar("request_id", default="")
+
 
 @app.middleware("http")
 async def _request_id_middleware(request: Request, call_next):
@@ -125,6 +138,7 @@ async def _security_headers_middleware(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = _CSP_POLICY
     return response
+
 
 # =========================================================
 # MERCADOLIBRE OAUTH — AUTHORIZATION CODE FLOW (SERVER SIDE)
@@ -394,13 +408,16 @@ _OAUTH_STATE_TTL_SECONDS = 600
 def meli_oauth_start():
     import secrets as _secrets
     import base64 as _base64
+
     state = _secrets.token_urlsafe(32)
     # D7.5: PKCE S256 (RFC 7636). code_verifier is stored in Redis; code_challenge is sent
     # to MeLi. Servers that don't support PKCE ignore these params — no breakage risk.
     code_verifier = _secrets.token_urlsafe(48)  # 64 URL-safe chars, within [43,128]
-    code_challenge = _base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode()).digest()
-    ).rstrip(b"=").decode()
+    code_challenge = (
+        _base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
     try:
         r.setex(f"meli_oauth_state:{state}", _OAUTH_STATE_TTL_SECONDS, "1")
         r.setex(f"meli_oauth_pkce:{state}", _OAUTH_STATE_TTL_SECONDS, code_verifier)
@@ -417,7 +434,9 @@ def meli_oauth_start():
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     }
-    url = "https://auth.mercadolibre.com.mx/authorization?" + urllib.parse.urlencode(params)
+    url = "https://auth.mercadolibre.com.mx/authorization?" + urllib.parse.urlencode(
+        params
+    )
     return RedirectResponse(url)
 
 
@@ -485,20 +504,27 @@ def meli_oauth_callback(request: Request):
     # D7.6: reject if MeLi didn't return refresh_token — a session without it
     # expires in 6h and can never auto-renew, causing mass order failures.
     if not data.get("refresh_token"):
-        logger.error("OAuth callback: MeLi did not return refresh_token — rejecting non-refreshable session")
-        return JSONResponse({
-            "error": "missing_refresh_token",
-            "message": (
-                "MeLi no devolvió refresh_token. Ocurre cuando la app ya fue autorizada "
-                "y MeLi no reemite el token. Solución: en https://myaccount.mercadolibre.com.mx/apps/authorized "
-                "revoca el acceso a esta app y vuelve a autorizar vía /oauth/start."
-            ),
-        }, status_code=422)
+        logger.error(
+            "OAuth callback: MeLi did not return refresh_token — rejecting non-refreshable session"
+        )
+        return JSONResponse(
+            {
+                "error": "missing_refresh_token",
+                "message": (
+                    "MeLi no devolvió refresh_token. Ocurre cuando la app ya fue autorizada "
+                    "y MeLi no reemite el token. Solución: en https://myaccount.mercadolibre.com.mx/apps/authorized "
+                    "revoca el acceso a esta app y vuelve a autorizar vía /oauth/start."
+                ),
+            },
+            status_code=422,
+        )
 
     _save_tokens(data)
     # Clear reauth sentinel if one exists from a previous invalid_grant
     try:
-        reauth_sentinel = TOKEN_FILE.replace(".meli_tokens.json", ".meli_reauth_required")
+        reauth_sentinel = TOKEN_FILE.replace(
+            ".meli_tokens.json", ".meli_reauth_required"
+        )
         if os.path.exists(reauth_sentinel):
             os.remove(reauth_sentinel)
     except Exception:
@@ -544,7 +570,9 @@ def meli_oauth_refresh():
     )
 
     if resp.status_code != 200:
-        return JSONResponse({"error": "refresh_failed", "details": resp.text}, status_code=500)
+        return JSONResponse(
+            {"error": "refresh_failed", "details": resp.text}, status_code=500
+        )
 
     data = resp.json()
     _save_tokens(data)
@@ -554,6 +582,7 @@ def meli_oauth_refresh():
 # =========================================================
 # INBOUND ML WEBHOOK (SAFE) — SOLO AUDITA + ENCOLA
 # =========================================================
+
 
 def _get_setting(key: str, default: str = "0") -> str:
     """Lee bridge_settings(key,value). Si no existe la tabla o falla, regresa default.
@@ -567,13 +596,17 @@ def _get_setting(key: str, default: str = "0") -> str:
     con = None
     try:
         con = db_conn()
-        cur = con.execute("SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,))
+        cur = con.execute(
+            "SELECT value FROM bridge_settings WHERE key=? LIMIT 1", (key,)
+        )
         row = cur.fetchone()
         if row and row[0] is not None:
             return str(row[0])
         return default
     except Exception as e:
-        logger.warning(f"_get_setting({key!r}) failed: {e!r} → returning default {default!r}")
+        logger.warning(
+            f"_get_setting({key!r}) failed: {e!r} → returning default {default!r}"
+        )
         return default
     finally:
         if con is not None:
@@ -583,7 +616,7 @@ def _get_setting(key: str, default: str = "0") -> str:
                 pass
 
 
-import hmac as _hmac
+import hmac as _hmac  # noqa: E402
 
 # AP-11 — SubscribeURL allowlist. SNS publica SOLO en sns.<region>.amazonaws.com.
 # Bloqueamos cualquier intento de redirigir GET hacia otro host (SSRF interno).
@@ -627,8 +660,23 @@ _SNS_CERT_TTL_SECONDS = 24 * 3600
 
 # Campos canónicos por tipo de mensaje (orden alfabético, exactamente como
 # AWS los firma). Subject solo se incluye si está presente en Notification.
-_SNS_FIELDS_NOTIFICATION = ("Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type")
-_SNS_FIELDS_SUBSCRIPTION = ("Message", "MessageId", "SubscribeURL", "Timestamp", "Token", "TopicArn", "Type")
+_SNS_FIELDS_NOTIFICATION = (
+    "Message",
+    "MessageId",
+    "Subject",
+    "Timestamp",
+    "TopicArn",
+    "Type",
+)
+_SNS_FIELDS_SUBSCRIPTION = (
+    "Message",
+    "MessageId",
+    "SubscribeURL",
+    "Timestamp",
+    "Token",
+    "TopicArn",
+    "Type",
+)
 
 
 def _sns_canonical_string(payload: dict) -> Optional[bytes]:
@@ -666,6 +714,7 @@ def _sns_load_cert(cert_url: str):
             return None
         from cryptography import x509
         from cryptography.hazmat.backends import default_backend
+
         cert = x509.load_pem_x509_certificate(resp.content, default_backend())
         _SNS_CERT_CACHE[cert_url] = (cert, now + _SNS_CERT_TTL_SECONDS)
         return cert
@@ -687,7 +736,9 @@ def _verify_sns_signature(payload: dict) -> bool:
         if not sig_b64 or not cert_url:
             return False
         if sig_ver == "1":
-            logger.warning("SNS signature version 1 (SHA1) received — configure topic to use SignatureVersion=2 (SHA256)")
+            logger.warning(
+                "SNS signature version 1 (SHA1) received — configure topic to use SignatureVersion=2 (SHA256)"
+            )
             hash_algo = hashes.SHA1()
         elif sig_ver == "2":
             hash_algo = hashes.SHA256()
@@ -782,9 +833,7 @@ async def meli_orders_webhook(
                 or ""
             )
             user_id = (
-                data.get("user_id")
-                or data.get("seller")
-                or data.get("account_id")
+                data.get("user_id") or data.get("seller") or data.get("account_id")
             )
     except Exception:
         data = {}
@@ -815,7 +864,7 @@ async def meli_orders_webhook(
                 dedupe_key,
             ),
         )
-        insert_ignored = (cur.rowcount == 0)
+        insert_ignored = cur.rowcount == 0
         con.commit()
         con.close()
     except Exception as e:
@@ -856,6 +905,7 @@ async def meli_orders_webhook(
 # API EXISTENTE (SNAPSHOT OUTBOUND)
 # =========================================================
 
+
 class StockItem(BaseModel):
     sku: str = Field(min_length=1, max_length=120)
     qty: int = Field(ge=0, le=10_000_000)
@@ -887,10 +937,10 @@ def health():
         db_bytes = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
         db_mb = round(db_bytes / 1024 / 1024, 1)
         checks["db_size_mb"] = db_mb
-        if db_bytes > 8 * 1024 ** 3:
+        if db_bytes > 8 * 1024**3:
             checks["db_size_warn"] = "exceeds_8gb"
             ok = False
-        elif db_bytes > 4 * 1024 ** 3:
+        elif db_bytes > 4 * 1024**3:
             checks["db_size_warn"] = "exceeds_4gb"
     except Exception as e:
         checks["db_size_mb"] = f"error: {e}"
@@ -898,7 +948,11 @@ def health():
     # Redis check
     try:
         import redis as _redis
-        _r = _redis.Redis.from_url(os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"), socket_connect_timeout=2)
+
+        _r = _redis.Redis.from_url(
+            os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"),
+            socket_connect_timeout=2,
+        )
         _r.ping()
         checks["redis"] = "ok"
     except Exception as e:
@@ -908,7 +962,11 @@ def health():
     # D5.4: alert conditions — queue depth and recent dead events
     try:
         import redis as _redis_alert
-        _ra = _redis_alert.Redis.from_url(os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"), socket_connect_timeout=2)
+
+        _ra = _redis_alert.Redis.from_url(
+            os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"),
+            socket_connect_timeout=2,
+        )
         ml_dead = _ra.llen("ml_orders_dead")
         amz_dead = _ra.llen("amazon_orders_dead")
         stock_q = _ra.llen("stock_jobs")
@@ -925,7 +983,9 @@ def health():
 
     # D7.3: surface MeLi reauth requirement when inline refresh detected invalid_grant
     try:
-        reauth_sentinel = TOKEN_FILE.replace(".meli_tokens.json", ".meli_reauth_required")
+        reauth_sentinel = TOKEN_FILE.replace(
+            ".meli_tokens.json", ".meli_reauth_required"
+        )
         if os.path.exists(reauth_sentinel):
             with open(reauth_sentinel) as _f:
                 checks["meli_reauth_required"] = _f.read().strip()
@@ -935,6 +995,7 @@ def health():
 
     status_code = 200 if ok else 503
     from fastapi.responses import JSONResponse
+
     return JSONResponse(
         {"ok": ok, "time": utc_now_iso(), "checks": checks},
         status_code=status_code,
@@ -948,19 +1009,30 @@ def get_metrics():
     # Bridge SQLite counters
     try:
         with closing(db_conn()) as conn:
-            rows = conn.execute("SELECT key, value, updated_at FROM bridge_metrics").fetchall()
+            rows = conn.execute(
+                "SELECT key, value, updated_at FROM bridge_metrics"
+            ).fetchall()
             out["bridge"] = {r[0]: {"v": r[1], "at": r[2]} for r in rows}
     except Exception as e:
         out["bridge"] = {"error": str(e)}
     # Redis queue depths
     try:
         import redis as _redis_m
-        _rm = _redis_m.Redis.from_url(os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"), socket_connect_timeout=2)
-        out["queues"] = {q: _rm.llen(q) for q in [
-            "ml_orders_jobs", "ml_orders_dead",
-            "amazon_orders_jobs", "amazon_orders_dead",
-            "stock_jobs",
-        ]}
+
+        _rm = _redis_m.Redis.from_url(
+            os.getenv("REDIS_URL", "redis://bridge-redis:6379/0"),
+            socket_connect_timeout=2,
+        )
+        out["queues"] = {
+            q: _rm.llen(q)
+            for q in [
+                "ml_orders_jobs",
+                "ml_orders_dead",
+                "amazon_orders_jobs",
+                "amazon_orders_dead",
+                "stock_jobs",
+            ]
+        }
     except Exception as e:
         out["queues"] = {"error": str(e)}
     # Recent inbound results (last 24h)
@@ -1050,7 +1122,13 @@ def stock_snapshot(snapshot: StockSnapshot):
                 rejected_count += 1
                 conn.execute(
                     "INSERT INTO rejected_skus(created_at, event_id, channel, sku, reason) VALUES (?,?,?,?,?)",
-                    (created_at, str(event_id), snapshot.channel, raw, "regex_mismatch"),
+                    (
+                        created_at,
+                        str(event_id),
+                        snapshot.channel,
+                        raw,
+                        "regex_mismatch",
+                    ),
                 )
                 continue
 
@@ -1082,7 +1160,7 @@ def stock_snapshot(snapshot: StockSnapshot):
             )
 
         missing_zero_enabled = False  # missing=0 DISABLED (complete snapshots ruido)
-          # Upsert known_skus catalog (missing=0 disabled)
+        # Upsert known_skus catalog (missing=0 disabled)
         if missing_zero_enabled:
             for it in valid_items:
                 sku = it.sku.strip()
@@ -1159,9 +1237,11 @@ def stock_snapshot(snapshot: StockSnapshot):
         "derived_zero": len(derived_zero_skus),
     }
 
+
 # ============================================================
 # AMAZON WEBHOOK (SNS Notifications)
 # ============================================================
+
 
 @app.post("/webhooks/amazon/orders/{secret}")
 @app.post("/webhooks/amazon/orders")
@@ -1172,14 +1252,20 @@ async def amazon_orders_webhook(
 ):
     """Amazon SNS webhook endpoint."""
     if _get_setting("amazon_inbound_enabled", "0") != "1":
-        return JSONResponse({"ok": True, "ignored": "amazon_inbound_enabled=0"}, status_code=200)
+        return JSONResponse(
+            {"ok": True, "ignored": "amazon_inbound_enabled=0"}, status_code=200
+        )
     if _get_setting("amazon_webhook_enabled", "0") != "1":
-        return JSONResponse({"ok": True, "ignored": "amazon_webhook_enabled=0"}, status_code=200)
+        return JSONResponse(
+            {"ok": True, "ignored": "amazon_webhook_enabled=0"}, status_code=200
+        )
     expected = _get_setting("amazon_webhook_secret", "")
     qsecret = request.query_params.get("secret")
     psecret = secret
     if not expected:
-        return JSONResponse({"ok": False, "error": "secret_not_configured"}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "error": "secret_not_configured"}, status_code=500
+        )
     if not _check_webhook_secret(expected, x_goncloud_secret, qsecret, psecret):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     raw = await request.body()
@@ -1195,9 +1281,15 @@ async def amazon_orders_webhook(
     # Sin firma válida no podemos confiar en SubscribeURL ni en Message body
     # — el shared-secret protege ENTRE Cloudflare y bridge, pero no ATA al
     # publisher SNS de Amazon.
-    if msg_type in ("Notification", "SubscriptionConfirmation", "UnsubscribeConfirmation"):
+    if msg_type in (
+        "Notification",
+        "SubscriptionConfirmation",
+        "UnsubscribeConfirmation",
+    ):
         if not _verify_sns_signature(data if isinstance(data, dict) else {}):
-            logger.warning(f"Rejected SNS message: signature verification failed (type={msg_type})")
+            logger.warning(
+                f"Rejected SNS message: signature verification failed (type={msg_type})"
+            )
             return JSONResponse(
                 {"ok": False, "error": "invalid_sns_signature"},
                 status_code=401,
@@ -1212,6 +1304,7 @@ async def amazon_orders_webhook(
                 status_code=400,
             )
         import httpx
+
         try:
             httpx.get(subscribe_url, timeout=10)
         except Exception as e:
@@ -1256,7 +1349,10 @@ async def amazon_orders_webhook(
     try:
         con = db_conn()
         cur = con.cursor()
-        cur.execute("INSERT OR IGNORE INTO amazon_inbound_events (received_at, event_type, order_id, payload_json, dedupe_key, status) VALUES (?, ?, ?, ?, ?, 'pending')", (received_at, event_type, order_id, raw_text, dedupe_key))
+        cur.execute(
+            "INSERT OR IGNORE INTO amazon_inbound_events (received_at, event_type, order_id, payload_json, dedupe_key, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+            (received_at, event_type, order_id, raw_text, dedupe_key),
+        )
         con.commit()
         con.close()
     except Exception as e:
@@ -1273,6 +1369,7 @@ async def amazon_orders_webhook(
     r.rpush("amazon_orders_jobs", json.dumps(job, ensure_ascii=False))
     return {"ok": True, "dedupe_key": dedupe_key}
 
+
 @app.get("/v1/settings", dependencies=[Depends(require_secret)])
 def get_settings():
     """
@@ -1287,10 +1384,11 @@ def get_settings():
     settings = [{"key": k, "value": v, "updated_at": ts} for (k, v, ts) in rows]
     return {"settings": settings}
 
+
 # =========================================================
 # AMAZON SKU MAPPER - WEB UI
 # =========================================================
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse  # noqa: E402
 
 
 @app.get("/mapper", response_class=HTMLResponse, dependencies=[Depends(require_secret)])
@@ -1298,79 +1396,127 @@ async def sku_mapper_ui():
     html = open("/app/sku_mapper.html").read()
     return HTMLResponse(content=html)
 
-@app.get("/amazon/mapper", response_class=HTMLResponse, dependencies=[Depends(require_secret)])
+
+@app.get(
+    "/amazon/mapper",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_secret)],
+)
 async def amazon_mapper_ui():
     html = open("/app/amazon_mapper.html").read()
     return HTMLResponse(content=html)
 
+
 @app.get("/api/amazon/odoo-skus", dependencies=[Depends(require_secret)])
 async def get_odoo_skus():
-    import xmlrpc.client
+    import xmlrpc.client  # noqa: E402
+
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     db = os.getenv("ODOO_DB", "EHV")
     user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-    pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
+    pwd = os.environ[
+        "ODOO_PASSWORD"
+    ]  # OP-2: KeyError si falta — sin fallback hardcoded
     try:
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         uid = common.authenticate(db, user, pwd, {})
         models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
-        prods = models.execute_kw(db, uid, pwd, "product.product", "search_read",
-            [[("sell_on_amazon_fbm", "=", True), ("active", "=", True), ("default_code", "!=", False)]],
-            {"fields": ["default_code", "name", "display_name", "qty_available"]})
-        return {"ok": True, "skus": [{"sku": p["default_code"], "name": p.get("display_name", "") or p.get("name", ""), "qty": p.get("qty_available", 0)} for p in prods]}
+        prods = models.execute_kw(
+            db,
+            uid,
+            pwd,
+            "product.product",
+            "search_read",
+            [
+                [
+                    ("sell_on_amazon_fbm", "=", True),
+                    ("active", "=", True),
+                    ("default_code", "!=", False),
+                ]
+            ],
+            {"fields": ["default_code", "name", "display_name", "qty_available"]},
+        )
+        return {
+            "ok": True,
+            "skus": [
+                {
+                    "sku": p["default_code"],
+                    "name": p.get("display_name", "") or p.get("name", ""),
+                    "qty": p.get("qty_available", 0),
+                }
+                for p in prods
+            ],
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 
 @app.get("/api/amazon/amazon-skus", dependencies=[Depends(require_secret)])
 async def get_amazon_skus():
     """Get Amazon SKUs from cache - enriched with Odoo display names"""
-    import xmlrpc.client
-    
+    import xmlrpc.client  # noqa: E402
+
     # Get Amazon inventory from cache
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT seller_sku, asin, product_name, qty FROM amazon_inventory_cache ORDER BY seller_sku").fetchall()
+    rows = conn.execute(
+        "SELECT seller_sku, asin, product_name, qty FROM amazon_inventory_cache ORDER BY seller_sku"
+    ).fetchall()
     conn.close()
-    
+
     if not rows:
         # Cache empty, try to refresh
         result = await refresh_amazon_inventory()
         if result.get("ok"):
             conn = sqlite3.connect(DB_PATH)
-            rows = conn.execute("SELECT seller_sku, asin, product_name, qty FROM amazon_inventory_cache ORDER BY seller_sku").fetchall()
+            rows = conn.execute(
+                "SELECT seller_sku, asin, product_name, qty FROM amazon_inventory_cache ORDER BY seller_sku"
+            ).fetchall()
             conn.close()
-    
+
     # Build base list
-    skus_list = [{"sku": r[0], "asin": r[1], "name": r[2] or "", "qty": r[3]} for r in rows]
-    
+    skus_list = [
+        {"sku": r[0], "asin": r[1], "name": r[2] or "", "qty": r[3]} for r in rows
+    ]
+
     # Enrich with Odoo display names (for mapped SKUs)
     try:
         url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
         db = os.getenv("ODOO_DB", "EHV")
         user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-        pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
-        
+        pwd = os.environ[
+            "ODOO_PASSWORD"
+        ]  # OP-2: KeyError si falta — sin fallback hardcoded
+
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         uid = common.authenticate(db, user, pwd, {})
         models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
-        
+
         # Get all amazon_sku -> odoo_sku mappings
         conn = sqlite3.connect(DB_PATH)
-        mappings = conn.execute("SELECT seller_sku, odoo_default_code FROM amazon_sku_mapping").fetchall()
+        mappings = conn.execute(
+            "SELECT seller_sku, odoo_default_code FROM amazon_sku_mapping"
+        ).fetchall()
         conn.close()
-        
+
         # Build lookup: amazon_sku -> odoo_sku
         mapping_dict = {m[0]: m[1] for m in mappings}
-        
+
         # Get Odoo product info for mapped SKUs
         odoo_skus = list(set(mapping_dict.values()))
         if odoo_skus:
-            odoo_prods = models.execute_kw(db, uid, pwd, "product.product", "search_read",
+            odoo_prods = models.execute_kw(
+                db,
+                uid,
+                pwd,
+                "product.product",
+                "search_read",
                 [[("default_code", "in", odoo_skus), ("active", "=", True)]],
-                {"fields": ["default_code", "display_name"]})
-            
+                {"fields": ["default_code", "display_name"]},
+            )
+
             # Build lookup: odoo_sku -> display_name
             odoo_lookup = {p["default_code"]: p["display_name"] for p in odoo_prods}
-            
+
             # Enrich Amazon SKUs with Odoo display names
             for item in skus_list:
                 amazon_sku = item["sku"]
@@ -1381,8 +1527,9 @@ async def get_amazon_skus():
     except Exception as e:
         logger.error(f"Error enriching Amazon SKUs with Odoo names: {e}")
         # Continue with Amazon names if Odoo lookup fails
-    
+
     return {"ok": True, "skus": skus_list}
+
 
 @app.post("/api/amazon/refresh-inventory", dependencies=[Depends(require_secret)])
 async def refresh_amazon_inventory():
@@ -1406,15 +1553,19 @@ async def refresh_amazon_inventory():
 async def _refresh_amazon_inventory_locked():
     """Cuerpo real del refresh — sin la lógica de lock."""
     conn = sqlite3.connect(DB_PATH)
+
     def get_setting(k):
-        row = conn.execute("SELECT value FROM bridge_settings WHERE key=?", (k,)).fetchone()
+        row = conn.execute(
+            "SELECT value FROM bridge_settings WHERE key=?", (k,)
+        ).fetchone()
         return row[0] if row else ""
+
     creds = {
         "refresh_token": get_setting("amazon_sp_api_refresh_token"),
         "client_id": get_setting("amazon_sp_api_client_id"),
         "client_secret": get_setting("amazon_sp_api_client_secret"),
         "marketplace": get_setting("amazon_marketplace_id") or "A1AM78C64UM0Y8",
-        "seller_id": get_setting("amazon_seller_id") or "A29XRL07YRN0L"
+        "seller_id": get_setting("amazon_seller_id") or "A29XRL07YRN0L",
     }
     if not creds["refresh_token"]:
         conn.close()
@@ -1422,9 +1573,13 @@ async def _refresh_amazon_inventory_locked():
     try:
         token_resp = requests.post(
             "https://api.amazon.com/auth/o2/token",
-            data={"grant_type": "refresh_token", "refresh_token": creds["refresh_token"],
-                  "client_id": creds["client_id"], "client_secret": creds["client_secret"]},
-            timeout=30
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": creds["refresh_token"],
+                "client_id": creds["client_id"],
+                "client_secret": creds["client_secret"],
+            },
+            timeout=30,
         )
         access_token = token_resp.json()["access_token"]
         skus = []
@@ -1432,12 +1587,16 @@ async def _refresh_amazon_inventory_locked():
         page = 0
         while True:
             page += 1
-            url = (f"https://sellingpartnerapi-na.amazon.com/listings/2021-08-01/items"
-                   f"/{creds['seller_id']}"
-                   f"?marketplaceIds={creds['marketplace']}&status=BUYABLE&pageSize=20")
+            url = (
+                f"https://sellingpartnerapi-na.amazon.com/listings/2021-08-01/items"
+                f"/{creds['seller_id']}"
+                f"?marketplaceIds={creds['marketplace']}&status=BUYABLE&pageSize=20"
+            )
             if next_token:
                 url += f"&pageToken={requests.utils.quote(next_token)}"
-            resp = requests.get(url, headers={"x-amz-access-token": access_token}, timeout=30)
+            resp = requests.get(
+                url, headers={"x-amz-access-token": access_token}, timeout=30
+            )
             data = resp.json()
             for item in data.get("items", []):
                 sku = item.get("sku", "")
@@ -1445,7 +1604,9 @@ async def _refresh_amazon_inventory_locked():
                 asin = summary.get("asin", "")
                 name = summary.get("itemName", "")
                 skus.append((sku, asin, name, 0))
-            logger.info(f"Amazon listings page {page}: {len(data.get('items', []))} items (total: {len(skus)})")
+            logger.info(
+                f"Amazon listings page {page}: {len(data.get('items', []))} items (total: {len(skus)})"
+            )
             next_token = data.get("pagination", {}).get("nextToken")
             if not next_token:
                 break
@@ -1456,7 +1617,9 @@ async def _refresh_amazon_inventory_locked():
         # el cache vivo. Requiere len(skus) > 0 para hacer el swap.
         if not skus:
             conn.close()
-            logger.warning("Amazon listings API returned 0 items — keeping previous cache")
+            logger.warning(
+                "Amazon listings API returned 0 items — keeping previous cache"
+            )
             return {"ok": False, "error": "empty_listings_response"}
 
         conn.execute(
@@ -1483,45 +1646,68 @@ async def _refresh_amazon_inventory_locked():
             conn.rollback()
             raise
         conn.close()
-        logger.info(f"Amazon inventory cache updated: {len(skus)} listings (atomic swap)")
+        logger.info(
+            f"Amazon inventory cache updated: {len(skus)} listings (atomic swap)"
+        )
         return {"ok": True, "count": len(skus)}
     except Exception as e:
         conn.close()
         logger.error(f"Error refreshing Amazon inventory: {e}")
         return {"ok": False, "error": str(e)}
 
+
 @app.get("/api/amazon/mappings", dependencies=[Depends(require_secret)])
 async def get_mappings():
-    import xmlrpc.client
+    import xmlrpc.client  # noqa: E402
+
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT seller_sku, odoo_default_code, notes, created_at FROM amazon_sku_mapping").fetchall()
+    rows = conn.execute(
+        "SELECT seller_sku, odoo_default_code, notes, created_at FROM amazon_sku_mapping"
+    ).fetchall()
     conn.close()
-    
+
     # Check sell_on_amazon_fbm in Odoo
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     db = os.getenv("ODOO_DB", "EHV")
     user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-    pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
-    
+    pwd = os.environ[
+        "ODOO_PASSWORD"
+    ]  # OP-2: KeyError si falta — sin fallback hardcoded
+
     sell_on_amazon_skus = set()
     try:
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         uid = common.authenticate(db, user, pwd, {})
         models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
-        prods = models.execute_kw(db, uid, pwd, "product.product", "search_read",
+        prods = models.execute_kw(
+            db,
+            uid,
+            pwd,
+            "product.product",
+            "search_read",
             [[("sell_on_amazon_fbm", "=", True), ("active", "=", True)]],
-            {"fields": ["default_code"]})
-        sell_on_amazon_skus = {p["default_code"] for p in prods if p.get("default_code")}
-    except:
+            {"fields": ["default_code"]},
+        )
+        sell_on_amazon_skus = {
+            p["default_code"] for p in prods if p.get("default_code")
+        }
+    except Exception:
         pass
-    
-    return {"ok": True, "mappings": [{
-        "amazon_sku": r[0], 
-        "odoo_sku": r[1], 
-        "notes": r[2], 
-        "created_at": r[3],
-        "has_sell_on_amazon": r[1] in sell_on_amazon_skus
-    } for r in rows]}
+
+    return {
+        "ok": True,
+        "mappings": [
+            {
+                "amazon_sku": r[0],
+                "odoo_sku": r[1],
+                "notes": r[2],
+                "created_at": r[3],
+                "has_sell_on_amazon": r[1] in sell_on_amazon_skus,
+            }
+            for r in rows
+        ],
+    }
+
 
 @app.post("/api/amazon/mappings", dependencies=[Depends(require_secret)])
 async def save_mapping(request: Request):
@@ -1556,7 +1742,11 @@ async def save_mapping(request: Request):
     )
     conn.commit()
     conn.close()
-    return {"ok": True, "overwrote": bool(existing and existing[0] and existing[0] != odoo_sku)}
+    return {
+        "ok": True,
+        "overwrote": bool(existing and existing[0] and existing[0] != odoo_sku),
+    }
+
 
 @app.delete("/api/amazon/mappings/{odoo_sku}", dependencies=[Depends(require_secret)])
 async def delete_mapping(odoo_sku: str, seller_sku: str = ""):
@@ -1583,44 +1773,84 @@ async def delete_mapping(odoo_sku: str, seller_sku: str = ""):
     conn.close()
     return {"ok": True, "deleted": deleted}
 
+
 # ═══════════════════════════════════════════════════════════════════
 # MELI SKU MAPPER ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
+
 @app.get("/api/meli/odoo-skus", dependencies=[Depends(require_secret)])
 async def get_meli_odoo_skus():
-    import xmlrpc.client
+    import xmlrpc.client  # noqa: E402
+
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     db = os.getenv("ODOO_DB", "EHV")
     user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-    pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
+    pwd = os.environ[
+        "ODOO_PASSWORD"
+    ]  # OP-2: KeyError si falta — sin fallback hardcoded
     try:
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         uid = common.authenticate(db, user, pwd, {})
         models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
-        prods = models.execute_kw(db, uid, pwd, "product.product", "search_read",
-            [[("sell_on_meli", "=", True), ("active", "=", True), ("default_code", "!=", False)]],
-            {"fields": ["default_code", "name", "display_name", "qty_available"]})
-        return {"ok": True, "skus": [{"sku": p["default_code"], "name": p.get("display_name", "") or p.get("name", ""), "qty": p.get("qty_available", 0)} for p in prods]}
+        prods = models.execute_kw(
+            db,
+            uid,
+            pwd,
+            "product.product",
+            "search_read",
+            [
+                [
+                    ("sell_on_meli", "=", True),
+                    ("active", "=", True),
+                    ("default_code", "!=", False),
+                ]
+            ],
+            {"fields": ["default_code", "name", "display_name", "qty_available"]},
+        )
+        return {
+            "ok": True,
+            "skus": [
+                {
+                    "sku": p["default_code"],
+                    "name": p.get("display_name", "") or p.get("name", ""),
+                    "qty": p.get("qty_available", 0),
+                }
+                for p in prods
+            ],
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 
 @app.get("/api/meli/meli-skus", dependencies=[Depends(require_secret)])
 async def get_meli_skus():
     """Get SKUs from MercadoLibre listings"""
     conn = sqlite3.connect(DB_PATH)
     # Get from sku_mapping (consolidated table)
-    rows = conn.execute("SELECT DISTINCT sku FROM sku_mapping WHERE channel='meli' AND sku IS NOT NULL AND sku != ''").fetchall()
+    rows = conn.execute(
+        "SELECT DISTINCT sku FROM sku_mapping WHERE channel='meli' AND sku IS NOT NULL AND sku != ''"
+    ).fetchall()
     skus = [{"sku": r[0], "name": "", "qty": 0} for r in rows]
     conn.close()
     return {"ok": True, "skus": skus}
 
+
 @app.get("/api/meli/mappings", dependencies=[Depends(require_secret)])
 async def get_meli_mappings():
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT seller_sku, odoo_default_code, notes, created_at FROM meli_sku_mapping").fetchall()
+    rows = conn.execute(
+        "SELECT seller_sku, odoo_default_code, notes, created_at FROM meli_sku_mapping"
+    ).fetchall()
     conn.close()
-    return {"ok": True, "mappings": [{"meli_sku": r[0], "odoo_sku": r[1], "notes": r[2], "created_at": r[3]} for r in rows]}
+    return {
+        "ok": True,
+        "mappings": [
+            {"meli_sku": r[0], "odoo_sku": r[1], "notes": r[2], "created_at": r[3]}
+            for r in rows
+        ],
+    }
+
 
 @app.post("/api/meli/mappings", dependencies=[Depends(require_secret)])
 async def save_meli_mapping(request: Request):
@@ -1630,18 +1860,25 @@ async def save_meli_mapping(request: Request):
     if not odoo_sku or not meli_sku:
         return {"ok": False, "error": "SKUs requeridos"}
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("INSERT OR REPLACE INTO meli_sku_mapping (seller_sku, odoo_default_code, notes, created_at) VALUES (?, ?, 'Web UI', datetime('now'))", (meli_sku, odoo_sku))
+    conn.execute(
+        "INSERT OR REPLACE INTO meli_sku_mapping (seller_sku, odoo_default_code, notes, created_at) VALUES (?, ?, 'Web UI', datetime('now'))",
+        (meli_sku, odoo_sku),
+    )
     conn.commit()
     conn.close()
     return {"ok": True}
 
+
 @app.delete("/api/meli/mappings/{odoo_sku}", dependencies=[Depends(require_secret)])
 async def delete_meli_mapping(odoo_sku: str):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("DELETE FROM meli_sku_mapping WHERE odoo_default_code = ?", (odoo_sku,))
+    conn.execute(
+        "DELETE FROM meli_sku_mapping WHERE odoo_default_code = ?", (odoo_sku,)
+    )
     conn.commit()
     conn.close()
     return {"ok": True}
+
 
 @app.get("/api/meli/listings", dependencies=[Depends(require_secret)])
 async def get_meli_listings():
@@ -1649,91 +1886,105 @@ async def get_meli_listings():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    
+
     cur.execute("""
         SELECT item_id, variation_id, title, var_name, sku, qty, price, status, updated_at
         FROM meli_listings_cache
         ORDER BY item_id, variation_id
     """)
-    
+
     listings = []
     for row in cur.fetchall():
-        listings.append({
-            "item_id": row["item_id"],
-            "variation_id": row["variation_id"],
-            "title": row["title"],
-            "var_name": row["var_name"],
-            "sku": row["sku"],
-            "qty": row["qty"]
-        })
-    
+        listings.append(
+            {
+                "item_id": row["item_id"],
+                "variation_id": row["variation_id"],
+                "title": row["title"],
+                "var_name": row["var_name"],
+                "sku": row["sku"],
+                "qty": row["qty"],
+            }
+        )
+
     conn.close()
-    
-    return {
-        "ok": True,
-        "listings": listings,
-        "cached": True
-    }
+
+    return {"ok": True, "listings": listings, "cached": True}
+
 
 @app.post("/api/meli/listings/refresh", dependencies=[Depends(require_secret)])
 async def refresh_meli_listings():
     """Trigger manual refresh of MeLi listings cache"""
     import subprocess
+
     # F9.2: SETNX lock — prevent concurrent runs consuming double MeLi rate-limit.
     # TTL=600s acts as max expected runtime; no explicit release needed for Popen.
     lock_key = "bridge:lock:meli_listings_refresh"
     if not r.set(lock_key, "1", nx=True, ex=600):
         return {"ok": False, "message": "Refresh ya en progreso, espera unos minutos"}
     try:
-        subprocess.Popen([
-            "python3",
-            "/data/sync_meli_listings.py"
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["python3", "/data/sync_meli_listings.py"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
-        return {
-            "ok": True,
-            "message": "Refresh iniciado en background"
-        }
+        return {"ok": True, "message": "Refresh iniciado en background"}
     except Exception as e:
         logger.error(f"Error triggering refresh: {e}")
-        return {
-            "ok": False,
-            "error": str(e)
-        }
+        return {"ok": False, "error": str(e)}
+
 
 @app.get("/api/meli/sku-mappings", dependencies=[Depends(require_secret)])
 async def get_meli_sku_mappings():
     """Get sku_mapping entries for meli channel with sell_on_meli status"""
-    import xmlrpc.client
+    import xmlrpc.client  # noqa: E402
+
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT sku, remote_item_id, remote_variation_id, last_seen_at FROM sku_mapping WHERE channel='meli'").fetchall()
+    rows = conn.execute(
+        "SELECT sku, remote_item_id, remote_variation_id, last_seen_at FROM sku_mapping WHERE channel='meli'"
+    ).fetchall()
     conn.close()
-    
+
     # Check sell_on_meli in Odoo
     url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     db = os.getenv("ODOO_DB", "EHV")
     user = os.getenv("ODOO_USER", "ehventasmx@gmail.com")
-    pwd = os.environ["ODOO_PASSWORD"]  # OP-2: KeyError si falta — sin fallback hardcoded
-    
+    pwd = os.environ[
+        "ODOO_PASSWORD"
+    ]  # OP-2: KeyError si falta — sin fallback hardcoded
+
     sell_on_meli_skus = set()
     try:
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
         uid = common.authenticate(db, user, pwd, {})
         models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
-        prods = models.execute_kw(db, uid, pwd, "product.product", "search_read",
+        prods = models.execute_kw(
+            db,
+            uid,
+            pwd,
+            "product.product",
+            "search_read",
             [[("sell_on_meli", "=", True), ("active", "=", True)]],
-            {"fields": ["default_code"]})
+            {"fields": ["default_code"]},
+        )
         sell_on_meli_skus = {p["default_code"] for p in prods if p.get("default_code")}
-    except:
+    except Exception:
         pass
-    
-    return {"ok": True, "mappings": [{
-        "sku": r[0], 
-        "remote_item_id": r[1], 
-        "remote_variation_id": r[2], 
-        "last_seen_at": r[3],
-        "has_sell_on_meli": r[0] in sell_on_meli_skus
-    } for r in rows]}
+
+    return {
+        "ok": True,
+        "mappings": [
+            {
+                "sku": r[0],
+                "remote_item_id": r[1],
+                "remote_variation_id": r[2],
+                "last_seen_at": r[3],
+                "has_sell_on_meli": r[0] in sell_on_meli_skus,
+            }
+            for r in rows
+        ],
+    }
+
 
 @app.post("/api/meli/sku-mappings", dependencies=[Depends(require_secret)])
 async def save_meli_sku_mapping(request: Request):
@@ -1744,44 +1995,56 @@ async def save_meli_sku_mapping(request: Request):
     if not odoo_sku or not item_id:
         return {"ok": False, "error": "SKU e Item ID requeridos"}
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
+    conn.execute(
+        """
         INSERT OR REPLACE INTO sku_mapping (channel, sku, remote_item_id, remote_variation_id, last_seen_at)
         VALUES ('meli', ?, ?, ?, datetime('now'))
-    """, (odoo_sku, item_id, variation_id or ""))
+    """,
+        (odoo_sku, item_id, variation_id or ""),
+    )
     conn.commit()
     conn.close()
     return {"ok": True}
 
-@app.delete("/api/meli/sku-mappings/{item_id}/{variation_id}", dependencies=[Depends(require_secret)])
+
+@app.delete(
+    "/api/meli/sku-mappings/{item_id}/{variation_id}",
+    dependencies=[Depends(require_secret)],
+)
 async def delete_meli_sku_mapping(item_id: str, variation_id: str):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("DELETE FROM sku_mapping WHERE channel='meli' AND remote_item_id = ? AND remote_variation_id = ?", (item_id, variation_id))
+    conn.execute(
+        "DELETE FROM sku_mapping WHERE channel='meli' AND remote_item_id = ? AND remote_variation_id = ?",
+        (item_id, variation_id),
+    )
     conn.commit()
     conn.close()
     return {"ok": True}
+
 
 # =========================================================
 # SETUP WIZARD — GONCLOUD SaaS
 # =========================================================
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import xmlrpc.client
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+import xmlrpc.client  # noqa: E402
 
 # Servir archivos estáticos
 app.mount("/static", StaticFiles(directory="/app/static"), name="static")
+
 
 @app.get("/setup", dependencies=[Depends(require_secret)])
 async def setup_wizard():
     """Sirve el wizard de setup (solo si no está configurado)"""
     conn = sqlite3.connect(DB_PATH)
-    
+
     # Verificar si ya hay configuración existente
     checks = [
         "SELECT value FROM bridge_settings WHERE key='setup_completed' AND value='1'",
         "SELECT 1 FROM sku_mapping LIMIT 1",
-        "SELECT 1 FROM amazon_sku_mapping WHERE odoo_default_code IS NOT NULL LIMIT 1"
+        "SELECT 1 FROM amazon_sku_mapping WHERE odoo_default_code IS NOT NULL LIMIT 1",
     ]
-    
+
     already_configured = False
     for check in checks:
         try:
@@ -1789,22 +2052,23 @@ async def setup_wizard():
             if row:
                 already_configured = True
                 break
-        except:
+        except Exception:
             pass
-    
+
     conn.close()
-    
+
     if already_configured:
-        return JSONResponse({
-            "error": "Sistema ya configurado",
-            "message": "GONCLOUD ya está en producción. Usa /mapper para SKUs o /status para ver estado.",
-            "links": {
-                "mapper": "/mapper",
-                "status": "/api/health"
-            }
-        }, status_code=403)
-    
+        return JSONResponse(
+            {
+                "error": "Sistema ya configurado",
+                "message": "GONCLOUD ya está en producción. Usa /mapper para SKUs o /status para ver estado.",
+                "links": {"mapper": "/mapper", "status": "/api/health"},
+            },
+            status_code=403,
+        )
+
     return FileResponse("/app/static/setup.html")
+
 
 @app.get("/setup/force", dependencies=[Depends(require_secret)])
 async def setup_wizard_force():
@@ -1812,6 +2076,7 @@ async def setup_wizard_force():
     Solo accesible con header X-Goncloud-Secret válido o tras Cloudflare Access.
     """
     return FileResponse("/app/static/setup.html")
+
 
 @app.post("/setup/api/test-odoo", dependencies=[Depends(require_secret)])
 async def test_odoo_connection(request: Request):
@@ -1840,32 +2105,40 @@ async def test_odoo_connection(request: Request):
             "ok": False,
             "error": f"URL fuera de allowlist. Esperado: {expected_odoo_url}",
         }
-    
+
     try:
         common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
         uid = common.authenticate(db, user, password, {})
-        
+
         if not uid:
             return {"ok": False, "error": "Credenciales inválidas"}
-        
+
         models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object", allow_none=True)
-        
+
         # Contar productos
-        product_count = models.execute_kw(db, uid, password, 
-            "product.product", "search_count", [[("active", "=", True)]])
-        
+        product_count = models.execute_kw(
+            db,
+            uid,
+            password,
+            "product.product",
+            "search_count",
+            [[("active", "=", True)]],
+        )
+
         # Contar almacenes
-        warehouse_count = models.execute_kw(db, uid, password,
-            "stock.warehouse", "search_count", [[]])
-        
+        warehouse_count = models.execute_kw(
+            db, uid, password, "stock.warehouse", "search_count", [[]]
+        )
+
         return {
             "ok": True,
             "products": product_count,
             "warehouses": warehouse_count,
-            "uid": uid
+            "uid": uid,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 
 @app.get("/setup/api/status", dependencies=[Depends(require_secret)])
 async def setup_status():
@@ -1873,7 +2146,7 @@ async def setup_status():
     meli_connected = False
     meli_user = None
     amazon_connected = False
-    
+
     # Check MeLi token
     try:
         if os.path.exists(TOKEN_FILE):
@@ -1882,72 +2155,89 @@ async def setup_status():
                 if tokens.get("access_token"):
                     meli_connected = True
                     meli_user = tokens.get("user_id")
-    except:
+    except Exception:
         pass
-    
+
     # Check Amazon (simplified - check if credentials exist)
     try:
         conn = sqlite3.connect(DB_PATH)
-        row = conn.execute("SELECT value FROM bridge_settings WHERE key='amazon_refresh_token'").fetchone()
+        row = conn.execute(
+            "SELECT value FROM bridge_settings WHERE key='amazon_refresh_token'"
+        ).fetchone()
         conn.close()
         amazon_connected = bool(row and row[0])
-    except:
+    except Exception:
         pass
-    
+
     return {
         "meli_connected": meli_connected,
         "meli_user": meli_user,
-        "amazon_connected": amazon_connected
+        "amazon_connected": amazon_connected,
     }
+
 
 @app.post("/setup/api/auto-map", dependencies=[Depends(require_secret)])
 async def setup_auto_map(request: Request):
     """Ejecuta mapeo automático de SKUs"""
     data = await request.json()
     result = {"ok": True}
-    
+
     conn = sqlite3.connect(DB_PATH)
-    
+
     # Get Odoo config
     odoo_url = os.getenv("ODOO_URL", "http://odoo-odoo-1:8069")
     odoo_db = os.getenv("ODOO_DB", "EHV")
     odoo_user = os.getenv("ODOO_USER", "")
     odoo_pwd = os.getenv("ODOO_PASSWORD", "")
-    
+
     # Try to get from bridge_settings if env not set
     if not odoo_user:
-        row = conn.execute("SELECT value FROM bridge_settings WHERE key='odoo_user'").fetchone()
+        row = conn.execute(
+            "SELECT value FROM bridge_settings WHERE key='odoo_user'"
+        ).fetchone()
         odoo_user = row[0] if row else ""
     if not odoo_pwd:
-        row = conn.execute("SELECT value FROM bridge_settings WHERE key='odoo_password'").fetchone()
+        row = conn.execute(
+            "SELECT value FROM bridge_settings WHERE key='odoo_password'"
+        ).fetchone()
         odoo_pwd = row[0] if row else ""
-    
+
     # Get Odoo SKUs
     odoo_skus = set()
     try:
-        common = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/common", allow_none=True)
+        common = xmlrpc.client.ServerProxy(
+            f"{odoo_url}/xmlrpc/2/common", allow_none=True
+        )
         uid = common.authenticate(odoo_db, odoo_user, odoo_pwd, {})
-        models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object", allow_none=True)
-        
-        products = models.execute_kw(odoo_db, uid, odoo_pwd, "product.product", "search_read",
+        models = xmlrpc.client.ServerProxy(
+            f"{odoo_url}/xmlrpc/2/object", allow_none=True
+        )
+
+        products = models.execute_kw(
+            odoo_db,
+            uid,
+            odoo_pwd,
+            "product.product",
+            "search_read",
             [[("active", "=", True), ("default_code", "!=", False)]],
-            {"fields": ["default_code"]})
+            {"fields": ["default_code"]},
+        )
         odoo_skus = {p["default_code"] for p in products if p.get("default_code")}
     except Exception as e:
         return {"ok": False, "error": f"Odoo error: {e}"}
-    
+
     # MeLi auto-map
     if data.get("meli"):
         try:
             mapped = 0
             pending = 0
-            
+
             # Get MeLi listings with SKU
             with open(TOKEN_FILE) as f:
                 tokens = json.load(f)
             access_token = tokens.get("access_token")
             user_id = tokens.get("user_id")
-            
+
             if access_token and user_id:
                 # AP-29: timeout=20 en los 3 sitios para evitar que el wizard
                 # de setup cuelgue indefinidamente cuando MeLi no responde
@@ -1997,29 +2287,32 @@ async def setup_auto_map(request: Request):
                         if not sku:
                             # Fallback 2: seller_custom_field (campo legacy, ultima opcion)
                             sku = item.get("seller_custom_field") or ""
-                        
+
                         if sku and sku in odoo_skus:
                             # Check if already mapped
                             existing = conn.execute(
                                 "SELECT 1 FROM sku_mapping WHERE channel='meli' AND remote_item_id=? AND remote_variation_id=?",
-                                (item_id, str(var_id) if var_id else "")
+                                (item_id, str(var_id) if var_id else ""),
                             ).fetchone()
-                            
+
                             if not existing:
-                                conn.execute("""
+                                conn.execute(
+                                    """
                                     INSERT INTO sku_mapping (channel, sku, remote_item_id, remote_variation_id, last_seen_at)
                                     VALUES ('meli', ?, ?, ?, datetime('now'))
-                                """, (sku, item_id, str(var_id) if var_id else ""))
+                                """,
+                                    (sku, item_id, str(var_id) if var_id else ""),
+                                )
                                 mapped += 1
                         elif sku:
                             pending += 1
-                
+
                 conn.commit()
-            
+
             result["meli"] = {"mapped": mapped, "pending": pending}
         except Exception as e:
             result["meli"] = {"mapped": 0, "pending": 0, "error": str(e)}
-    
+
     # AP-21: Amazon auto-map deshabilitado.
     # La lógica original asumía `seller_sku == odoo_default_code` literal, lo
     # cual produce mappings silenciosamente erróneos cuando el operador usa
@@ -2031,11 +2324,12 @@ async def setup_auto_map(request: Request):
             "pending": 0,
             "disabled": True,
             "reason": "auto-map Amazon deshabilitado (AP-21): match literal seller_sku=odoo_default_code "
-                      "produce errores silenciosos. Usar /amazon/mapper para confirmar 1-a-1.",
+            "produce errores silenciosos. Usar /amazon/mapper para confirmar 1-a-1.",
         }
 
     conn.close()
     return result
+
 
 @app.post("/setup/api/activate", dependencies=[Depends(require_secret)])
 async def setup_activate(request: Request):
@@ -2067,10 +2361,13 @@ async def setup_activate(request: Request):
         pass
 
     def save_setting(key, value):
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO bridge_settings (key, value) VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value
-        """, (key, str(value)))
+        """,
+            (key, str(value)),
+        )
 
     try:
         # Odoo settings
@@ -2086,26 +2383,40 @@ async def setup_activate(request: Request):
         # ODOO_PASSWORD; el wizard solo lo usa para el test de conexión y
         # debe quedar en .env por instalación. Si llega del wizard, ignoramos.
         if odoo.get("password"):
-            logger.warning("odoo_password recibido en /setup/api/activate — NO persistido (debe estar en env ODOO_PASSWORD)")
-        
+            logger.warning(
+                "odoo_password recibido en /setup/api/activate — NO persistido (debe estar en env ODOO_PASSWORD)"
+            )
+
         # Amazon settings
         amazon = data.get("amazon", {})
         if amazon.get("enabled"):
-            save_setting("amazon_inbound_enabled", "1" if amazon.get("inbound") else "0")
-            save_setting("amazon_inbound_fbm_paid_enabled", "1" if amazon.get("fbm") else "0")
-            save_setting("amazon_inbound_fba_paid_enabled", "1" if amazon.get("fba") else "0")
-            save_setting("amazon_outbound_enabled", "1" if amazon.get("outbound") else "0")
+            save_setting(
+                "amazon_inbound_enabled", "1" if amazon.get("inbound") else "0"
+            )
+            save_setting(
+                "amazon_inbound_fbm_paid_enabled", "1" if amazon.get("fbm") else "0"
+            )
+            save_setting(
+                "amazon_inbound_fba_paid_enabled", "1" if amazon.get("fba") else "0"
+            )
+            save_setting(
+                "amazon_outbound_enabled", "1" if amazon.get("outbound") else "0"
+            )
             save_setting("amazon_outbound_interval", amazon.get("interval", "10"))
         else:
             save_setting("amazon_inbound_enabled", "0")
             save_setting("amazon_outbound_enabled", "0")
-        
+
         # MeLi settings
         meli = data.get("meli", {})
         if meli.get("enabled"):
             save_setting("meli_inbound_enabled", "1" if meli.get("inbound") else "0")
-            save_setting("meli_inbound_fbm_paid_enabled", "1" if meli.get("fbm") else "0")
-            save_setting("meli_inbound_full_paid_enabled", "1" if meli.get("full") else "0")
+            save_setting(
+                "meli_inbound_fbm_paid_enabled", "1" if meli.get("fbm") else "0"
+            )
+            save_setting(
+                "meli_inbound_full_paid_enabled", "1" if meli.get("full") else "0"
+            )
             save_setting("meli_outbound_enabled", "1" if meli.get("outbound") else "0")
             save_setting("meli_adapter_enabled", "1" if meli.get("outbound") else "0")
             save_setting("meli_outbound_interval", meli.get("interval", "10"))
@@ -2113,14 +2424,14 @@ async def setup_activate(request: Request):
             save_setting("meli_inbound_enabled", "0")
             save_setting("meli_outbound_enabled", "0")
             save_setting("meli_adapter_enabled", "0")
-        
+
         # Mark setup complete
         save_setting("setup_completed", "1")
         save_setting("setup_completed_at", utc_now_iso())
-        
+
         conn.commit()
         conn.close()
-        
+
         return {"ok": True}
     except Exception as e:
         conn.close()

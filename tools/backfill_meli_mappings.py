@@ -13,11 +13,11 @@ Uso:
                                            [--status active,paused]
                                            [--dry-run]
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sqlite3
 import sys
 import time
@@ -58,7 +58,9 @@ def ml_get_json(url: str, token: str, retries: int = 3) -> dict:
         except urllib.error.HTTPError as e:
             # 4xx no-429 = fatal (auth, validation): no reintentar.
             if 400 <= e.code < 500 and e.code != 429:
-                raise RuntimeError(f"ml_get_4xx url={url} code={e.code} body={e.read()[:200]!r}")
+                raise RuntimeError(
+                    f"ml_get_4xx url={url} code={e.code} body={e.read()[:200]!r}"
+                )
             last = e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last = e
@@ -194,9 +196,13 @@ def main() -> int:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sku_audit_ts ON sku_mapping_audit(ts)")
     conn.commit()
     try:
-        seller_id = get_setting(conn, "meli_seller_id") or get_setting(conn, "ml_user_id")
+        seller_id = get_setting(conn, "meli_seller_id") or get_setting(
+            conn, "ml_user_id"
+        )
         if not seller_id:
-            log("ERROR seller_id_missing (busque meli_seller_id o ml_user_id en bridge_settings)")
+            log(
+                "ERROR seller_id_missing (busque meli_seller_id o ml_user_id en bridge_settings)"
+            )
             return 2
 
         log(f"seller_id={seller_id} status={args.status}")
@@ -230,11 +236,11 @@ def main() -> int:
                     if not vsku:
                         # BFM-3: variación sin SELLER_SKU propio. NO usamos el
                         # SKU del padre — el operador debe asignarlo en MeLi.
-                        log(f"WARN orphan_variation item={iid} variation={v.get('id')} parent_sku={sku!r}")
+                        log(
+                            f"WARN orphan_variation item={iid} variation={v.get('id')} parent_sku={sku!r}"
+                        )
                         continue
-                    rows_to_upsert.append(
-                        ("meli", vsku, iid, str(v.get("id") or ""))
-                    )
+                    rows_to_upsert.append(("meli", vsku, iid, str(v.get("id") or "")))
             else:
                 # listing plano (variante separada, o listing sin variaciones)
                 if not sku:
@@ -289,14 +295,23 @@ def main() -> int:
         # historia y evitar bombas si la API retorna parcial; el outbound
         # worker debe consultar last_seen_at antes de pushear.
         if seen_keys:
-            run_started = conn.execute("SELECT datetime('now', '-5 minutes')").fetchone()[0]
+            run_started = conn.execute(
+                "SELECT datetime('now', '-5 minutes')"
+            ).fetchone()[0]
             cur = conn.execute(
                 "SELECT remote_item_id, remote_variation_id FROM sku_mapping "
-                "WHERE channel='meli' AND last_seen_at < ?", (run_started,)
+                "WHERE channel='meli' AND last_seen_at < ?",
+                (run_started,),
             )
-            stale = [(r[0], r[1] or "") for r in cur.fetchall() if (r[0], r[1] or "") not in seen_keys]
+            stale = [
+                (r[0], r[1] or "")
+                for r in cur.fetchall()
+                if (r[0], r[1] or "") not in seen_keys
+            ]
             if stale:
-                log(f"stale_mappings={len(stale)} (no aparecen en run actual): {stale[:5]}")
+                log(
+                    f"stale_mappings={len(stale)} (no aparecen en run actual): {stale[:5]}"
+                )
                 # Documentar en audit que están stale; outbound puede skipearlos.
                 for iid, vid in stale:
                     conn.execute(

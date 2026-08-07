@@ -27,10 +27,10 @@ ML_API = "https://api.mercadolibre.com"
 
 
 def sep(title=""):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     if title:
         print(f"  {title}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
 
 def db_conn():
@@ -44,7 +44,7 @@ def load_token():
         with open(TOKEN_FILE) as f:
             t = json.load(f)
         return t.get("access_token", "")
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -95,7 +95,7 @@ except Exception as e:
 # ──────────────────────────────────────────────────────────────────────
 # 2. ESTADO EN processed_inbound_events
 # ──────────────────────────────────────────────────────────────────────
-sep(f"2. PROCESADO — processed_inbound_events")
+sep("2. PROCESADO — processed_inbound_events")
 try:
     with db_conn() as conn:
         rows = conn.execute(
@@ -119,7 +119,9 @@ try:
             print(f"  result      : {r['result']}")
             try:
                 detail = json.loads(r["detail_json"] or "{}")
-                print(f"  detail      : {json.dumps(detail, ensure_ascii=False, indent=4)}")
+                print(
+                    f"  detail      : {json.dumps(detail, ensure_ascii=False, indent=4)}"
+                )
             except Exception:
                 print(f"  detail_json : {r['detail_json']}")
             print()
@@ -190,6 +192,7 @@ except Exception as e:
 sep("5. COLA REDIS — ml_orders_jobs")
 try:
     import redis
+
     redis_url = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
     r = redis.Redis.from_url(redis_url, decode_responses=True)
     qlen = r.llen("ml_orders_jobs")
@@ -200,7 +203,9 @@ try:
         for j in jobs:
             try:
                 parsed = json.loads(j)
-                print(f"    → dedupe={parsed.get('dedupe_key')}  resource={parsed.get('resource')}")
+                print(
+                    f"    → dedupe={parsed.get('dedupe_key')}  resource={parsed.get('resource')}"
+                )
             except Exception:
                 print(f"    → {j[:120]}")
 except Exception as e:
@@ -232,8 +237,10 @@ else:
             item_id = item_d.get("id")
             var_id = item_d.get("variation_id") or it.get("variation_id")
             qty = it.get("quantity")
-            price = (it.get("unit_price") or it.get("sale_fee") or "")
-            print(f"    sku={sku}  item_id={item_id}  var_id={var_id}  qty={qty}  price={price}")
+            price = it.get("unit_price") or it.get("sale_fee") or ""
+            print(
+                f"    sku={sku}  item_id={item_id}  var_id={var_id}  qty={qty}  price={price}"
+            )
 
         # Checar si hay mapeo en la DB
         sep("6b. MAPEO SKU en bridge DB")
@@ -242,15 +249,21 @@ else:
                 for it in items:
                     item_d = it.get("item") or {}
                     item_id = str(item_d.get("id") or "")
-                    var_id = str(item_d.get("variation_id") or it.get("variation_id") or "")
+                    var_id = str(
+                        item_d.get("variation_id") or it.get("variation_id") or ""
+                    )
                     row = conn.execute(
                         "SELECT sku FROM sku_mapping WHERE channel='meli' AND remote_item_id=? AND remote_variation_id=?",
                         (item_id, var_id),
                     ).fetchone()
                     if row:
-                        print(f"  ✅ item_id={item_id} var_id={var_id} → sku={row['sku']}")
+                        print(
+                            f"  ✅ item_id={item_id} var_id={var_id} → sku={row['sku']}"
+                        )
                     else:
-                        print(f"  ❌ item_id={item_id} var_id={var_id} → SIN MAPEO en sku_mapping")
+                        print(
+                            f"  ❌ item_id={item_id} var_id={var_id} → SIN MAPEO en sku_mapping"
+                        )
         except Exception as e:
             print(f"  ERROR consultando sku_mapping: {e}")
     else:
@@ -271,7 +284,9 @@ keys_to_check = [
 try:
     with db_conn() as conn:
         for k in keys_to_check:
-            row = conn.execute("SELECT value FROM bridge_settings WHERE key=?", (k,)).fetchone()
+            row = conn.execute(
+                "SELECT value FROM bridge_settings WHERE key=?", (k,)
+            ).fetchone()
             val = row["value"] if row else "(no configurado)"
             flag = "✅" if val == "1" else "❌"
             print(f"  {flag} {k} = {val}")

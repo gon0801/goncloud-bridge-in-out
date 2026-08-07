@@ -12,6 +12,7 @@ Idempotente: si ya migrada, detecta y no hace nada.
 Uso:
   python3 /data/migrate_sku_mapping_1n.py [--db /data/bridge.db] [--dry-run]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -19,7 +20,6 @@ import os
 import shutil
 import sqlite3
 import sys
-import time
 from datetime import datetime, timezone
 
 
@@ -102,9 +102,7 @@ def main() -> int:
             )
             """
         )
-        conn.execute(
-            "CREATE INDEX idx_sku_mapping_sku ON sku_mapping(channel, sku)"
-        )
+        conn.execute("CREATE INDEX idx_sku_mapping_sku ON sku_mapping(channel, sku)")
 
         copy_cols = ["channel", "sku", "remote_item_id", "remote_variation_id"]
         if has_site:

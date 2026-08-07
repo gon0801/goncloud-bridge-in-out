@@ -91,15 +91,19 @@ def odoo_login(url, db, user, pw):
         die("authentication failed (uid is null)")
     return uid
 
-import datetime
 
 def today_utc_date():
     return datetime.datetime.now(datetime.UTC).date().isoformat()
 
+
 def find_sale_order(url, db, uid, pw, client_order_ref: str):
     ids = odoo_call(
-        url, db, uid, pw,
-        "sale.order", "search",
+        url,
+        db,
+        uid,
+        pw,
+        "sale.order",
+        "search",
         args=[[["client_order_ref", "=", client_order_ref]]],
         kwargs={"limit": 1},
     )
@@ -107,8 +111,12 @@ def find_sale_order(url, db, uid, pw, client_order_ref: str):
         die(f"sale.order not found for client_order_ref={client_order_ref}")
     so_id = ids[0]
     so = odoo_call(
-        url, db, uid, pw,
-        "sale.order", "read",
+        url,
+        db,
+        uid,
+        pw,
+        "sale.order",
+        "read",
         args=[[so_id], ["id", "name", "state", "client_order_ref"]],
     )[0]
     return so_id, so
@@ -117,8 +125,12 @@ def find_sale_order(url, db, uid, pw, client_order_ref: str):
 def find_invoice_for_sale(url, db, uid, pw, sale_name: str):
     # en tus queries previas: invoice_origin = S00xxx
     inv_ids = odoo_call(
-        url, db, uid, pw,
-        "account.move", "search",
+        url,
+        db,
+        uid,
+        pw,
+        "account.move",
+        "search",
         args=[[["move_type", "=", "out_invoice"], ["invoice_origin", "=", sale_name]]],
         kwargs={"limit": 10, "order": "id desc"},
     )
@@ -126,17 +138,46 @@ def find_invoice_for_sale(url, db, uid, pw, sale_name: str):
         die(f"no invoice found for sale.order name={sale_name} (invoice_origin)")
     inv_id = inv_ids[0]
     inv = odoo_call(
-        url, db, uid, pw,
-        "account.move", "read",
-        args=[[inv_id], ["id", "name", "state", "move_type", "amount_total", "amount_residual", "payment_state"]],
+        url,
+        db,
+        uid,
+        pw,
+        "account.move",
+        "read",
+        args=[
+            [inv_id],
+            [
+                "id",
+                "name",
+                "state",
+                "move_type",
+                "amount_total",
+                "amount_residual",
+                "payment_state",
+            ],
+        ],
     )[0]
     return inv_id, inv
 
 
-def register_payment_for_invoice(url, db, uid, pw, inv_id: int, inv: dict, journal_id: int, payment_date: str, method_line_id=None, communication=None):
+def register_payment_for_invoice(
+    url,
+    db,
+    uid,
+    pw,
+    inv_id: int,
+    inv: dict,
+    journal_id: int,
+    payment_date: str,
+    method_line_id=None,
+    communication=None,
+):
     residual = float(inv.get("amount_residual") or 0.0)
     if residual <= 0.00001:
-        print(f"[FULL_PAY] OK already_paid invoice={inv.get('name')} residual={residual}", flush=True)
+        print(
+            f"[FULL_PAY] OK already_paid invoice={inv.get('name')} residual={residual}",
+            flush=True,
+        )
         return True
 
     ctx = {
@@ -156,28 +197,43 @@ def register_payment_for_invoice(url, db, uid, pw, inv_id: int, inv: dict, journ
         vals["payment_method_line_id"] = method_line_id
 
     wiz_id = odoo_call(
-        url, db, uid, pw,
-        "account.payment.register", "create",
+        url,
+        db,
+        uid,
+        pw,
+        "account.payment.register",
+        "create",
         args=[vals],
         context=ctx,
     )
 
     # Ejecuta el wizard oficial: crea pago(s) y reconcilia
     odoo_call(
-        url, db, uid, pw,
-        "account.payment.register", "action_create_payments",
+        url,
+        db,
+        uid,
+        pw,
+        "account.payment.register",
+        "action_create_payments",
         args=[[wiz_id]],
         context=ctx,
     )
 
     # Relee invoice para verificar que quedó pagada
     inv2 = odoo_call(
-        url, db, uid, pw,
-        "account.move", "read",
+        url,
+        db,
+        uid,
+        pw,
+        "account.move",
+        "read",
         args=[[inv_id], ["id", "name", "amount_residual", "payment_state", "state"]],
     )[0]
     residual2 = float(inv2.get("amount_residual") or 0.0)
-    print(f"[FULL_PAY] INFO after invoice={inv2.get('name')} state={inv2.get('state')} payment_state={inv2.get('payment_state')} residual={residual2}", flush=True)
+    print(
+        f"[FULL_PAY] INFO after invoice={inv2.get('name')} state={inv2.get('state')} payment_state={inv2.get('payment_state')} residual={residual2}",
+        flush=True,
+    )
 
     if residual2 > 0.00001:
         die(f"payment did not reconcile fully (residual={residual2})", code=3)
@@ -187,10 +243,24 @@ def register_payment_for_invoice(url, db, uid, pw, inv_id: int, inv: dict, journ
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--client-order-ref", required=True, help="e.g. MLFULL:MLM:SIM-FULL-TEST")
-    ap.add_argument("--journal-id", type=int, default=6, help="bank/cash journal id (default 6=Bank)")
-    ap.add_argument("--payment-date", default=None, help="YYYY-MM-DD (default today UTC)")
-    ap.add_argument("--method-line-id", type=int, default=None, help="optional account.payment.method.line id")
+    ap.add_argument(
+        "--client-order-ref", required=True, help="e.g. MLFULL:MLM:SIM-FULL-TEST"
+    )
+    ap.add_argument(
+        "--journal-id",
+        type=int,
+        default=6,
+        help="bank/cash journal id (default 6=Bank)",
+    )
+    ap.add_argument(
+        "--payment-date", default=None, help="YYYY-MM-DD (default today UTC)"
+    )
+    ap.add_argument(
+        "--method-line-id",
+        type=int,
+        default=None,
+        help="optional account.payment.method.line id",
+    )
     args = ap.parse_args()
 
     url = env_required("ODOO_URL").rstrip("/")
@@ -203,16 +273,26 @@ def main():
     uid = odoo_login(url, db, user, pw)
 
     so_id, so = find_sale_order(url, db, uid, pw, args.client_order_ref)
-    print(f"[FULL_PAY] INFO so_id={so_id} name={so.get('name')} ref={so.get('client_order_ref')} state={so.get('state')}", flush=True)
+    print(
+        f"[FULL_PAY] INFO so_id={so_id} name={so.get('name')} ref={so.get('client_order_ref')} state={so.get('state')}",
+        flush=True,
+    )
 
     inv_id, inv = find_invoice_for_sale(url, db, uid, pw, so.get("name"))
-    print(f"[FULL_PAY] INFO invoice={inv.get('name')} state={inv.get('state')} payment_state={inv.get('payment_state')} residual={inv.get('amount_residual')}", flush=True)
+    print(
+        f"[FULL_PAY] INFO invoice={inv.get('name')} state={inv.get('state')} payment_state={inv.get('payment_state')} residual={inv.get('amount_residual')}",
+        flush=True,
+    )
 
     communication = f"PAY:{args.client_order_ref}"
 
     register_payment_for_invoice(
-        url, db, uid, pw,
-        inv_id, inv,
+        url,
+        db,
+        uid,
+        pw,
+        inv_id,
+        inv,
         journal_id=args.journal_id,
         payment_date=pay_date,
         method_line_id=args.method_line_id,

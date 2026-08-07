@@ -4,8 +4,14 @@ import sys
 import json
 import sqlite3
 from datetime import datetime, timezone
-import defusedxml.xmlrpc as _defusedxml_xmlrpc; _defusedxml_xmlrpc.monkey_patch()
-import xmlrpc.client
+import defusedxml.xmlrpc as _defusedxml_xmlrpc
+
+# monkey_patch() DEBE correr antes de importar xmlrpc.client: parcha el parser
+# XML de la stdlib contra entidades maliciosas. Como es una sentencia a nivel
+# de modulo, ruff marca E402 en TODO import posterior; por eso los imports que
+# siguen llevan `noqa: E402`. No los muevas arriba: romperias la mitigacion.
+_defusedxml_xmlrpc.monkey_patch()
+import xmlrpc.client  # noqa: E402
 
 # =========================
 # ENV OBLIGATORIA
@@ -22,12 +28,15 @@ if not all([ODOO_URL, ODOO_DB, ODOO_USER, ODOO_PASSWORD]):
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 CHANNEL = "meli"
 
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 
 def die(msg: str, code: int = 1):
     print(msg)
     sys.exit(code)
+
 
 # =========================
 # Conexión Odoo (XML-RPC) - allow_none=True
@@ -53,8 +62,7 @@ cur = conn.cursor()
 mapped = set()
 try:
     rows = cur.execute(
-        "SELECT sku FROM sku_mapping WHERE channel=?",
-        (CHANNEL,)
+        "SELECT sku FROM sku_mapping WHERE channel=?", (CHANNEL,)
     ).fetchall()
     mapped = {r[0] for r in rows if r and r[0]}
 except Exception as e:
@@ -64,7 +72,9 @@ except Exception as e:
 if not mapped:
     # Esto es intencionalmente fatal: sin mapping, NO sincronizamos nada.
     conn.close()
-    die("[FATAL] sku_mapping está vacío para canal=meli. No hay nada seguro que sincronizar.")
+    die(
+        "[FATAL] sku_mapping está vacío para canal=meli. No hay nada seguro que sincronizar."
+    )
 
 # =========================
 # Crear evento (payload requerido + item_count NOT NULL)
@@ -133,10 +143,15 @@ cur.execute(
 conn.commit()
 conn.close()
 
-print(json.dumps({
-    "SNAPSHOT_OK": True,
-    "channel": CHANNEL,
-    "event_id": str(event_id),
-    "items": items,
-    "skipped_not_mapped": skipped_not_mapped,
-}, ensure_ascii=False))
+print(
+    json.dumps(
+        {
+            "SNAPSHOT_OK": True,
+            "channel": CHANNEL,
+            "event_id": str(event_id),
+            "items": items,
+            "skipped_not_mapped": skipped_not_mapped,
+        },
+        ensure_ascii=False,
+    )
+)

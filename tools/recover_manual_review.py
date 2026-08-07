@@ -33,11 +33,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone, timedelta
 
-DB_PATH = (
-    os.getenv("BRIDGE_DB")
-    or os.getenv("BRIDGE_DB_PATH")
-    or "/data/bridge.db"
-)
+DB_PATH = os.getenv("BRIDGE_DB") or os.getenv("BRIDGE_DB_PATH") or "/data/bridge.db"
 REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
 
 
@@ -50,6 +46,7 @@ def conn():
 
 def get_redis():
     import redis as _redis
+
     r = _redis.Redis.from_url(REDIS_URL, decode_responses=True)
     r.ping()
     return r
@@ -114,8 +111,12 @@ def recover_meli(db, r, since_iso: str, include_dead: bool, dry_run: bool) -> in
         ).fetchone()
 
         if not payload_row:
-            print(f"    ⚠️  Sin payload persistido — no se puede re-encolar automáticamente")
-            print(f"       Acción: re-enviar webhook desde MeLi o re-notificar manualmente")
+            print(
+                "    ⚠️  Sin payload persistido — no se puede re-encolar automáticamente"
+            )
+            print(
+                "       Acción: re-enviar webhook desde MeLi o re-notificar manualmente"
+            )
             no_payload += 1
             continue
 
@@ -129,7 +130,7 @@ def recover_meli(db, r, since_iso: str, include_dead: bool, dry_run: bool) -> in
         job.pop("_reap_count", None)
 
         if dry_run:
-            print(f"    [DRY-RUN] Se re-encolaría en ml_orders_jobs")
+            print("    [DRY-RUN] Se re-encolaría en ml_orders_jobs")
         else:
             # Borrar el registro de audit para que is_already_completed() pase
             db.execute("DELETE FROM processed_inbound_events WHERE dedupe_key=?", (dk,))
@@ -138,11 +139,13 @@ def recover_meli(db, r, since_iso: str, include_dead: bool, dry_run: bool) -> in
             db.execute("COMMIT")
             # Re-encolar
             r.rpush("ml_orders_jobs", json.dumps(job, ensure_ascii=False))
-            print(f"    ✅ Re-encolada en ml_orders_jobs")
+            print("    ✅ Re-encolada en ml_orders_jobs")
 
         recovered += 1
 
-    print(f"\n[meli] Resumen: {recovered} re-encoladas, {no_payload} sin payload (requieren acción manual)")
+    print(
+        f"\n[meli] Resumen: {recovered} re-encoladas, {no_payload} sin payload (requieren acción manual)"
+    )
     return recovered
 
 
@@ -197,7 +200,7 @@ def recover_amazon(db, r, since_iso: str, include_dead: bool, dry_run: bool) -> 
         ).fetchone()
 
         if not payload_row:
-            print(f"    ⚠️  Sin payload — probablemente expirado (7 días TTL)")
+            print("    ⚠️  Sin payload — probablemente expirado (7 días TTL)")
             no_payload += 1
             continue
 
@@ -213,13 +216,15 @@ def recover_amazon(db, r, since_iso: str, include_dead: bool, dry_run: bool) -> 
         if dry_run:
             order_id = (job.get("order_json") or {}).get("AmazonOrderId", "?")
             status = (job.get("order_json") or {}).get("OrderStatus", "?")
-            print(f"    [DRY-RUN] Se re-encolaría  order_id={order_id}  status={status}")
+            print(
+                f"    [DRY-RUN] Se re-encolaría  order_id={order_id}  status={status}"
+            )
         else:
             db.execute("DELETE FROM amazon_processed_events WHERE dedupe_key=?", (dk,))
             db.execute("DELETE FROM amazon_processing_locks WHERE dedupe_key=?", (dk,))
             db.execute("COMMIT")
             r.rpush("amazon_orders_jobs", json.dumps(job, ensure_ascii=False))
-            print(f"    ✅ Re-encolada en amazon_orders_jobs")
+            print("    ✅ Re-encolada en amazon_orders_jobs")
 
         recovered += 1
 
@@ -235,31 +240,37 @@ def main():
         description="Re-encola órdenes bloqueadas en manual_review/dead"
     )
     parser.add_argument(
-        "--channel", choices=["meli", "amazon", "all"], default="all",
+        "--channel",
+        choices=["meli", "amazon", "all"],
+        default="all",
         help="Canal a recuperar (default: all)",
     )
     parser.add_argument(
-        "--hours", type=int, default=24,
+        "--hours",
+        type=int,
+        default=24,
         help="Buscar órdenes bloqueadas en las últimas N horas (default: 24)",
     )
     parser.add_argument(
-        "--include-dead", action="store_true",
+        "--include-dead",
+        action="store_true",
         help="Incluir también órdenes en estado 'dead'",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Solo mostrar qué se haría, sin modificar nada",
     )
     args = parser.parse_args()
 
     since_iso = (datetime.now(timezone.utc) - timedelta(hours=args.hours)).isoformat()
 
-    print(f"{'='*60}")
-    print(f"  GONCLOUD — Recuperación de órdenes bloqueadas")
+    print(f"{'=' * 60}")
+    print("  GONCLOUD — Recuperación de órdenes bloqueadas")
     print(f"  DB:    {DB_PATH}")
     print(f"  Desde: {since_iso[:19]}")
     print(f"  Canal: {args.channel}  |  dry_run={args.dry_run}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     db = conn()
 
@@ -282,13 +293,13 @@ def main():
         if args.channel in ("amazon", "all"):
             total += recover_amazon(db, r, since_iso, args.include_dead, args.dry_run)
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         if args.dry_run:
             print(f"  [DRY-RUN] {total} órdenes serían re-encoladas.")
-            print(f"  Ejecuta sin --dry-run para aplicar.")
+            print("  Ejecuta sin --dry-run para aplicar.")
         else:
             print(f"  ✅ {total} órdenes re-encoladas exitosamente.")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
     except Exception as e:
         # Sin ROLLBACK externo: cada orden ya commiteó por su cuenta. Un

@@ -15,7 +15,6 @@ Este script:
 """
 
 import argparse
-import hashlib
 import json
 import os
 import sqlite3
@@ -47,14 +46,14 @@ MARKETPLACES = {
 INCLUDED_DATA = "BUYER,PROCEEDS,FULFILLMENT,PACKAGES"
 
 _V2026_STATUS_MAP = {
-    "PENDING":              "Pending",
+    "PENDING": "Pending",
     "PENDING_AVAILABILITY": "Pending",
-    "UNSHIPPED":            "Unshipped",
-    "PARTIALLY_SHIPPED":    "PartiallyShipped",
-    "SHIPPED":              "Shipped",
-    "INVOICE_UNCONFIRMED":  "InvoiceUnconfirmed",
-    "CANCELLED":            "Canceled",
-    "UNFULFILLABLE":        "Unfulfillable",
+    "UNSHIPPED": "Unshipped",
+    "PARTIALLY_SHIPPED": "PartiallyShipped",
+    "SHIPPED": "Shipped",
+    "INVOICE_UNCONFIRMED": "InvoiceUnconfirmed",
+    "CANCELLED": "Canceled",
+    "UNFULFILLABLE": "Unfulfillable",
 }
 
 
@@ -100,18 +99,18 @@ def _normalize_item_to_v0(item: dict) -> dict:
                     gwp = {"Amount": da, "CurrencyCode": dc}
 
     return {
-        "ASIN":             product.get("asin", ""),
-        "SellerSKU":        product.get("sellerSku", ""),
-        "OrderItemId":      item.get("orderItemId", ""),
-        "Title":            product.get("title", "") or product.get("productName", ""),
-        "QuantityOrdered":  item.get("quantityOrdered", 0),
-        "QuantityShipped":  item.get("quantityShipped", 0),
-        "ItemPrice":        ip,
-        "ItemTax":          itax,
-        "ShippingPrice":    sp,
-        "ShippingTax":      stax,
-        "GiftWrapPrice":    gwp,
-        "GiftWrapTax":      gwtax,
+        "ASIN": product.get("asin", ""),
+        "SellerSKU": product.get("sellerSku", ""),
+        "OrderItemId": item.get("orderItemId", ""),
+        "Title": product.get("title", "") or product.get("productName", ""),
+        "QuantityOrdered": item.get("quantityOrdered", 0),
+        "QuantityShipped": item.get("quantityShipped", 0),
+        "ItemPrice": ip,
+        "ItemTax": itax,
+        "ShippingPrice": sp,
+        "ShippingTax": stax,
+        "GiftWrapPrice": gwp,
+        "GiftWrapTax": gwtax,
         "PromotionDiscount": pdis,
     }
 
@@ -148,28 +147,30 @@ def normalize_to_v0(order: dict) -> dict:
     shipping_address: dict = {}
     if delivery:
         shipping_address = {
-            "Name":          delivery.get("name", ""),
-            "City":          delivery.get("city", ""),
+            "Name": delivery.get("name", ""),
+            "City": delivery.get("city", ""),
             "StateOrRegion": delivery.get("stateOrRegion", ""),
-            "PostalCode":    delivery.get("postalCode", ""),
-            "CountryCode":   delivery.get("countryCode", ""),
+            "PostalCode": delivery.get("postalCode", ""),
+            "CountryCode": delivery.get("countryCode", ""),
         }
 
     v0 = {
-        "AmazonOrderId":    order.get("orderId", ""),
-        "PurchaseDate":     order.get("purchaseDate", ""),
-        "LastUpdateDate":   order.get("lastUpdatedTime", ""),
-        "OrderStatus":      order_status,
+        "AmazonOrderId": order.get("orderId", ""),
+        "PurchaseDate": order.get("purchaseDate", ""),
+        "LastUpdateDate": order.get("lastUpdatedTime", ""),
+        "OrderStatus": order_status,
         "FulfillmentChannel": fc,
-        "MarketplaceId":    marketplace_id,
-        "SalesChannel":     sales_channel.get("channelType", ""),
+        "MarketplaceId": marketplace_id,
+        "SalesChannel": sales_channel.get("channelType", ""),
         "OrderTotal": {
             "CurrencyCode": grand_total.get("currencyCode", ""),
-            "Amount":       str(grand_total.get("amount", "0")),
+            "Amount": str(grand_total.get("amount", "0")),
         },
-        "BuyerInfo":        buyer_info,
-        "ShippingAddress":  shipping_address,
-        "OrderItems":       [_normalize_item_to_v0(i) for i in (order.get("orderItems") or [])],
+        "BuyerInfo": buyer_info,
+        "ShippingAddress": shipping_address,
+        "OrderItems": [
+            _normalize_item_to_v0(i) for i in (order.get("orderItems") or [])
+        ],
     }
     if easy_ship:
         v0["EasyShipShipmentStatus"] = "PendingPickUp"
@@ -179,6 +180,7 @@ def normalize_to_v0(order: dict) -> dict:
 # ============================================================
 # HELPERS
 # ============================================================
+
 
 def db_conn():
     conn = sqlite3.connect(DB_PATH, timeout=20)
@@ -224,7 +226,9 @@ def get_access_token(creds: dict) -> str:
     return data["access_token"]
 
 
-def _sp_api_get(token: str, url: str, params: dict = None, max_retries: int = 4) -> httpx.Response:
+def _sp_api_get(
+    token: str, url: str, params: dict = None, max_retries: int = 4
+) -> httpx.Response:
     """GET a SP-API endpoint con retry exponencial en 429, 5xx y timeouts.
 
     Bug #9 fix: antes solo 429 disparaba retry; cualquier 5xx o timeout
@@ -242,8 +246,10 @@ def _sp_api_get(token: str, url: str, params: dict = None, max_retries: int = 4)
                 timeout=30,
             )
         except (httpx.TimeoutException, httpx.NetworkError) as e:
-            wait = 2 ** attempt
-            print(f"[poll] WARN {type(e).__name__} on {url} — retry {attempt + 1}/{max_retries} in {wait}s")
+            wait = 2**attempt
+            print(
+                f"[poll] WARN {type(e).__name__} on {url} — retry {attempt + 1}/{max_retries} in {wait}s"
+            )
             if attempt + 1 == max_retries:
                 raise
             time.sleep(wait)
@@ -251,8 +257,10 @@ def _sp_api_get(token: str, url: str, params: dict = None, max_retries: int = 4)
 
         last_resp = resp
         if resp.status_code == 429 or resp.status_code >= 500:
-            wait = 2 ** attempt  # 1s, 2s, 4s, 8s
-            print(f"[poll] WARN HTTP {resp.status_code} on {url} — retry {attempt + 1}/{max_retries} in {wait}s")
+            wait = 2**attempt  # 1s, 2s, 4s, 8s
+            print(
+                f"[poll] WARN HTTP {resp.status_code} on {url} — retry {attempt + 1}/{max_retries} in {wait}s"
+            )
             if attempt + 1 == max_retries:
                 return resp
             time.sleep(wait)
@@ -272,9 +280,9 @@ def get_orders(token: str, marketplace_id: str, last_updated_after: str) -> list
 
     while True:
         params = {
-            "marketplaceIds":  marketplace_id,
+            "marketplaceIds": marketplace_id,
             "lastUpdatedAfter": last_updated_after,
-            "includedData":    INCLUDED_DATA,
+            "includedData": INCLUDED_DATA,
         }
         if pagination_token:
             params["paginationToken"] = pagination_token
@@ -282,7 +290,10 @@ def get_orders(token: str, marketplace_id: str, last_updated_after: str) -> list
         resp = _sp_api_get(token, f"{AMAZON_API_BASE}/orders/2026-01-01/orders", params)
 
         if resp.status_code != 200:
-            print(f"[poll] ERROR getting orders: {resp.status_code} {resp.text[:500]}", file=sys.stderr)
+            print(
+                f"[poll] ERROR getting orders: {resp.status_code} {resp.text[:500]}",
+                file=sys.stderr,
+            )
             break
 
         data = resp.json()
@@ -325,7 +336,7 @@ def already_processed(dedupe_key: str) -> bool:
             row = conn.execute(
                 "SELECT 1 FROM amazon_processed_events"
                 " WHERE dedupe_key=? AND result IN ('success','skipped') LIMIT 1",
-                (dedupe_key,)
+                (dedupe_key,),
             ).fetchone()
         return row is not None
     except Exception:
@@ -348,24 +359,40 @@ def push_to_redis(r: redis.Redis, order: dict, dedupe_key: str) -> bool:
 # MAIN
 # ============================================================
 
+
 def main():
     parser = argparse.ArgumentParser(description="Poll Amazon orders")
-    parser.add_argument("--days", type=int, default=2, help="Days to look back via LastUpdatedAfter (default: 2)")
-    parser.add_argument("--marketplace", choices=["MX", "US", "BOTH"], default="BOTH", help="Marketplace (default: BOTH)")
-    parser.add_argument("--dry-run", action="store_true", help="Don't push to Redis, just show")
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=2,
+        help="Days to look back via LastUpdatedAfter (default: 2)",
+    )
+    parser.add_argument(
+        "--marketplace",
+        choices=["MX", "US", "BOTH"],
+        default="BOTH",
+        help="Marketplace (default: BOTH)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Don't push to Redis, just show"
+    )
     args = parser.parse_args()
-    
+
     # Check if enabled
     if get_setting("amazon_inbound_enabled", "0") != "1":
         print("[poll] Amazon inbound disabled, skipping")
         return 0
-    
+
     # Get credentials
     creds = get_credentials()
     if not all(creds.values()):
-        print("[poll] ERROR: Missing Amazon credentials in bridge_settings", file=sys.stderr)
+        print(
+            "[poll] ERROR: Missing Amazon credentials in bridge_settings",
+            file=sys.stderr,
+        )
         return 1
-    
+
     # Get access token
     try:
         token = get_access_token(creds)
@@ -373,7 +400,7 @@ def main():
     except Exception as e:
         print(f"[poll] ERROR getting token: {e}", file=sys.stderr)
         return 1
-    
+
     # Connect Redis
     try:
         r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -381,33 +408,35 @@ def main():
     except Exception as e:
         print(f"[poll] ERROR connecting Redis: {e}", file=sys.stderr)
         return 1
-    
+
     # Calculate date range — usar Z en vez de +00:00 (requerido por SP-API US)
     # LastUpdatedAfter captura órdenes que cambiaron de estado recientemente,
     # sin importar cuándo fueron creadas (cubre Pending de varios días atrás).
-    last_updated_after = (datetime.now(timezone.utc) - timedelta(days=args.days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    last_updated_after = (
+        datetime.now(timezone.utc) - timedelta(days=args.days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"[poll] Looking for orders updated since {last_updated_after}")
-    
+
     # Determine marketplaces
     if args.marketplace == "BOTH":
         marketplaces = list(MARKETPLACES.items())
     else:
         marketplaces = [(args.marketplace, MARKETPLACES[args.marketplace])]
-    
+
     total_orders = 0
     total_pushed = 0
     total_skipped = 0
-    
+
     for mp_name, mp_id in marketplaces:
         print(f"[poll] Checking {mp_name} ({mp_id})...")
-        
+
         try:
             orders = get_orders(token, mp_id, last_updated_after)
             print(f"[poll] Found {len(orders)} orders in {mp_name}")
         except Exception as e:
             print(f"[poll] ERROR fetching {mp_name}: {e}", file=sys.stderr)
             continue
-        
+
         for order_raw in orders:
             # Normalize to v0 first so all downstream fields/logic work unchanged
             order = normalize_to_v0(order_raw)
@@ -417,8 +446,10 @@ def main():
 
             # Skip pending orders — EXCEPTO Flex MX (AFN + marketplace MX)
             # Flex MX necesita SO+picking aunque esté Pending (escáneo de paquetes)
-            is_flex_mx = (mp_id == "A1AM78C64UM0Y8" and
-                          order.get("FulfillmentChannel", "").upper() == "AFN")
+            is_flex_mx = (
+                mp_id == "A1AM78C64UM0Y8"
+                and order.get("FulfillmentChannel", "").upper() == "AFN"
+            )
             if status == "Pending" and not is_flex_mx:
                 print(f"[poll]   {order_id}: status=Pending, skipping")
                 total_skipped += 1
@@ -445,8 +476,10 @@ def main():
                 print(f"[poll]   {order_id}: pushed to Redis")
 
             total_pushed += 1
-    
-    print(f"[poll] Done. Total: {total_orders}, Pushed: {total_pushed}, Skipped: {total_skipped}")
+
+    print(
+        f"[poll] Done. Total: {total_orders}, Pushed: {total_pushed}, Skipped: {total_skipped}"
+    )
     return 0
 
 

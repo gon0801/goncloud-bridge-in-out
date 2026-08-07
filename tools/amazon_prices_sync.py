@@ -11,32 +11,29 @@ Deploy:
 import csv
 import gzip
 import io
-import json
 import logging
 import os
 import sqlite3
 import time
+import time as _time
 from typing import Optional
 
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BRIDGE_DB  = os.getenv("BRIDGE_DB", "/mnt/data/appdata/bridge/data/bridge.db")
-LWA_URL    = "https://api.amazon.com/auth/o2/token"
-SP_API     = "https://sellingpartnerapi-na.amazon.com"
+BRIDGE_DB = os.getenv("BRIDGE_DB", "/mnt/data/appdata/bridge/data/bridge.db")
+LWA_URL = "https://api.amazon.com/auth/o2/token"
+SP_API = "https://sellingpartnerapi-na.amazon.com"
 
 # Marketplaces a sincronizar.
 # Si tienes cuenta Unified NA, ambos usan el mismo refresh_token.
 # Comenta la línea de US si solo usas MX.
 MARKETPLACES = [
     ("A1AM78C64UM0Y8", "amazon_mx"),
-    ("ATVPDKIKX0DER",  "amazon_us"),
+    ("ATVPDKIKX0DER", "amazon_us"),
 ]
 
-logging.basicConfig(
-    level="INFO",
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+logging.basicConfig(level="INFO", format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger(__name__)
 
 
@@ -90,7 +87,6 @@ def init_table(db):
 
 
 # ── LWA Auth ──────────────────────────────────────────────────────────────────
-import time as _time
 
 # Bug #8 fix: cache de token con auto-refresh. SP-API report wait puede
 # tomar 1h+ acumulado entre marketplaces; el token original (~1h TTL)
@@ -112,12 +108,16 @@ def get_access_token(client_id: str, client_secret: str, refresh_token: str) -> 
     ):
         return _TOKEN_CACHE["token"]
 
-    resp = requests.post(LWA_URL, data={
-        "grant_type":    "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id":     client_id,
-        "client_secret": client_secret,
-    }, timeout=15)
+    resp = requests.post(
+        LWA_URL,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+        timeout=15,
+    )
     resp.raise_for_status()
     data = resp.json()
     token = data["access_token"]
@@ -136,12 +136,11 @@ def request_report(token: str, marketplace_id: str) -> str:
         "Content-Type": "application/json",
     }
     body = {
-        "reportType":     "GET_MERCHANT_LISTINGS_ALL_DATA",
+        "reportType": "GET_MERCHANT_LISTINGS_ALL_DATA",
         "marketplaceIds": [marketplace_id],
     }
     resp = requests.post(
-        f"{SP_API}/reports/2021-06-30/reports",
-        json=body, headers=headers, timeout=30
+        f"{SP_API}/reports/2021-06-30/reports", json=body, headers=headers, timeout=30
     )
     resp.raise_for_status()
     report_id = resp.json()["reportId"]
@@ -149,8 +148,9 @@ def request_report(token: str, marketplace_id: str) -> str:
     return report_id
 
 
-def wait_for_report(token: str, report_id: str, timeout_sec: int = 900,
-                    creds: Optional[dict] = None) -> str:
+def wait_for_report(
+    token: str, report_id: str, timeout_sec: int = 900, creds: Optional[dict] = None
+) -> str:
     """Polling hasta que el reporte esté DONE. Retorna reportDocumentId.
 
     Bug #8 fix: si pasan `creds`, en cada iteración refrescamos el token
@@ -161,10 +161,12 @@ def wait_for_report(token: str, report_id: str, timeout_sec: int = 900,
     start = time.time()
     while time.time() - start < timeout_sec:
         if creds:
-            token = get_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
+            token = get_access_token(
+                creds["client_id"], creds["client_secret"], creds["refresh_token"]
+            )
         resp = requests.get(url, headers={"x-amz-access-token": token}, timeout=15)
         resp.raise_for_status()
-        data   = resp.json()
+        data = resp.json()
         status = data.get("processingStatus", "")
         log.info(f"Reporte {report_id}: {status}")
         if status == "DONE":
@@ -180,13 +182,14 @@ def download_report(token: str, document_id: str) -> str:
     headers = {"x-amz-access-token": token}
     resp = requests.get(
         f"{SP_API}/reports/2021-06-30/documents/{document_id}",
-        headers=headers, timeout=15
+        headers=headers,
+        timeout=15,
     )
     resp.raise_for_status()
-    doc         = resp.json()
-    url         = doc["url"]
-    compressed  = doc.get("compressionAlgorithm") == "GZIP"
-    data_resp   = requests.get(url, timeout=120)
+    doc = resp.json()
+    url = doc["url"]
+    compressed = doc.get("compressionAlgorithm") == "GZIP"
+    data_resp = requests.get(url, timeout=120)
     data_resp.raise_for_status()
     content = gzip.decompress(data_resp.content) if compressed else data_resp.content
     log.info(f"Documento descargado: {len(content)} bytes")
@@ -198,8 +201,8 @@ def download_report(token: str, document_id: str) -> str:
 
 # ── Parse & Save ──────────────────────────────────────────────────────────────
 def parse_and_save(tsv: str, db, marketplace_id: str, marketplace_name: str):
-    reader  = csv.DictReader(io.StringIO(tsv), delimiter="\t")
-    count   = 0
+    reader = csv.DictReader(io.StringIO(tsv), delimiter="\t")
+    count = 0
     skipped = 0
     for row in reader:
         sku = (row.get("seller-sku") or "").strip()
@@ -208,12 +211,13 @@ def parse_and_save(tsv: str, db, marketplace_id: str, marketplace_name: str):
             continue
 
         price_str = (row.get("price") or "").strip()
-        price     = float(price_str) if price_str else None
+        price = float(price_str) if price_str else None
 
         qty_str = (row.get("quantity") or "").strip()
-        qty     = int(qty_str) if qty_str else None
+        qty = int(qty_str) if qty_str else None
 
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO amazon_listing_prices
                 (seller_sku, asin, listing_id, marketplace_id, marketplace_name,
                  price, quantity, fulfillment_channel, item_name, status, fetched_at)
@@ -225,22 +229,26 @@ def parse_and_save(tsv: str, db, marketplace_id: str, marketplace_name: str):
                 item_name           = excluded.item_name,
                 status              = excluded.status,
                 fetched_at          = excluded.fetched_at
-        """, (
-            sku,
-            (row.get("asin1")               or "").strip(),
-            (row.get("listing-id")          or "").strip(),
-            marketplace_id,
-            marketplace_name,
-            price,
-            qty,
-            (row.get("fulfillment-channel") or "").strip(),
-            (row.get("item-name")           or "").strip()[:500],
-            (row.get("status")              or "").strip(),
-        ))
+        """,
+            (
+                sku,
+                (row.get("asin1") or "").strip(),
+                (row.get("listing-id") or "").strip(),
+                marketplace_id,
+                marketplace_name,
+                price,
+                qty,
+                (row.get("fulfillment-channel") or "").strip(),
+                (row.get("item-name") or "").strip()[:500],
+                (row.get("status") or "").strip(),
+            ),
+        )
         count += 1
 
     db.commit()
-    log.info(f"[{marketplace_name}] {count} listings guardados, {skipped} sin SKU ignorados")
+    log.info(
+        f"[{marketplace_name}] {count} listings guardados, {skipped} sin SKU ignorados"
+    )
 
 
 # ── FBA Inventory report ──────────────────────────────────────────────────────
@@ -248,12 +256,11 @@ def request_fba_inventory_report(token: str, marketplace_id: str) -> str:
     """Solicita GET_AFN_INVENTORY_DATA (FBA sellable inventory snapshot)."""
     headers = {"x-amz-access-token": token, "Content-Type": "application/json"}
     body = {
-        "reportType":     "GET_AFN_INVENTORY_DATA",
+        "reportType": "GET_AFN_INVENTORY_DATA",
         "marketplaceIds": [marketplace_id],
     }
     resp = requests.post(
-        f"{SP_API}/reports/2021-06-30/reports",
-        json=body, headers=headers, timeout=30
+        f"{SP_API}/reports/2021-06-30/reports", json=body, headers=headers, timeout=30
     )
     resp.raise_for_status()
     report_id = resp.json()["reportId"]
@@ -277,11 +284,16 @@ def parse_and_save_fba(tsv: str, db, marketplace_id: str, marketplace_name: str)
             continue
 
         # Amazon usa varios nombres de columna según marketplace:
-        qty_str = (row.get("Quantity Available") or row.get("afn-fulfillable-quantity")
-                   or row.get("quantity-available") or "").strip()
+        qty_str = (
+            row.get("Quantity Available")
+            or row.get("afn-fulfillable-quantity")
+            or row.get("quantity-available")
+            or ""
+        ).strip()
         qty = int(qty_str) if qty_str.isdigit() else 0
 
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO amazon_fba_inventory
                 (seller_sku, fnsku, asin, marketplace_id, marketplace_name,
                  condition_type, quantity_available, fetched_at)
@@ -292,35 +304,48 @@ def parse_and_save_fba(tsv: str, db, marketplace_id: str, marketplace_name: str)
                 condition_type     = excluded.condition_type,
                 quantity_available = excluded.quantity_available,
                 fetched_at         = excluded.fetched_at
-        """, (
-            sku,
-            (row.get("fulfillment-channel-sku") or "").strip(),
-            (row.get("asin") or "").strip(),
-            marketplace_id,
-            marketplace_name,
-            (row.get("condition-type") or "").strip(),
-            qty,
-        ))
+        """,
+            (
+                sku,
+                (row.get("fulfillment-channel-sku") or "").strip(),
+                (row.get("asin") or "").strip(),
+                marketplace_id,
+                marketplace_name,
+                (row.get("condition-type") or "").strip(),
+                qty,
+            ),
+        )
         count += 1
 
     db.commit()
-    log.info(f"[{marketplace_name} FBA] {count} items guardados, {skipped} sin SKU ignorados")
+    log.info(
+        f"[{marketplace_name} FBA] {count} items guardados, {skipped} sin SKU ignorados"
+    )
 
 
-def sync_fba_inventory(token: str, db, marketplace_id: str, marketplace_name: str,
-                       creds: Optional[dict] = None):
+def sync_fba_inventory(
+    token: str,
+    db,
+    marketplace_id: str,
+    marketplace_name: str,
+    creds: Optional[dict] = None,
+):
     """Pipeline completo FBA: request → poll → download → parse → upsert.
 
     Bug #8: si pasan `creds`, los polls largos refrescan el token via cache.
     """
+
     def _tok():
         if creds:
-            return get_access_token(creds["client_id"], creds["client_secret"], creds["refresh_token"])
+            return get_access_token(
+                creds["client_id"], creds["client_secret"], creds["refresh_token"]
+            )
         return token
+
     try:
-        report_id   = request_fba_inventory_report(_tok(), marketplace_id)
+        report_id = request_fba_inventory_report(_tok(), marketplace_id)
         document_id = wait_for_report(_tok(), report_id, creds=creds)
-        tsv         = download_report(_tok(), document_id)
+        tsv = download_report(_tok(), document_id)
         parse_and_save_fba(tsv, db, marketplace_id, marketplace_name)
     except Exception as e:
         log.error(f"FBA sync error {marketplace_name}: {e}")
@@ -332,42 +357,58 @@ def main():
     init_table(db)
 
     # Leer credenciales desde bridge_settings
-    client_id     = get_setting(db, "amazon_sp_api_client_id")
+    client_id = get_setting(db, "amazon_sp_api_client_id")
     client_secret = get_setting(db, "amazon_sp_api_client_secret")
     refresh_token = get_setting(db, "amazon_sp_api_refresh_token")
-    seller_id     = get_setting(db, "amazon_seller_id")
+    seller_id = get_setting(db, "amazon_seller_id")
 
-    missing = [k for k, v in {
-        "amazon_sp_api_client_id":     client_id,
-        "amazon_sp_api_client_secret": client_secret,
-        "amazon_sp_api_refresh_token": refresh_token,
-        "amazon_seller_id":            seller_id,
-    }.items() if not v]
+    missing = [
+        k
+        for k, v in {
+            "amazon_sp_api_client_id": client_id,
+            "amazon_sp_api_client_secret": client_secret,
+            "amazon_sp_api_refresh_token": refresh_token,
+            "amazon_seller_id": seller_id,
+        }.items()
+        if not v
+    ]
 
     if missing:
         log.error(f"Faltan en bridge_settings: {missing}")
-        log.error("Ejecuta: SELECT key, value FROM bridge_settings WHERE key LIKE 'amazon%';")
+        log.error(
+            "Ejecuta: SELECT key, value FROM bridge_settings WHERE key LIKE 'amazon%';"
+        )
         db.close()
         return
 
     # Bug #8: get_access_token() es ahora cached con auto-refresh; pasarlo
     # antes de cada step + pasar creds a wait_for_report/sync_fba_inventory
     # para refrescar internamente durante polls largos.
-    creds = {"client_id": client_id, "client_secret": client_secret, "refresh_token": refresh_token}
-    _tok = lambda: get_access_token(client_id, client_secret, refresh_token)
+    creds = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+    }
+
+    def _tok():
+        return get_access_token(client_id, client_secret, refresh_token)
 
     for marketplace_id, marketplace_name in MARKETPLACES:
-        log.info(f"── Procesando {marketplace_name} ({marketplace_id}) — merchant listings ──")
+        log.info(
+            f"── Procesando {marketplace_name} ({marketplace_id}) — merchant listings ──"
+        )
         try:
-            report_id   = request_report(_tok(), marketplace_id)
+            report_id = request_report(_tok(), marketplace_id)
             document_id = wait_for_report(_tok(), report_id, creds=creds)
-            tsv         = download_report(_tok(), document_id)
+            tsv = download_report(_tok(), document_id)
             parse_and_save(tsv, db, marketplace_id, marketplace_name)
         except Exception as e:
             log.error(f"Error merchant {marketplace_name}: {e}")
 
         # FBA inventory — reporte separado, stock real de Amazon warehouses
-        log.info(f"── Procesando {marketplace_name} ({marketplace_id}) — FBA inventory ──")
+        log.info(
+            f"── Procesando {marketplace_name} ({marketplace_id}) — FBA inventory ──"
+        )
         sync_fba_inventory(_tok(), db, marketplace_id, marketplace_name, creds=creds)
 
     db.close()
