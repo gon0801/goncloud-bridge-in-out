@@ -14,9 +14,9 @@ echo "=== BRIDGE BACKUP $DATE ==="
 echo "Checking SQLite integrity..."
 sqlite3 "$BRIDGE_PATH/data/bridge.db" "PRAGMA integrity_check;" | grep -q "ok"
 
-# 2) Backup DB
-cp "$BRIDGE_PATH/data/bridge.db" \
-   "$BACKUP_PATH/bridge_db_$DATE.db"
+# 2) Backup DB (online-safe: sqlite3 .backup aplica el WAL antes de copiar,
+#    a diferencia de cp plano que omite las páginas pendientes en bridge.db-wal)
+sqlite3 "$BRIDGE_PATH/data/bridge.db" ".backup '$BACKUP_PATH/bridge_db_$DATE.db'"
 
 # 2b) Backup tokens y credenciales (permisos 600 en destino)
 for f in .meli_tokens.json amazon_credentials.json .env.meli; do
