@@ -1,134 +1,138 @@
 # Pendientes activos — GONCLOUD Bridge
 
-> **Para Claude:** este archivo es la **fuente de verdad única**. Al iniciar sesión: leerlo y recordar al usuario. Al terminar subtarea: actualizar tabla + checkbox + contadores + commit + push + PR + merge.
+> **Para Claude:** fuente de verdad única de pendientes. Al iniciar sesión: leerlo y recordar al usuario.
+> Al cerrar una tarea: actualizar checkbox + contador + commit.
+> **No** convertir este archivo en diario — el histórico vive en `git log`.
 
-**Última actualización:** 2026-05-08
-**Progreso:** 9/16 subtareas (56%) — Auditoría de seguridad 100% completa
+**Última verificación contra producción:** 2026-08-09
+**Abiertos:** 10 · **Bloqueantes:** 1
+
+Todo lo de abajo fue verificado contra Odoo, `bridge.db` y el host `goncloud` el 2026-08-09.
+Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el histórico).
 
 ---
 
 ## Tabla de estado
 
-| # | Tarea | Subtarea | Estado | Prioridad |
-|---|-------|----------|--------|-----------|
-| **0** | **VPS Hetzner — validar crons** | Backfill cron + MeLi refresh cron | ✅ Hecho | — |
-| **1** | **Setup almacenes Odoo FULL/FBA** | Crear los 4 warehouses | ✅ Hecho | Alta |
-| 1.1 | | Resupply From = EHV-MX en Meli-Full | ⏳ Pendiente | Alta |
-| 1.2 | | Resupply From = EHV-MX en FBA-MX | ⏳ Pendiente | Alta |
-| 1.3 | | Desmarcar Buy/Manufacture to Resupply en los 3 nuevos | ⏳ Pendiente | Media |
-| 1.4 | | Confirmar 1 step (incoming y outgoing) en los 3 nuevos | ⏳ Pendiente | Media |
-| 1.5 | | **Decidir estrategia phantom BOM** ⚠️ bloquea Task 3 | ⏳ Pendiente | **Crítica** |
-| 1.6 | | Primera transferencia prueba EHV/Stock → FBAMX/Stock | ⏳ Pendiente | Alta |
-| **2** | **SP-API v0 → v2026-01-01** | `tools/amazon_orders_poll.py` | ✅ Hecho | Media |
-| 2.1 | | `app/amazon_inbound_worker.py` | ✅ Hecho | Media |
-| 2.2 | | `app/debug_flex_order.py` | ✅ Hecho | Baja |
-| 2.3 | | **Deadline: 2027-03-27** (recomendado antes de enero 2027) | ✅ Completado con margen | — |
-| **3** | **Tools picking por canal** *(depende Task 1)* | Mapping `canal → almacén` en `bridge_settings` | ✅ Pre-codeado | Alta |
-| 3.1 | | `inbound_full_paid_one_shot_no_stock.py` → Full/Stock | ✅ Pre-codeado | Alta |
-| 3.2 | | `amazon_fba_paid_one_shot.py` → FBAMX/FBAUS/Stock | ✅ Pre-codeado | Alta |
-| 3.3 | | Lógica de picking (⚠️ espera Task 1.5 phantom BOM) | ⏳ Bloqueada | **Crítica** |
-| 3.4 | | Probar flujo completo con orden real en cada canal | ⏳ Pendiente | Alta |
-| **4** | **Limpieza `manual_review` antiguos** | Automatizar script existente (cron o background) | ✅ Hecho | Baja |
-| **5** | **MeLi huérfanos** | `MLM2787930515` — verificar si listing sigue activo en MeLi | ⏳ Pendiente | Baja |
-| 5.1 | | `MLM2787902225` — verificar si listing sigue activo en MeLi | ⏳ Pendiente | Baja |
-| 5.2 | | Correr `backfill_meli_mappings.py` (o esperar cron 4h) | ⏳ Pendiente | Baja |
-| **6** | ~~AP-5 path-secret webhooks~~ | ~~Rotar secrets + mover a header `X-Goncloud-Secret`~~ | ❌ Cancelada | — |
+| # | Tarea | Estado | Prioridad |
+|---|-------|--------|-----------|
+| **1** | MeLi inbound: `bad_resource` ensucia la DLQ (359 dead/30d) | ⏳ Abierta | **Alta** |
+| **2** | Odoo: desmarcar Buy/Manufacture to Resupply en los 3 almacenes nuevos | ⏳ Abierta | Media |
+| **3** | **Decidir estrategia phantom BOM** ⚠️ bloquea 5 y 6 | ⏳ Abierta | **Crítica** |
+| **4** | Primera transferencia de prueba EHV/Stock → FBAMX/Stock | ⏳ Abierta | Alta |
+| **5** | Activar mapping canal→almacén (3 UPDATE en `bridge_settings`) | ⏳ Abierta | Alta |
+| **6** | Lógica de picking por canal ⚠️ bloqueada por #3 | ⏳ Bloqueada | Alta |
+| **7** | Probar flujo completo con orden real en cada canal | ⏳ Abierta | Alta |
+| **8** | Rebuild imagen Docker — sigue en `fastapi 0.110.0` | ⏳ Abierta | Media |
+| **9** | Crons del host: stats / backup offsite / restore test + remote rclone | ⏳ Abierta | Media |
+| **10** | Purgar 2 mappings MeLi muertos de `sku_mapping` | ⏳ Abierta | Baja |
 
 ---
 
-## Detalle por tarea
+## 1. MeLi inbound — `bad_resource` ensucia la DLQ · Alta
 
-### 0. Validar crons VPS Hetzner ✅
+**Evidencia (2026-08-09):** 359 registros `dead` en 30 días en `processed_inbound_events`,
+**100 % con `reason=bad_resource`**. Desglose por recurso:
 
-- [x] Backfill cron `0 */4 * * *` — faltaba; re-aplicado 2026-05-04
-- [x] MeLi refresh `/etc/cron.d/goncloud_meli_refresh` — activo (4 OK el 2026-05-04)
-- [x] Re-aplicar si falta — hecho
+| Recurso | Cantidad | Qué es |
+|---|---|---|
+| `/collections/{id}` | 303 (84 %) | notificaciones del topic **payments** |
+| `/questions/{id}` | 9 | topic **questions** (preguntas de compradores) |
+| UUID de 32 hex sin `/` | ~47 | formato nuevo de notificación de MeLi (topic por identificar) |
 
-### 1. Setup almacenes Odoo FULL/FBA
+**Causa:** [`app/inbound_worker.py:1473`](app/inbound_worker.py) — el regex
+`^/orders/([A-Z0-9\-]+)$` sólo acepta órdenes; **todo lo demás cae a `dead`**.
 
-- [x] Crear los 4 warehouses (EHV-MX, Meli-Full, FBA-MX, FBA-US)
-- [ ] Confirmar **Resupply From = EHV-MX** en Meli-Full
-- [ ] Confirmar **Resupply From = EHV-MX** en FBA-MX
-- [ ] Desmarcar **Buy to Resupply** y **Manufacture to Resupply** en los 3 almacenes nuevos
-- [ ] Confirmar **1 step** (incoming y outgoing) en los 3 nuevos
-- [ ] **Decidir estrategia phantom BOM** ⚠️ *Bloquea Task 3*
-- [ ] Primera transferencia de prueba EHV/Stock → FBAMX/Stock con SKU piloto
+**NO se están perdiendo órdenes.** Las órdenes reales siguen entrando (10–46 `success`/día).
+Estos son topics a los que la app está suscrita y el worker no maneja.
 
-### 2. Migrar Amazon SP-API Orders v0 → v2026-01-01 ✅
+**Por qué importa igual:**
+- Falsas alarmas en el health endpoint (D5.4 dispara con `ml_orders_dead > 50`).
+- Una falla real de una orden queda enterrada entre cientos de eventos de pago.
+- `ml_orders_dead` tiene 9 entradas ahora mismo.
 
-**Deadline:** 2027-03-27 — **Completado 2026-05-04** (11 meses antes del deadline)
+- [ ] Clasificar topics conocidos que no son órdenes como `ignored`/`skipped`, no `dead`
+- [ ] Identificar qué topic manda los UUID de 32 hex antes de decidir qué hacer con ellos
+- [ ] Alternativa complementaria: desuscribir topics no usados en el panel de MeLi
+- [ ] Test que cubra el caso (regla del quality-kit: todo fix lleva su prueba)
 
-- [x] `tools/amazon_orders_poll.py` — URL v2026, params camelCase, paginationToken, normalize_to_v0()
-- [x] `app/amazon_inbound_worker.py` — enrich con includedData, normalize_to_v0(), elimina getOrderItems
-- [x] `app/debug_flex_order.py` — URL v2026, fix credential keys, display campos v2026
-- **Deployado y validado en VPS 2026-05-05** — poll corrió limpio a las 06:40 UTC, worker reiniciado sin errores
+---
 
-### 3. Modificar tools inbound FBA/FULL para picking por canal
+## 2–4. Almacenes en Odoo
 
-*Depende de que la tarea 1 esté terminada. Código pre-codeado 2026-05-06 — listo para activar.*
+Los 4 almacenes existen y ya están casi configurados. Estado real verificado:
 
-- [x] Settings `warehouse_meli_full`, `warehouse_amazon_fba_mx`, `warehouse_amazon_fba_us` agregados en `bridge_settings` (vacíos hasta configurar Odoo)
-- [x] Workers pasan `WAREHOUSE_NAME` como env var al tool según perfil (`FBA_US` → `warehouse_amazon_fba_us`, etc.)
-- [x] Tools leen `WAREHOUSE_NAME`, buscan `warehouse_id` en Odoo por nombre, lo pasan al `sale.order` create. Si vacío → comportamiento actual sin cambios.
-- [ ] **Activar:** correr los 3 UPDATEs en bridge_settings con nombres exactos de Odoo (sin restart ni redeploy)
-- [ ] **Lógica de picking** ⚠️ *Bloqueada por Task 1.5 (phantom BOM)* — actualmente FBA cancela pickings, FULL no los genera
-- [ ] Probar flujo completo con orden real en cada canal
+| Almacén | code | Recepción | Entrega | Resupply From EHV-MX | Buy/Manufacture to Resupply |
+|---|---|---|---|---|---|
+| EHV-MX | `EHV` | one_step ✅ | ship_only ✅ | — (es el origen) | `True` / `True` |
+| Meli - Full | `Full` | one_step ✅ | ship_only ✅ | ✅ sí | ❌ `True` / `True` |
+| FBA - MX | `FBAMX` | one_step ✅ | ship_only ✅ | ✅ sí | ❌ `True` / `True` |
+| FBA - US | `FBAUS` | one_step ✅ | ship_only ✅ | ✅ sí | ❌ `True` / `True` |
 
-**Para activar cuando Task 1 esté lista:**
+**Resupply From y 1 step ya quedaron** (PENDIENTES.md viejo los daba por pendientes — estaban hechos).
+
+- [ ] **(#2)** Desmarcar **Buy to Resupply** y **Manufacture to Resupply** en Meli - Full, FBA - MX y FBA - US
+- [ ] **(#3)** ⚠️ **Decidir estrategia phantom BOM** — bloquea #6 y #7
+- [ ] **(#4)** Primera transferencia de prueba EHV/Stock → FBAMX/Stock con un SKU piloto
+
+---
+
+## 5–7. Picking por canal
+
+Código ya pre-codeado (2026-05-06): los workers pasan `WAREHOUSE_NAME` al tool según perfil y
+los tools resuelven el `warehouse_id` en Odoo por nombre. Si el setting está vacío → comportamiento
+actual sin cambios. Los 3 settings **siguen vacíos**, así que no está activo.
+
+> ⚠️ **Ojo:** el SQL de activación del archivo viejo tenía los nombres mal.
+> En Odoo los almacenes se llaman con espacios alrededor del guion. Los nombres correctos son:
+
 ```sql
-UPDATE bridge_settings SET value='Meli-Full' WHERE key='warehouse_meli_full';
-UPDATE bridge_settings SET value='FBA-MX'    WHERE key='warehouse_amazon_fba_mx';
-UPDATE bridge_settings SET value='FBA-US'    WHERE key='warehouse_amazon_fba_us';
+UPDATE bridge_settings SET value='Meli - Full' WHERE key='warehouse_meli_full';
+UPDATE bridge_settings SET value='FBA - MX'    WHERE key='warehouse_amazon_fba_mx';
+UPDATE bridge_settings SET value='FBA - US'    WHERE key='warehouse_amazon_fba_us';
 ```
 
-### 4. Limpieza periódica de `manual_review` antiguos ✅
+No requiere restart ni redeploy.
 
-- [x] `tools/cleanup_old_records.py` — limpieza con dry-run, retenciones configurables (success=90d, stuck=30d)
-- [x] `tools/cron/goncloud_bridge_cleanup` — cron domingos 03:00 UTC, `docker exec bridge-amazon-inbound-worker`
-- **Deploy:** `sudo cp tools/cron/goncloud_bridge_cleanup /etc/cron.d/ && sudo cp tools/cleanup_old_records.py /mnt/data/appdata/bridge/data/`
-
-### 5. MeLi huérfanos
-
-Revisado 2026-05-06: ambos listings tienen SKU `NH-ITA-CEN-DOR` en `sku_mapping` desde 2026-04-18, pero el cron de backfill (cada 4h) no los ha visto desde esa fecha → probablemente pausados o eliminados en MeLi.
-
-- [ ] Verificar en panel MeLi si `MLM2787930515` sigue activo
-- [ ] Verificar en panel MeLi si `MLM2787902225` sigue activo
-- [ ] Si están activos y sin SKU real → asignar `SELLER_SKU` en atributos del listing en MeLi vendedor
-- [ ] Correr `backfill_meli_mappings.py` (o esperar al cron automático de 4h)
-
-### 6. ~~AP-5 follow-up — eliminar path-secret en webhooks~~ ❌ Cancelada
-
-El flujo completo requiere rotar el secret (cambiar en bridge_settings + actualizar panel MeLi + re-suscribir SNS). Sin rotar el secret, mover la validación al header no aporta seguridad real. Cancelada 2026-05-05.
+- [ ] **(#5)** Correr los 3 UPDATE de arriba (después de cerrar #2 y #4)
+- [ ] **(#6)** Lógica de picking ⚠️ *bloqueada por #3* — hoy FBA cancela pickings y FULL no los genera
+- [ ] **(#7)** Probar flujo completo con orden real en cada canal
 
 ---
 
-## ✅ Cerrados recientemente
+## 8. Rebuild de la imagen Docker · Media
 
-**2026-05-08** — Auditoría de seguridad: todas las findings resueltas
-- 19+ findings de seguridad implementados en código y deployed a producción
-- Pendientes de operación (sin restart de servicios): configurar crons host para `docker_stats_log.sh`, `bridge_backup_offsite.sh`, `bridge_restore_test.sh`; configurar `rclone` remote "bridge-offsite"; reconstruir imagen Docker (`docker compose up -d --build`) para activar fastapi>=0.115.0 + multi-stage build; reiniciar `bridge-redis` cuando queues estén vacías para activar SLOWLOG
+La auditoría de seguridad del 2026-05-08 subió `requirements.txt` a `fastapi>=0.115.0` y convirtió
+`app/Dockerfile` a multi-stage, pero **la imagen nunca se reconstruyó**: el contenedor corre
+`fastapi 0.110.0`. Los fixes de seguridad de FastAPI y el multi-stage no están activos.
 
-**2026-05-06** — Task 3 pre-codeada: canal→almacén
-- Workers pasan `WAREHOUSE_NAME` al tool según perfil; tools setean `warehouse_id` en SO create
-- Settings vacíos en `bridge_settings` listos para activar con 3 UPDATEs SQL
-- Lógica de picking pendiente de decisión Task 1.5 (phantom BOM)
-- Redis dead queue limpiado (1,439 jobs históricos eliminados)
+- [ ] `docker compose up -d --build` (hacerlo con las colas vacías)
+- [ ] Verificar después: `docker exec bridge-api pip show fastapi` → debe decir ≥ 0.115.0
 
-**2026-05-05** — Task 4: Limpieza `manual_review` antiguos
-- `cleanup_old_records.py` (success=90d, stuck=30d, dry-run incluido)
-- Cron semanal domingos 03:00 UTC vía `docker exec bridge-amazon-inbound-worker`
-- Deploy pendiente: copiar script a `/data/` y cron a `/etc/cron.d/`
+---
 
-**2026-05-04** — Task 0: Validar crons VPS Hetzner
-- Backfill cron faltaba en el VPS nuevo → re-aplicado manualmente
-- MeLi refresh cron `/etc/cron.d/goncloud_meli_refresh` activo y funcionando (4 OK el día de hoy)
+## 9. Crons del host pendientes · Media
 
-**2026-04-18** — Bug crítico: MeLi separa variantes → oversell potencial
-- PR #19: schema `sku_mapping` 1:N + worker outbound con `fetchall()` + loop
-- PR #20: fix backfill para leer `attributes[SELLER_SKU]` (campo actual)
-- PR #21: cron `0 */4 * * *` agregado — discovery automático de splits cada 4h
+De la auditoría del 2026-05-08. Los scripts están versionados en `tools/` pero **no desplegados**.
+`rclone` sí está instalado, pero el único remote configurado es `onedrive:` — falta `bridge-offsite`.
 
-**2026-04-18** — Documentación y versionado
-- PR #17: `meli_refresh_tokens.sh` versionado en repo + MeLi auto-refresh documentado
-- PR #18: snippet de deploy resiste `/tmp/` ausente
-- PR #16: lista de pendientes activos como fuente de verdad
+- [ ] `tools/docker_stats_log.sh` → copiar al host + cron c/5 min
+- [ ] `tools/bridge_backup_offsite.sh` → copiar + cron `30 3 * * *` + configurar remote rclone `bridge-offsite`
+- [ ] `tools/bridge_restore_test.sh` → copiar + cron `0 4 1 * *`
+
+*(Ya activos y verificados: `goncloud_bridge_cleanup`, `goncloud_bridge_backup`,
+`goncloud_bridge_wal_checkpoint`, `goncloud_meli_refresh`, backfill c/4h, Redis SLOWLOG.)*
+
+---
+
+## 10. Mappings MeLi muertos · Baja
+
+`MLM2787930515` y `MLM2787902225` (ambos SKU `NH-ITA-CEN-DOR`) siguen en `sku_mapping` con
+`last_seen_at = 2026-04-18` — casi 4 meses sin que el backfill los vea, mientras que el cron
+**sí está corriendo** (17 mappings refrescados en los últimos 7 días sobre 336 totales).
+
+Conclusión: los dos listings están pausados o eliminados en MeLi. No hay nada que arreglar del lado
+del bridge; sólo queda purgar las filas para que dejen de aparecer como huérfanos.
+
+- [ ] Confirmar en el panel de MeLi que ambos están inactivos
+- [ ] `DELETE FROM sku_mapping WHERE remote_item_id IN ('MLM2787930515','MLM2787902225');`
