@@ -401,9 +401,18 @@
     container.innerHTML = html;
   }
 
+  // MAP-1b: el atributo se emite como `fn(${esc(JSON.stringify([...]))})`, o sea
+  // `fn([&quot;a&quot;,...])`. El parser HTML decodifica las entidades ANTES de que
+  // JS evalue el handler, asi que aca llega un Array ya deserializado, no un string
+  // JSON. JSON.parse(Array) coacciona a "a,b,c" y tira SyntaxError -> el click moria
+  // y no se podia seleccionar nada. Aceptamos ambas formas.
+  function parseOnclickArgs(raw) {
+    return Array.isArray(raw) ? raw : JSON.parse(raw);
+  }
+
   // Wrapper: deserializa args desde el atributo onclick (escaped JSON tuple).
   function selectMeliListingFromArgs(jsonArgs) {
-    const args = JSON.parse(jsonArgs);
+    const args = parseOnclickArgs(jsonArgs);
     return selectMeliListing(args[0], args[1], args[2]);
   }
 
@@ -533,7 +542,7 @@
 
   // Wrapper: deserializa args desde el atributo onclick (escaped JSON tuple).
   function selectItemFromArgs(jsonArgs) {
-    const args = JSON.parse(jsonArgs);
+    const args = parseOnclickArgs(jsonArgs);
     return selectItem(args[0], args[1], args[2]);
   }
 
@@ -665,7 +674,7 @@
   }
 
   function deleteMappingFromArgs(jsonArgs) {
-    const args = JSON.parse(jsonArgs);
+    const args = parseOnclickArgs(jsonArgs);
     return deleteMapping(args[0], args[1], args[2], args[3]);
   }
 
