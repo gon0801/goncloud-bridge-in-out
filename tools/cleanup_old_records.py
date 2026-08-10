@@ -14,6 +14,7 @@ Retenciones por defecto:
   - Locks stale                   → 1 día
   - Métricas                      → 90 días
   - events / snapshot_items       → 90 días
+  - processed_events (outbound)   → 30 días
 
 Uso:
   # Ver qué se borraría sin tocar nada:
@@ -86,7 +87,8 @@ def run_cleanup(args, logfile):
 
     log(f"DB: {DB_PATH}", logfile)
     log(
-        f"dry_run={args.dry_run}  success_days={args.success_days}  stuck_days={args.stuck_days}",
+        f"dry_run={args.dry_run}  success_days={args.success_days}  "
+        f"stuck_days={args.stuck_days}  outbound_days={args.outbound_days}",
         logfile,
     )
     log("-" * 60, logfile)
@@ -267,6 +269,25 @@ def run_cleanup(args, logfile):
             logfile,
         )
 
+    # ── 7.b Ledger de idempotencia outbound ───────────────────────
+    # processed_events es la tabla que mas crece de toda la DB: worker.py inserta
+    # UNA fila por SKU empujado (claim_event_idempotent), y el snapshotter empuja
+    # ~295 SKUs x 2 canales cada ~3 min => ~105k filas/dia, ~745 MB/mes con sus
+    # indices. Sin esta regla la tabla no se podaba nunca: en jul/2026 tenia 17M
+    # filas = 4.1 GB = 74% de bridge.db.
+    # Podarla es seguro: el event_id es `snap-<events.id>-<SKU>` y events.id es
+    # monotonico, asi que una fila vieja no puede volver a reclamarse.
+    if table_exists(conn, "processed_events"):
+        log("processed_events:", logfile)
+        total += delete(
+            conn,
+            "processed_events",
+            "received_at < datetime('now', ?)",
+            (f"-{args.outbound_days} days",),
+            args.dry_run,
+            logfile,
+        )
+
     # ── 8. Commit + VACUUM ────────────────────────────────────────
     if not args.dry_run:
         conn.commit()
@@ -300,6 +321,12 @@ def main():
         type=int,
         default=30,
         help="Retención de eventos manual_review/dead/error en días (default: 30)",
+    )
+    parser.add_argument(
+        "--outbound-days",
+        type=int,
+        default=30,
+        help="Retención de processed_events (ledger outbound) en días (default: 30)",
     )
     args = parser.parse_args()
 
