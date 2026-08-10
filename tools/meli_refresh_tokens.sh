@@ -59,7 +59,10 @@ BK="${TOK_FILE}.BK.$(date -u +%Y%m%dT%H%M%SZ)"
 cp -a "$TOK_FILE" "$BK"
 
 cp -a "$TMP" "$TOK_FILE"
-chmod 600 "$TOK_FILE"
+# 640, no 600: el contenedor lee el archivo con un uid distinto al owner. Hay un
+# cron en el host que lo fuerza a 640 cada 30 min — si aca se deja 600, los dos
+# se pelean y el bridge queda sin tokens hasta el siguiente tick del cron.
+chmod 640 "$TOK_FILE"
 
 echo "$(ts) OK access_prefix=${AT:0:12} refresh_prefix=${RT:0:12} backup=$(basename "$BK")" >>"$LOG_FILE"
 
