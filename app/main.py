@@ -23,6 +23,7 @@ import redis  # noqa: E402
 import requests  # noqa: E402
 from fastapi import FastAPI, Request, Header, Depends  # noqa: E402
 from fastapi.responses import RedirectResponse, JSONResponse  # noqa: E402
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from auth_middleware import require_secret  # noqa: E402
@@ -43,6 +44,11 @@ r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 app = FastAPI(title="Stock Bridge", version="0.3")
 logger = logging.getLogger(__name__)
+
+# Perf fix (2026-06-05): comprimir respuestas. La UI (sku_mapper.html ~33KB) y
+# demas HTML/JSON se servian crudos. Gzip los deja ~4x mas chicos. FastAPI no
+# comprime por defecto (mismo fix que competitive-intel y accounting).
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 # H-07/MI-21 CSRF — double-submit cookie pattern para requests que vienen
@@ -959,6 +965,38 @@ def health():
         checks["redis"] = f"error: {e}"
         ok = False
 
+    # Amazon inventory cache staleness — el refresh es manual; si nadie lo corre
+    # el mapper muestra catalogo viejo. En may/2026 el refresh estuvo roto 3
+    # meses sin que nadie se diera (cache congelado y nadie monitoreaba la
+    # fecha). Warn a las 48h, error a los 7 dias (mismo criterio que db_size).
+    try:
+        warn_h = float(os.getenv("AMAZON_CACHE_WARN_HOURS", "48"))
+        err_h = float(os.getenv("AMAZON_CACHE_ERROR_HOURS", "168"))
+        with closing(db_conn()) as conn:
+            row = conn.execute(
+                "SELECT MAX(updated_at) FROM amazon_inventory_cache"
+            ).fetchone()
+        last = row[0] if row else None
+        if not last:
+            checks["amazon_cache_updated_at"] = "empty"
+            checks["amazon_cache_warn"] = "empty"
+        else:
+            age_h = (
+                datetime.now(timezone.utc)
+                - datetime.strptime(last, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc
+                )
+            ).total_seconds() / 3600
+            checks["amazon_cache_updated_at"] = last
+            checks["amazon_cache_age_hours"] = round(age_h, 1)
+            if age_h > err_h:
+                checks["amazon_cache_warn"] = f"stale_{round(age_h)}h"
+                ok = False
+            elif age_h > warn_h:
+                checks["amazon_cache_warn"] = f"stale_{round(age_h)}h"
+    except Exception as e:
+        checks["amazon_cache_age"] = f"error: {e}"
+
     # D5.4: alert conditions — queue depth and recent dead events
     try:
         import redis as _redis_alert
@@ -1570,6 +1608,15 @@ async def _refresh_amazon_inventory_locked():
     if not creds["refresh_token"]:
         conn.close()
         return {"ok": False, "error": "No Amazon credentials"}
+    # El seller lista en MX y US con las mismas credenciales NA. Antes solo se
+    # consultaba UN marketplace (el setting, MX por default) y los SKUs que solo
+    # existen en US nunca llegaban al cache ni al mapper (ej. 1Y-7ITJ-9DQ9 /
+    # B0BFK3J6V8). dict.fromkeys dedup preservando orden por si el setting ya
+    # apunta a uno de los dos.
+    marketplace_ids = list(
+        dict.fromkeys([creds["marketplace"], "A1AM78C64UM0Y8", "ATVPDKIKX0DER"])
+    )
+    mp_code = {"A1AM78C64UM0Y8": "MX", "ATVPDKIKX0DER": "US"}
     try:
         token_resp = requests.post(
             "https://api.amazon.com/auth/o2/token",
@@ -1583,33 +1630,35 @@ async def _refresh_amazon_inventory_locked():
         )
         access_token = token_resp.json()["access_token"]
         skus = []
-        next_token = None
-        page = 0
-        while True:
-            page += 1
-            url = (
-                f"https://sellingpartnerapi-na.amazon.com/listings/2021-08-01/items"
-                f"/{creds['seller_id']}"
-                f"?marketplaceIds={creds['marketplace']}&status=BUYABLE&pageSize=20"
-            )
-            if next_token:
-                url += f"&pageToken={requests.utils.quote(next_token)}"
-            resp = requests.get(
-                url, headers={"x-amz-access-token": access_token}, timeout=30
-            )
-            data = resp.json()
-            for item in data.get("items", []):
-                sku = item.get("sku", "")
-                summary = item.get("summaries", [{}])[0]
-                asin = summary.get("asin", "")
-                name = summary.get("itemName", "")
-                skus.append((sku, asin, name, 0))
-            logger.info(
-                f"Amazon listings page {page}: {len(data.get('items', []))} items (total: {len(skus)})"
-            )
-            next_token = data.get("pagination", {}).get("nextToken")
-            if not next_token:
-                break
+        for mp_id in marketplace_ids:
+            mp = mp_code.get(mp_id, "MX")
+            next_token = None
+            page = 0
+            while True:
+                page += 1
+                url = (
+                    f"https://sellingpartnerapi-na.amazon.com/listings/2021-08-01/items"
+                    f"/{creds['seller_id']}"
+                    f"?marketplaceIds={mp_id}&status=BUYABLE&pageSize=20"
+                )
+                if next_token:
+                    url += f"&pageToken={requests.utils.quote(next_token)}"
+                resp = requests.get(
+                    url, headers={"x-amz-access-token": access_token}, timeout=30
+                )
+                data = resp.json()
+                for item in data.get("items", []):
+                    sku = item.get("sku", "")
+                    summary = item.get("summaries", [{}])[0]
+                    asin = summary.get("asin", "")
+                    name = summary.get("itemName", "")
+                    skus.append((sku, asin, name, 0, mp))
+                logger.info(
+                    f"Amazon listings {mp} page {page}: {len(data.get('items', []))} items (total: {len(skus)})"
+                )
+                next_token = data.get("pagination", {}).get("nextToken")
+                if not next_token:
+                    break
         # AP-20: swap atómico via tabla staging.
         # Antes: DELETE + INSERT en la MISMA tabla expone una ventana donde
         # consumidores concurrentes (ej. /api/amazon/amazon-skus) ven 0 filas.
@@ -1622,23 +1671,30 @@ async def _refresh_amazon_inventory_locked():
             )
             return {"ok": False, "error": "empty_listings_response"}
 
+        # La staging es transitoria: DROP+CREATE (no IF NOT EXISTS) porque el
+        # schema viejo no tenia la columna marketplace y hay que migrarla.
+        conn.execute("DROP TABLE IF EXISTS amazon_inventory_cache_staging")
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS amazon_inventory_cache_staging "
-            "(seller_sku TEXT, asin TEXT, product_name TEXT, qty INTEGER, updated_at TEXT)"
+            "CREATE TABLE amazon_inventory_cache_staging "
+            "(seller_sku TEXT, asin TEXT, product_name TEXT, qty INTEGER, marketplace TEXT, updated_at TEXT)"
         )
-        conn.execute("DELETE FROM amazon_inventory_cache_staging")
         conn.executemany(
-            "INSERT INTO amazon_inventory_cache_staging (seller_sku, asin, product_name, qty, updated_at) "
-            "VALUES (?, ?, ?, ?, datetime('now'))",
+            "INSERT INTO amazon_inventory_cache_staging (seller_sku, asin, product_name, qty, marketplace, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now'))",
             skus,
         )
+        # Commit del llenado de staging ANTES del BEGIN IMMEDIATE: sqlite3 abre
+        # transaccion implicita con los INSERT y el BEGIN reventaba con
+        # "cannot start a transaction within a transaction" (refresh roto en
+        # prod desde may/2026, cache estancado). El swap sigue siendo atomico.
+        conn.commit()
         # Swap atómico — todo dentro de una transacción explícita.
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute("DELETE FROM amazon_inventory_cache")
             conn.execute(
-                "INSERT INTO amazon_inventory_cache (seller_sku, asin, product_name, qty, updated_at) "
-                "SELECT seller_sku, asin, product_name, qty, updated_at FROM amazon_inventory_cache_staging"
+                "INSERT INTO amazon_inventory_cache (seller_sku, asin, product_name, qty, marketplace, updated_at) "
+                "SELECT seller_sku, asin, product_name, qty, marketplace, updated_at FROM amazon_inventory_cache_staging"
             )
             conn.execute("DELETE FROM amazon_inventory_cache_staging")
             conn.commit()
