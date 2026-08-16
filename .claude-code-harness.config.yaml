@@ -1,0 +1,8 @@
+# Politica del guardrail de claude-code-harness para push a ramas protegidas.
+# Decision del operador (escrita por quality-kit\install-branch-push-policy.ps1;
+# el harness le bloquea al agente tocar este archivo, y esta bien que asi sea).
+# Con `ask` cada push directo a master deja un prompt colgado si el operador no
+# esta. `allow` presupone que la red real de la rama son los candados de
+# pre-commit y el CI en cada push -- si este repo no los tiene, volver a `ask`.
+safety:
+  protected_branch_push: allow
