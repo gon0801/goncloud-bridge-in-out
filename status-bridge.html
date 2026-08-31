@@ -421,6 +421,13 @@
       <td><span class="badge badge-done">✅ Completada</span></td>
       <td><span class="pri pri-alta">Alta</span></td>
     </tr>
+    <tr>
+      <td class="sub">D8</td>
+      <td>Mapeos Amazon ↔ Odoo</td>
+      <td><strong>6 hallazgos</strong>: 1 Crítico, 2 Altos, 2 Medios, 1 Bajo — Tabla de mapeos sana: 555/568 filas OK, 0 mapeos rotos hacia Odoo. Top: <strong>13 SKUs con 400u FBA c/u</strong> y listing activo sin producto Odoo ni mapeo (vendibles hoy; la orden no resolvería); 42 listings activos sin stock sin resolver; 1 ASIN desactualizado (<code>XM-20QN-2YJR</code>: guarda <code>B0851SSBL6</code>, el vivo es <code>B0D9F4V1CC</code>) que produce joins falsos por ASIN. Reversa: 986 SKUs vivos sin resolver (55 Alta, 931 legacy). TSVs: <code>/mnt/data/appdata/bridge/data/mapping_audit_2026-08-31/</code></td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
 
     <!-- PUNTOS A CORREGIR — D1-D4 -->
     <tr class="group-header">
@@ -794,12 +801,55 @@
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
 
+    <!-- D8 Mapeos Amazon <-> Odoo -->
+    <tr class="group-header">
+      <td>D8</td>
+      <td colspan="4">Mapeos Amazon ↔ Odoo — 6 hallazgos (1 Crítico, 2 Altos, 2 Medios, 1 Bajo)</td>
+    </tr>
+    <tr>
+      <td class="sub">D8.1</td>
+      <td colspan="2"><strong>13 SKUs con 400u FBA c/u y listing activo sin producto Odoo ni mapeo</strong> (ASINs <code>B0D9C…/B0D9D…</code>, parecen carga masiva reciente) → si venden, la orden no resuelve a producto; crear productos en Odoo o mapear. Detalle: <code>mapping_audit_2026-08-31/unmapped_live_skus.tsv</code></td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D8.2</td>
+      <td colspan="2"><strong>42 SKUs con listing activo sin stock FBA sin resolver</strong> (sin fila en <code>amazon_sku_mapping</code> ni producto Odoo con ese <code>default_code</code>; incluye los 8 reportados por el operador) → mapear o desactivar listings</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D8.3</td>
+      <td colspan="2"><code>amazon_sku_mapping.asin</code> desactualizado en 1 fila: <code>XM-20QN-2YJR</code> guarda <code>B0851SSBL6</code> pero el ASIN vivo es <code>B0D9F4V1CC</code> → joins por ASIN producen conexiones falsas; hacer UPDATE con el asin vivo</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D8.4</td>
+      <td colspan="2"><strong>12 filas</strong> de <code>amazon_sku_mapping</code> con <code>asin</code> vacío pese a que Amazon reporta uno (ej. <code>WX-H958-2A8M</code>, <code>T5-TQA3-5QM5</code>) → llenar desde caches vivos. Detalle: <code>finding_asin_fill.tsv</code></td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D8.5</td>
+      <td colspan="2">Odoo: <strong>655 <code>default_code</code> duplicados</strong> entre variantes (1087 activos vs 1458 archivados con código; ej. <code>NH-BLA-BRO-VBU-PLA</code> ×6 con solo 1 activa) → riesgo de resolución ambigua SKU→producto; limpiar variantes duplicadas archivadas</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-media">Media</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D8.6</td>
+      <td colspan="2"><strong>931 SKUs</strong> en caches de Amazon sin listing activo ni stock FBA y sin resolver (listings legacy) → decidir mapeo o purga; hoy solo contaminan búsquedas y reportes</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-baja">Baja</span></td>
+    </tr>
+
   </tbody>
 </table>
 
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-08-31</strong> — <strong>Auditoría D8 Mapeos Amazon ↔ Odoo completada:</strong> 6 hallazgos (1 Crítico, 2 Altos, 2 Medios, 1 Bajo). 568 filas auditadas (<code>amazon_sku_mapping</code> 450 + <code>amazon_sku_marketplace</code> 118) contra Odoo y los caches vivos de Amazon: 555 OK, 0 mapeos rotos hacia Odoo, 1 ASIN desactualizado, 12 ASINs vacíos. Top: 13 SKUs con 400u FBA c/u vendibles sin producto Odoo (D8.1); 42 listings activos sin resolver, incluye los 9 SKUs reportados por el operador (D8.2); el ASIN viejo de <code>XM-20QN-2YJR</code> producía joins falsos por ASIN — detectado al investigar <code>KQ-5BXO-THDH</code> (D8.3). Script: <code>tools/amazon_mapping_audit.py</code>; TSVs: <code>/mnt/data/appdata/bridge/data/mapping_audit_2026-08-31/</code>.</li>
     <li><strong>2026-05-08</strong> — <strong>Quick wins seguridad F3.1+F5.1+F8.1+D6.6:</strong> <code>/mapper</code>, <code>/setup</code>, <code>/amazon/mapper</code> protegidos con <code>Depends(require_secret)</code> (F3.1-3.3); contraseña Odoo no persiste en <code>state.odoo</code> — se lee del DOM inline y se descarta tras la llamada (F5.1); middleware de seguridad HTTP agregado: CSP, <code>X-Frame-Options: DENY</code>, <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy</code> (F8.1+8.3); <code>RECOVERY_CHECKLIST.txt</code> reescrito — comandos actuales, tablas reales, credenciales referenciadas correctamente (D6.6).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D7 MeLi OAuth &amp; API completada:</strong> 7 hallazgos (1 Alto, 3 Medios, 3 Bajos). Top: worker <code>ml_get()</code> en <code>inbound_worker.py</code> no refresca token inline ante HTTP 401 — depende 100% del cron cada 6h; cuando el cron falló el 8/may 01:07 UTC (archivo <code>/tmp</code> con owner <code>root</code>), el worker generó <strong>36 dead orders</strong> con <code>token_expired</code> antes del refresh manual a las 07:15 UTC (D7.1 ALTO); el comentario "circuit breaker pattern" en <code>ml_get()</code> es pura documentación — no existe implementación real (D7.2 MEDIO); rate limit 429 sin lectura de headers <code>X-Rate-Limit-Remaining/Reset</code> → retry ciego que puede empeorar throttling (D7.4 MEDIO); OAuth flow sin PKCE (D7.5 BAJO); callback no exige <code>refresh_token</code> obligatorio (D7.6 BAJO). Token actual verificado: válido (user_id 135734858), 17 scopes incluyendo <code>offline_access</code>.</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D6 Infra &amp; Backup completada:</strong> 10 hallazgos (2 Críticos, 3 Altos, 3 Medios, 2 Bajos). Top: <code>bridge_backup.sh</code> existe y es robusto pero <strong>no hay cron</strong> configurado y el directorio de backups está vacío (D6.1 CRÍTICO); <code>meli_refresh_tokens.sh</code> acumula <strong>314 archivos de backup</strong> de tokens sin limpieza desde febrero (D6.2 CRÍTICO); sin <code>.dockerignore</code> + <code>COPY . /app</code> = secrets embebidos en imagen Docker (D6.3 ALTO); Dockerfile usa <code>python:3.11-slim</code> sin patch-pin → builds no reproducibles (D6.4 ALTO); sin log rotation para contenedores → 213MB y creciendo (D6.5 ALTO); <code>RECOVERY_CHECKLIST.txt</code> obsoleto con tablas inexistentes y password hardcodeado (D6.6 MEDIO).</li>
