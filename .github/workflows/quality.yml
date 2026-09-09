@@ -3,6 +3,16 @@
 # push y en cada pull request -- asi el repo queda protegido aunque alguien
 # (vos, otra IA, un colaborador) haga un commit sin pasar por los candados
 # locales, o desde una maquina que no los tiene instalados.
+#
+# CI paralelo (regla 8): la bateria corre COMPLETA en cada push/PR, nunca se
+# recorta ni se saltea por tipo de cambio. pytest usa `-n auto` (pytest-xdist)
+# por default. Opt-out por repo: QUALITY_KIT_PYTEST_SERIAL=1 al correr
+# init-repo.ps1 (suites con estado compartido; el workflow queda en `pytest -q`).
+#
+# Gate de docs/ledger: tools/check-*.sh y tools/check_*.py (nombres con
+# docs|ledger|deploy-log|context) corren SIN argumentos y SIN dependencias
+# extra -- solo stdlib / bash. Un checker que importe paquetes del repo
+# deja este job rojo: es el contrato, no un smoke de la bateria.
 name: Quality
 
 on:
@@ -30,7 +40,9 @@ jobs:
 
       - name: Install Python dependencies
         if: hashFiles('requirements.txt') != ''
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-xdist
 
       - name: Install Node dependencies
         if: hashFiles('package-lock.json') != ''
@@ -42,9 +54,50 @@ jobs:
       - name: Run Python tests
         if: hashFiles('pyproject.toml', 'requirements.txt') != ''
         run: |
-          pip install pytest
-          pytest -q
-
+          pip install pytest pytest-xdist
+          pytest -n auto -q
       - name: Run Node tests
         if: hashFiles('package.json') != ''
         run: npm test --if-present
+
+  gate:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [quality]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkers sobre docs o ledger reales
+        run: |
+          set -e
+          found=0
+          if [ -d tools ]; then
+            for f in tools/check-*.sh tools/check_*.py; do
+              [ -e "$f" ] || continue
+              base=$(basename "$f")
+              case "$base" in
+                *docs*|*ledger*|*deploy-log*|*context*) ;;
+                *) echo "gate: salto $f (no es checker de docs/ledger)"; continue ;;
+              esac
+              found=1
+              echo "gate: corriendo $f"
+              case "$f" in
+                *.sh) bash "$f" ;;
+                *) python3 "$f" ;;
+              esac
+            done
+          fi
+          if [ "$found" -eq 0 ]; then
+            echo "gate: no hay tools/check-*.sh ni tools/check_*.py -- nada que auditar, sale 0"
+          fi
+      - name: Todos los jobs de calidad en verde
+        env:
+          R_QUALITY: ${{ needs.quality.result }}
+        run: |
+          rc=0
+          for par in "quality=$R_QUALITY"; do
+            printf '%s\n' "$par"
+            case "$par" in *=success) ;; *) rc=1 ;; esac
+          done
+          [ "$rc" -eq 0 ] || { echo "gate: algun job de calidad NO quedo en success" >&2; exit 1; }
+          echo "gate: OK -- todos en success"
