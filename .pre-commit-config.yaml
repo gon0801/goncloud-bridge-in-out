@@ -29,3 +29,18 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+# >>> QUALITY-KIT REPO-HYGIENE HOOK START -- managed by install-repo-hygiene.ps1
+# Candado de capa de contexto: CLAUDE.md raiz <=200 lineas, anidados <=80,
+# AGENTS.md <=400, sin diarios '## Estado anterior' (van a docs/).
+# Sweep manual de basura: python tools/check_context_docs.py . --sweep
+  - repo: local
+    hooks:
+      - id: context-docs-budget
+        name: capa de contexto dentro de presupuesto (repo-hygiene)
+        entry: python tools/check_context_docs.py
+        # El entorno aislado de pre-commit aporta `python` en Windows,
+        # macOS y Linux; no depende de aliases del sistema anfitrion.
+        language: python
+        pass_filenames: false
+        files: '(^|/)(CLAUDE|AGENTS|AGENT)\.md$'
+# >>> QUALITY-KIT REPO-HYGIENE HOOK END
