@@ -78,18 +78,25 @@ def test_una_corrida_mixta_solo_toca_lo_pendiente(mod):
 
 
 def test_la_seleccion_filtra_recetas_archivadas():
-    """1541 archivadas contra 1009 vivas: incluirlas ya causo un error de medicion."""
+    """1541 archivadas contra 1009 vivas: incluirlas ya causo un error de medicion.
+
+    Se compara sobre el fuente con los espacios colapsados: `ruff format` parte
+    las llamadas largas en varias lineas, y una version anterior de este test
+    buscaba una linea literal — se rompio en cuanto el formateador la dividio.
+    Un test que depende del formato no protege nada.
+    """
     fuente = TOOL.read_text(encoding="utf-8")
-    consultas = [
-        ln for ln in fuente.splitlines() if '"mrp.bom"' in ln and "search_read" in ln
-    ]
-    bloque = fuente[fuente.index('od.kw("mrp.bom", "search_read"') :][:260]
-    assert '["active", "=", True]' in bloque, (
+    plano = "".join(fuente.split())
+
+    assert '"mrp.bom","search_read"' in plano, (
+        "no se encontro la consulta de recetas a migrar; si cambio de forma, "
+        "actualiza este test en vez de borrarlo"
+    )
+    assert '["type","=","phantom"],["active","=",True]' in plano, (
         "la seleccion de recetas a migrar no filtra por active. Esta base tiene "
         "mas recetas archivadas que vivas; tocarlas no sirve y distorsiona los "
         "conteos."
     )
-    assert consultas or bloque, "no se encontro la consulta de recetas"
 
 
 def test_la_escritura_depende_del_respaldo():

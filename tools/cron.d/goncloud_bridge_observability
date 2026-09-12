@@ -19,6 +19,13 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 # Corre el dia 1 a las 04:00 UTC, despues del backup diario de las 02:00.
 0 4 1 * * root /mnt/data/appdata/bridge/tools/bridge_restore_test.sh >> /mnt/data/appdata/bridge/data/restore_test.log 2>&1
 
+# Ventas de marketplace facturadas en $0. Amazon devuelve OrderTotal=0 en las
+# Flex MX `Pending` y lo llena despues sin cambiar de estado; si el segundo
+# evento no llega, el SO queda en cero para siempre. Dos de junio de 2026
+# estuvieron TRES MESES asi y se encontraron de casualidad.
+# Umbral 7 dias: p99 de la espera normal = 4.1d (1 falso positivo en 103).
+0 13 * * * root docker exec bridge-api python3 /data/odoo_sos_en_cero.py >> /mnt/data/appdata/bridge/data/sos_en_cero.log 2>&1
+
 # D6.9 — sync offsite via rclone. DESACTIVADO a proposito.
 #
 # Requiere un remote de rclone llamado "bridge-offsite" que todavia NO existe
