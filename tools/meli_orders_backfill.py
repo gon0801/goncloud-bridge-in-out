@@ -8,9 +8,10 @@ horas y despues descarta. No habia forma de recuperar esa ventana — a
 diferencia de Amazon, que entra por polling (`amazon_orders_poll.py`) y se
 autocura solo.
 
-Caso real: 2026-08-24 -> 2026-09-12, `bridge-api` quedo fuera de la red docker
-del proxy tras un recreate. 19 dias sin un solo webhook y ~70-95 ordenes que
-nunca llegaron a Odoo. Nadie se entero.
+Caso real: 2026-08-24 -> 2026-09-12. El Cloudflare Tunnel enruta los webhooks a
+`http://localhost:8099`, pero tras un recreate el puerto quedo publicado solo
+en la interfaz WireGuard. 19 dias sin un solo webhook, 138 entregas rechazadas
+por dia, 18 ordenes que nunca llegaron a Odoo. Nadie se entero.
 
 Que hace
 --------
@@ -20,12 +21,22 @@ encola en `ml_orders_jobs` con la MISMA forma que produce el webhook, para que
 
 Por que es seguro correrlo de mas
 ---------------------------------
-NO pasa `order_json`: encola solo el `resource`, igual que el webhook, y deja
-que el worker haga el GET autoritativo de `/orders/{id}`. La idempotencia la
-garantiza el worker aguas abajo: calcula `ml:{order_id}:{action}` DESPUES de
-leer el estado real de la orden y `is_already_completed()` corta si ya hay un
-`success` o `dead` en `processed_inbound_events`. Reprocesar un rango que se
-solapa con ordenes ya en Odoo no duplica nada.
+Encola solo el `resource`, sin `order_json` y sin `dedupe_key`, para que el
+worker haga el GET autoritativo de `/orders/{id}` — exactamente el mismo camino
+que recorre un webhook. Eso importa: `display_ref` (`"{order_id} | {buyer}"`)
+sale de ese fetch, asi que el que produce el backfill es identico al que
+produjo el webhook.
+
+Y ahi esta la unica barrera real contra duplicados: los tools buscan el SO por
+`client_order_ref = display_ref` antes de crear nada
+(`inbound_fbm_so_apply_paid_one_shot.py`, `inbound_full_paid_one_shot_no_stock.py`),
+verifican las lineas existentes y detectan la factura ya pagada.
+
+OJO — la dedup por auditoria NO protege aca. Los registros que dejo el webhook
+en `processed_inbound_events` tienen clave `rawsha:{sha256}:{action}`, porque el
+webhook fija `dedupe_key` en el job y el worker lo respeta. El backfill no lo
+fija, asi que el worker deriva `ml:{order_id}:{action}` y `is_already_completed()`
+NUNCA encuentra el registro viejo. La proteccion es Odoo, no la tabla.
 
 Uso
 ---

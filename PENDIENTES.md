@@ -159,8 +159,10 @@ ERR Unable to reach the origin service ... dial tcp [::1]:8099: connection refus
 
 **138 intentos rechazados por día.** MeLi nunca dejó de entregar — la
 suscripción sigue viva. Último webhook recibido: 01:44 UTC, 16 min antes del
-recreate. Amazon no se vio afectado (polling). Impacto: **~70-95 órdenes MeLi
-nunca llegaron a Odoo** (~4.7/día antes del corte).
+recreate. Amazon no se vio afectado (polling). Impacto verificado contra el catálogo completo de MeLi: **18 órdenes creadas
+durante el apagón nunca llegaron a Odoo** (0 huérfanas fuera del rango de rescate).
+Otras 39 órdenes previas cambiaron de estado durante la ventana y también se
+reencolan: entre ellas puede haber cancelaciones que nunca se aplicaron.
 
 Ruta aparte, también rota y de consecuencias mucho menores: `bridge-api` quedó
 fuera de la red docker `proxy`, así que `mapper.goncloud.cc` (UI del SKU mapper)
@@ -170,7 +172,7 @@ devolvía 502. Reconectado en caliente el 2026-09-12 y ya declarado en el compos
 - [ ] **Publicar el puerto en loopback** — el fix real. Copiar el compose nuevo al servidor y `docker compose up -d bridge-api`
 - [ ] Verificar en `journalctl -u cloudflared -f` que dejen de aparecer `connection refused`
 - [x] Desplegar `tools/meli_orders_backfill.py` a `/mnt/data/appdata/bridge/data/`
-- [ ] Validar el backfill contra una ventana de respuesta conocida (17-23 ago = 33 órdenes) antes de confiar en su conteo
+- [x] Validar el backfill: filtraba por `date_created` y recuperaba 13/33 en la ventana de control; corregido a `date_last_updated` (33/33, y 18/18 sobre lo creado en el apagón)
 - [ ] Recuperar el rango: `--from 2026-08-24 --dry-run` y después sin `--dry-run`
 - [ ] Conciliar contra Odoo cuántas órdenes entraron y revisar `manual_review`
 

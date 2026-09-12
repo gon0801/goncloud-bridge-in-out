@@ -79,9 +79,15 @@ def test_el_job_del_backfill_pasa_el_contrato_del_worker(backfill, regex_del_wor
 def test_el_job_no_trae_order_json_ni_dedupe_key(backfill):
     """De esto depende que reprocesar un rango ya cargado NO duplique en Odoo.
 
-    Con `order_json` el worker se saltea el GET autoritativo; con `dedupe_key`
-    propio se saltea el action-aware `ml:{id}:{action}` que es el que consulta
-    `is_already_completed()`. En ambos casos se pierde la idempotencia.
+    La proteccion contra duplicados NO es la tabla de auditoria: el webhook deja
+    claves `rawsha:{sha}:{action}` y el backfill genera `ml:{id}:{action}`, asi
+    que `is_already_completed()` nunca las cruza. La proteccion es que los tools
+    buscan el SO por `client_order_ref = display_ref` antes de crear.
+
+    Y `display_ref` (`"{order_id} | {buyer}"`) se arma con lo que devuelve el GET
+    de `/orders/{id}`. Si el job trajera `order_json`, el worker se saltearia ese
+    fetch y el ref podria diferir del que dejo el webhook -> el lookup falla ->
+    SO duplicado. Por eso el job va deliberadamente pelado.
     """
     job = backfill.build_job("2000018393906916", "2026-09-12T07:00:00+00:00")
 
