@@ -5,7 +5,7 @@
 > **No** convertir este archivo en diario — el histórico vive en `git log`.
 
 **Última verificación contra producción:** 2026-09-12
-**Abiertos:** 4 · **Bloqueantes:** 0
+**Abiertos:** 2 · **Bloqueantes:** 0
 
 Todo lo de abajo fue verificado contra Odoo, `bridge.db`, la SP-API de Amazon y
 el host `goncloud` el 2026-09-12. Lo cerrado se eliminó del archivo (ver
@@ -17,63 +17,38 @@ el host `goncloud` el 2026-09-12. Lo cerrado se eliminó del archivo (ver
 
 | # | Tarea | Estado | Prioridad |
 |---|-------|--------|-----------|
-| **1** | Purgar (o no) los 3 SKUs sin listing vivo | ⏳ Decisión | Baja |
-| **2** | `REP-GD` sin orden de compra — el operador ya está enterado | ⏳ Operación | Media |
-| **3** | Drift: `amazon_fbm_paid_one_shot.py` difiere entre repo y servidor | ⏳ Abierta | Baja |
-| **4** | Almacenes por canal — **preparación, sin urgencia** | 🟡 En pausa | Baja |
+| **1** | Drift: 19 archivos difieren entre `tools/` y `data/` del servidor | ⏳ Abierta | Baja |
+| **2** | Almacenes por canal — **preparación, sin urgencia** | 🟡 En pausa | Baja |
 
 **Cerrados el 2026-09-12, después de la reescritura de este archivo:** ajuste de
 `CHA-OVA-VIR-DOR` a 103 (reactivó 14 publicaciones) · S02205 cancelado · backup
 offsite activado con `onedrive` y acotado con `sync` · búsqueda de payloads en
-`recover_manual_review.py` · duplicado MX/US en `amazon_fba_inventory`.
+`recover_manual_review.py` · duplicado MX/US en `amazon_fba_inventory` · purga
+de los 4 mappings muertos de 3 SKUs · `amazon_fbm_paid_one_shot.py` promovido
+desde el repo al servidor (tenía un `except:` pelado).
 
 **Descartados por el operador:** confirmar las OCs en borrador · el conteo físico
-de los 8 componentes (la mercancía está en tránsito) · S01460, demasiado vieja.
+de los 8 componentes (la mercancía está en tránsito) · S01460, demasiado vieja ·
+la orden de compra de `REP-GD`, que el operador maneja por su cuenta.
 
 ---
 
-## 1. Los 3 SKUs sin listing vivo · Baja
+## 1. Drift entre `tools/` y `data/` en el servidor · Baja
 
-Verificado contra la API de MeLi el 2026-09-12 — **los cuatro listings están
-muertos**, no relistados con otro ID:
+`tools/check_tools_data_drift.sh` reporta **19 archivos** que difieren entre las
+dos copias que el servidor mantiene de cada herramienta. `/data/` es la que
+manda: el worker la busca ahí primero (regla sellada en CLAUDE.md), así que
+`tools/` puede estar sirviendo versiones viejas como fallback.
 
-| SKU | listing | estado |
-|---|---|---|
-| `NH-ITA-PEZ-DOR` | MLM4734057258 | `inactive` / forbidden, deleted |
-| `NH-ITA-PEZ-DOR` | MLM5209074728 | `closed` / deleted |
-| `NH-SOLO-GAM-AZU-SAN-PLA` | MLM2727257503 | `closed` / deleted |
-| `NH-SOLO-GAM-AZU-VCO-PLA` | MLM2727257503 | `closed` / deleted |
+No es urgente — lo que corre es `/data/` — pero es una mina: el día que un
+archivo falte en `/data/`, el fallback ejecuta otra cosa sin avisar.
 
-Los tres títulos son "Arras Matrimoniales". Parecen descontinuados.
-
-- [ ] Confirmar que son descontinuados y purgar sus filas de `sku_mapping`
+- [ ] `bash tools/check_tools_data_drift.sh` y promover el lado correcto archivo
+      por archivo
 
 ---
 
-## 2. `REP-GD` sin orden de compra · Media
-
-Stock 0, **47 salidas en 90 días**, última entrada 2026-01-25. Bloquea 4 kits
-publicados y es el único de los 15 componentes críticos sin nada pedido. El
-operador quedó enterado el 2026-09-12.
-
-- [ ] Levantar orden de compra
-
-Diagnóstico en cualquier momento:
-`docker exec bridge-api python3 /data/odoo_componentes_criticos.py`
-
----
-
-## 3. Drift entre el repo y el servidor · Baja
-
-`amazon_fbm_paid_one_shot.py` tiene md5 distinto en `tools/` del repo y en
-`/data/` del servidor. La guarda de precio cero está en ambos, pero son
-versiones distintas — o sea hay cambios en un lado que el otro no tiene.
-
-- [ ] `bash tools/check_tools_data_drift.sh` y decidir qué lado promover
-
----
-
-## 4. Almacenes por canal · 🟡 En pausa
+## 2. Almacenes por canal · 🟡 En pausa
 
 **Medido el 2026-09-12: no hay a quién servirle.**
 
