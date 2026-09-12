@@ -144,21 +144,35 @@ del bridge; sólo queda purgar las filas para que dejen de aparecer como huérfa
 
 ## 11. Apagón de ingress MeLi (2026-08-24 → 2026-09-12) · Crítica
 
-`bridge-api` quedó fuera de la red docker `proxy` tras el recreate del
-2026-08-24 02:00 UTC. `nginx-proxy-manager` dejó de resolver el upstream y
-**todo webhook de MeLi murió en el proxy durante 19 días**. Último webhook:
-01:44 UTC, 16 min antes del recreate. Amazon no se vio afectado (entra por
-polling). Impacto estimado: **~70-95 órdenes MeLi nunca llegaron a Odoo**
-(~3.8-5/día antes del corte).
+Los webhooks entran por un **Cloudflare Tunnel** (`cloudflared.service` en el
+host, config remota en el dashboard) que enruta
+`meli-webhooks.goncloud.cc` → `http://localhost:8099`. El compose publicaba el
+puerto **solo en la interfaz WireGuard** (`10.13.13.1:8099:8099`), así que tras
+el recreate del 2026-08-24 02:00 UTC cloudflared resolvió `localhost` a `[::1]`
+y se comió un `connection refused` en cada entrega:
 
-La unión a `proxy` estaba hecha a mano con `docker network connect`, que no
-sobrevive a un recreate. Ya está declarada en `docker-compose.yml`.
+```
+ERR Unable to reach the origin service ... dial tcp [::1]:8099: connection refused
+    originService=http://localhost:8099
+    dest=https://meli-webhooks.goncloud.cc/webhooks/meli/orders/***
+```
 
-- [ ] Reconectar en caliente: `docker network connect proxy bridge-api` + `nginx -s reload`
-- [ ] Desplegar `tools/meli_orders_backfill.py` a `/mnt/data/appdata/bridge/data/`
+**138 intentos rechazados por día.** MeLi nunca dejó de entregar — la
+suscripción sigue viva. Último webhook recibido: 01:44 UTC, 16 min antes del
+recreate. Amazon no se vio afectado (polling). Impacto: **~70-95 órdenes MeLi
+nunca llegaron a Odoo** (~4.7/día antes del corte).
+
+Ruta aparte, también rota y de consecuencias mucho menores: `bridge-api` quedó
+fuera de la red docker `proxy`, así que `mapper.goncloud.cc` (UI del SKU mapper)
+devolvía 502. Reconectado en caliente el 2026-09-12 y ya declarado en el compose.
+
+- [x] Reconectar la red `proxy` (arregla la UI del mapper, no los webhooks)
+- [ ] **Publicar el puerto en loopback** — el fix real. Copiar el compose nuevo al servidor y `docker compose up -d bridge-api`
+- [ ] Verificar en `journalctl -u cloudflared -f` que dejen de aparecer `connection refused`
+- [x] Desplegar `tools/meli_orders_backfill.py` a `/mnt/data/appdata/bridge/data/`
+- [ ] Validar el backfill contra una ventana de respuesta conocida (17-23 ago = 33 órdenes) antes de confiar en su conteo
 - [ ] Recuperar el rango: `--from 2026-08-24 --dry-run` y después sin `--dry-run`
 - [ ] Conciliar contra Odoo cuántas órdenes entraron y revisar `manual_review`
-- [ ] Aplicar el compose nuevo (`docker compose up -d`) para que el fix sea permanente
 
 ---
 

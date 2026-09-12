@@ -31,18 +31,28 @@ services:
       - BRIDGE_DB=/data/bridge.db
       - REDIS_URL=redis://bridge-redis:6379/0
     ports:
-      - "8099:8099"
+      # El ingress real de los webhooks es un Cloudflare Tunnel (servicio del
+      # host, config remota en el dashboard): enruta
+      # meli-webhooks.goncloud.cc -> http://localhost:8099. Si este puerto no
+      # esta publicado en loopback, cloudflared resuelve localhost a [::1], se
+      # come un "connection refused" y MeLi se queda sin entregar — 19 dias
+      # asi desde 2026-08-24, 138 intentos rechazados por dia. Los otros tres
+      # servicios del tunnel (8080/8081/8082) publican en 127.0.0.1 igual.
+      - "127.0.0.1:8099:8099"
+      # Acceso por WireGuard (UI de /mapper, diagnostico desde la LAN).
+      - "10.13.13.1:8099:8099"
     depends_on:
       - redis
     restart: unless-stopped
     networks:
       - goncloud-net
       - odoo_odoo_net
-      # `proxy` es la red de nginx-proxy-manager, que publica este servicio en
-      # internet. Sin ella nginx no resuelve el upstream "bridge-api" y TODO
-      # webhook de MercadoLibre muere en el proxy, en silencio (paso 19 dias
-      # seguidos desde 2026-08-24). Va aca y no con `docker network connect`
-      # porque la union manual se pierde en cada recreate del contenedor.
+      # `proxy` es la red de nginx-proxy-manager, que sirve mapper.goncloud.cc
+      # (UI del SKU mapper) hacia este servicio. Sin ella nginx no resuelve el
+      # upstream "bridge-api" y esa ruta devuelve 502. NO es por donde entran
+      # los webhooks — eso es el Cloudflare Tunnel, ver el bloque `ports`.
+      # Va aca y no con `docker network connect` porque la union manual se
+      # pierde en cada recreate del contenedor.
       - proxy
 
   bridge-worker:
