@@ -27,6 +27,7 @@ from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from auth_middleware import require_secret  # noqa: E402
+from health_checks import evaluar_frescura  # noqa: E402
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
@@ -996,6 +997,65 @@ def health():
                 checks["amazon_cache_warn"] = f"stale_{round(age_h)}h"
     except Exception as e:
         checks["amazon_cache_age"] = f"error: {e}"
+
+    # Frescura del inbound — hace cuanto que no entra NADA por cada canal.
+    #
+    # El apagon del 2026-08-24 duro 19 dias sin alarma porque los chequeos de
+    # abajo (D5.4) miran PROFUNDIDAD de colas, y la cola estaba en 0: no habia
+    # nada atascado, simplemente no llegaba nada. Un canal muerto y uno
+    # tranquilo se ven identicos si solo cuentas lo encolado.
+    #
+    # Umbrales medidos, no estimados. Huecos entre eventos jun -> 23-ago
+    # (1966 eventos MeLi en 83 dias, antes del apagon):
+    #   p50 0.0h · p90 2.3h · p95 5.6h · p99 16.9h · max 31.8h
+    #   error 24h -> 2 falsos positivos · 30h -> 1 · 36h -> 0
+    # Amazon (1058 eventos en 97 dias): 30h -> 0 falsos positivos.
+    #
+    # Se elige cero falsos positivos historicos a proposito. Una alarma
+    # injustificada al mes vuelve a entrenar a todos a ignorar el semaforo, que
+    # es como se perdieron estos 19 dias: el health ya estaba en rojo desde el
+    # 10-ago por el cache de Amazon y nadie lo miraba. Con 36h el apagon se
+    # detecta el dia 2 en vez del dia 19.
+    for clave, consulta, warn_env, err_env, warn_def, err_def in (
+        (
+            "meli_inbound",
+            # Solo `rawsha:%` = webhooks REALES. `tools/meli_orders_backfill.py`
+            # inserta filas `backfill:%`; contarlas dejaria el semaforo en verde
+            # con el ingress muerto apenas alguien corra un rescate a mano.
+            "SELECT MAX(received_at) FROM inbound_events WHERE dedupe_key LIKE 'rawsha:%'",
+            "MELI_INBOUND_WARN_HOURS",
+            "MELI_INBOUND_ERROR_HOURS",
+            "18",
+            "36",
+        ),
+        (
+            "amazon_inbound",
+            "SELECT MAX(processed_at) FROM amazon_processed_events",
+            "AMAZON_INBOUND_WARN_HOURS",
+            "AMAZON_INBOUND_ERROR_HOURS",
+            "18",
+            "30",
+        ),
+    ):
+        try:
+            with closing(db_conn()) as conn:
+                fila = conn.execute(consulta).fetchone()
+            estado, edad_h = evaluar_frescura(
+                fila[0] if fila else None,
+                warn_h=float(os.getenv(warn_env, warn_def)),
+                err_h=float(os.getenv(err_env, err_def)),
+            )
+            if edad_h is not None:
+                checks[f"{clave}_age_hours"] = round(edad_h, 1)
+            if estado == "error":
+                checks[f"{clave}_warn"] = f"silent_{round(edad_h)}h"
+                ok = False
+            elif estado == "warn":
+                checks[f"{clave}_warn"] = f"silent_{round(edad_h)}h"
+            elif estado == "empty":
+                checks[f"{clave}_warn"] = "empty"
+        except Exception as e:
+            checks[f"{clave}_age"] = f"error: {e}"
 
     # D5.4: alert conditions — queue depth and recent dead events
     try:
