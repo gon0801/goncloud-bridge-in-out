@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresca amazon_inventory_cache (mapper UI) via el endpoint del bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Mismo usuario que amazon-prices-sync: dueno de /mnt/data/appdata/bridge/.
+User=gon
+Group=gon
+Environment=BRIDGE_BASE=/mnt/data/appdata/bridge
+ExecStart=/bin/bash ${BRIDGE_BASE}/tools/amazon_inventory_refresh.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=amazon-inventory-refresh
