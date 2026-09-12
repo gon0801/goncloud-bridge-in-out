@@ -183,8 +183,7 @@ Suscripción confirmada viva vía API:
       Al cierre de la sesión aún no había entrado ninguno (volumen bajo de sábado).
       Si pasan >24h sin ninguno: revisar la suscripción en el DevCenter de MeLi.
       Comprobar con: `sqlite3 bridge.db "SELECT MAX(received_at) FROM inbound_events WHERE dedupe_key LIKE 'rawsha:%';"`
-- [ ] Sincronizar `meli_orders_backfill.py` del servidor con `main` (solo difieren
-      los docstrings; el del servidor explica mal la idempotencia)
+- [x] Sincronizar `meli_orders_backfill.py` del servidor con `main` (2026-09-12)
 
 ---
 
