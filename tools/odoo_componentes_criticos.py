@@ -204,8 +204,18 @@ def main() -> int:
             or []
         )
         bom_ids = list({u["bom_id"][0] for u in usos})
+        # `search_read` y no `read`: leer por ids explicitos NO aplica el filtro
+        # de archivados, y en esta base hay 1541 BoMs archivadas contra 1009
+        # activas (residuo de migraciones de componentes). Contarlas inflaba
+        # "SKUs bloqueados" — ARR-16-DOR-COR figuraba con 8 cuando no lo usa
+        # ninguna BoM viva.
         boms = (
-            od.kw("mrp.bom", "read", [bom_ids], {"fields": ["product_id"]})
+            od.kw(
+                "mrp.bom",
+                "search_read",
+                [[["id", "in", bom_ids], ["active", "=", True]]],
+                {"fields": ["product_id"], "limit": 3000},
+            )
             if bom_ids
             else []
         )
