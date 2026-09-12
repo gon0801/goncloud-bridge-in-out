@@ -26,9 +26,10 @@ Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el h
 | **8** | ~~Rebuild imagen Docker~~ — ya estaba hecho, tracker desactualizado | ✅ Cerrada 2026-09-12 | — |
 | **9** | Crons del host — 2 de 3 instalados; offsite espera remote de rclone | 🟡 Parcial | Media |
 | **10** | ~~Purgar 2 mappings MeLi muertos~~ — hecho; aparecieron 4 más | 🟡 Parcial | Baja |
-| **11** | Apagón de ingress MeLi — resuelto; falta ver el primer webhook real | 🟡 Verificando | Media |
+| **11** | ~~Apagón de ingress MeLi~~ — resuelto y verificado | ✅ Cerrada 2026-09-12 | — |
 | **12** | ~~Nada alertó en 19 días~~ — chequeo de frescura en `/v1/health` | ✅ Cerrada 2026-09-12 | — |
 | **13** | `MELI_REDIRECT_URI` apunta a un host que no existe → re-auth OAuth imposible | ⏳ Abierta | Media |
+| **16** | Cada orden MeLi se reprocesa ~6 veces (dedupe por `rawsha`) | ⏳ Abierta | Baja |
 | **14** | ~~Health en rojo por `amazon_inventory_cache` sin refresco~~ | ✅ Cerrada 2026-09-12 | — |
 | **15** | ~~113 `stock_jobs` encolados~~ — drenaban normal, hoy en 0 | ✅ Cerrada 2026-09-12 | — |
 
@@ -192,10 +193,12 @@ contra el catálogo completo de MeLi: **18/18** de las creadas durante la ventan
 Suscripción confirmada viva vía API:
 `notifications_callback_url = https://meli-webhooks.goncloud.cc/webhooks/meli/orders/***`
 
-- [ ] **Único pendiente:** confirmar la llegada del primer webhook real post-fix.
-      Al cierre de la sesión aún no había entrado ninguno (volumen bajo de sábado).
-      Si pasan >24h sin ninguno: revisar la suscripción en el DevCenter de MeLi.
-      Comprobar con: `sqlite3 bridge.db "SELECT MAX(received_at) FROM inbound_events WHERE dedupe_key LIKE 'rawsha:%';"`
+- [x] Ingress verificado end-to-end sin esperar tráfico: el `curl` a
+      `/v1/health` atravesó Cloudflare → tunnel → cloudflared → docker-proxy →
+      `bridge-api` y la app respondió (el 503 era su veredicto de salud, no un
+      error de ruteo). Suscripción confirmada vía `GET /applications/{app_id}`.
+      No tiene sentido esperar un webhook como prueba: el volumen real es de
+      **6-12 órdenes por semana**, así que pueden pasar días entre uno y otro.
 - [x] Sincronizar `meli_orders_backfill.py` del servidor con `main` (2026-09-12)
 
 ---
@@ -283,3 +286,34 @@ Residuo obsoleto del **2026-05-08**, dos órdenes que sí terminaron en Odoo:
 
 No hay nada perdido. Se puede purgar (`DEL ml_orders_dead`) para dejar de sumar
 ruido al health, pero es borrado en producción: decisión del operador.
+
+---
+
+## 16. Cada orden MeLi se reprocesa ~6 veces · Baja
+
+El webhook fija `dedupe_key = rawsha:{sha256}` en el job y el worker lo respeta,
+así que cada re-entrega de la MISMA orden genera una clave distinta y vuelve a
+pasar por todo el flujo. Medido sobre 60 días:
+
+```
+órdenes MeLi distintas .......... 156
+eventos success:paid ............ 976    (~6.3 por orden)
+```
+
+**No duplica nada en Odoo** — verificado, 0 órdenes con SO duplicada: los tools
+buscan la SO por `client_order_ref` antes de crear. El costo real no es de
+carga (12 órdenes/semana × 6 = trivial), es que **la tabla de auditoría y
+cualquier métrica derivada de ella mienten**: contar `success:paid` da ~6x las
+ventas reales. Eso ya causó un error de diagnóstico en la sesión del 2026-09-12.
+
+El arreglo obvio sería que el worker derive `ml:{order_id}` en vez de confiar
+en el `rawsha` del webhook. **Pero tiene un riesgo real:** una segunda
+notificación de la misma orden a veces trae datos que la primera no tenía — es
+exactamente el caso Flex MX documentado en CLAUDE.md PROBLEMA 7 (en `Pending`
+Amazon no manda `BuyerName`; llega en `Unshipped` y el segundo pase corrige el
+`client_order_ref`). Deduplicar por orden+acción se saltaría esa corrección.
+
+- [ ] Verificar si MeLi tiene el mismo patrón de enriquecimiento tardío
+- [ ] Si no lo tiene: deduplicar por `ml:{order_id}:{action}`
+- [ ] Si lo tiene: dejar el reprocesamiento y contar ventas por `inbound_sales_orders`
+      o por Odoo, nunca por `processed_inbound_events`
