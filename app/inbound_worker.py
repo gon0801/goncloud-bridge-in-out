@@ -771,6 +771,30 @@ _MELI_REAUTH_SENTINEL = Config.TOKEN_FILE.replace(
 )
 
 # D7.2: circuit breaker state — opens after 5 consecutive ml_get() failures
+# Topics a los que la app esta suscrita en MeLi y que este worker NO procesa.
+# No son ordenes: no hay nada que hacer con ellos y no son una falla.
+#
+# Medido sobre inbound_events en produccion (2026-09-12):
+#   orders_v2 3474 (procesado) · payments 1671 · messages 267 · questions 105
+#
+# Antes caian todos en `dead` con reason=bad_resource — 359 en 30 dias segun la
+# auditoria del 2026-08-09 — y una orden realmente caida quedaba enterrada
+# entre cientos de avisos de pago. Un topic que NO este en esta lista sigue
+# yendo a `dead` a proposito: un topic nuevo de MeLi o un `resource` con
+# formato cambiado es justo lo que hay que ver.
+TOPICS_SIN_MANEJO = frozenset({"payments", "messages", "questions"})
+
+
+def clasificar_resource_no_orden(topic: str) -> tuple[str, str]:
+    """Como registrar un evento cuyo `resource` no es `/orders/{id}`.
+
+    Devuelve `(result, reason)` para `mark_completed()`.
+    """
+    if (topic or "").strip().lower() in TOPICS_SIN_MANEJO:
+        return "skipped", "topic_not_handled"
+    return "dead", "bad_resource"
+
+
 _ML_CIRCUIT: dict = {"failures": 0, "open_until": 0.0}
 _ML_CIRCUIT_THRESHOLD = 5
 _ML_CIRCUIT_COOLDOWN_S = 120  # 2 min cooldown before half-open probe
@@ -1473,10 +1497,12 @@ def main():
                 m = re.match(r"^/orders/([A-Z0-9\-]+)$", resource)
 
                 if not m:
+                    topic = job.get("topic", "")
+                    resultado, razon = clasificar_resource_no_orden(topic)
                     mark_completed(
                         dedupe_key,
-                        "dead",
-                        {"reason": "bad_resource", "resource": resource},
+                        resultado,
+                        {"reason": razon, "resource": resource, "topic": topic},
                     )
                     redis_client.lrem(Config.PROCESSING, 0, _proc_entry)
                     continue
