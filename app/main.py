@@ -888,11 +888,16 @@ async def meli_orders_webhook(
 
     # Enqueue Redis job
     try:
+        # Sin `dedupe_key` a proposito: que el worker derive `ml:{order_id}`
+        # del resource. Fijarla aqui la ataba al hash del cuerpo, asi que cada
+        # re-entrega de la misma orden generaba clave nueva -> 7.4 pasadas por
+        # orden y locks que no serializaban. `rawsha` viaja solo como rastro;
+        # la dedupe de `inbound_events` (arriba) sigue usandolo, que es otra
+        # cosa: ahi evita encolar dos veces el MISMO cuerpo.
         job = {
             "topic": topic,
             "resource": resource,
             "received_at": received_at,
-            "dedupe_key": dedupe_key,
             "rawsha": sha,
         }
         r.rpush(
