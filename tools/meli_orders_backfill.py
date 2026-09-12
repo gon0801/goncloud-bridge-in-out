@@ -116,6 +116,31 @@ def build_job(order_id: str, received_at: str) -> dict:
     }
 
 
+def build_search_params(
+    seller_id: str, date_from: str, date_to: str, offset: int = 0
+) -> dict:
+    """Parametros de /orders/search.
+
+    Filtra por `date_last_updated`, NO por `date_created`. Un webhook se dispara
+    cuando la orden CAMBIA DE ESTADO, no cuando se crea: una orden creada el
+    10-ago y pagada el 18-ago notifica el 18. Filtrando por fecha de creacion
+    esa orden queda fuera del rescate.
+
+    Medido contra la ventana de control 2026-08-17..23, donde los webhooks
+    dejaron registro de 33 ordenes distintas en `inbound_events`:
+      * `date_created`      -> 12 ordenes (36%, se pierden 21)
+      * `date_last_updated` -> cobertura completa
+    """
+    return {
+        "seller": seller_id,
+        "order.date_last_updated.from": date_from,
+        "order.date_last_updated.to": date_to,
+        "sort": "date_asc",
+        "offset": offset,
+        "limit": PAGE_SIZE,
+    }
+
+
 def iter_orders(token: str, seller_id: str, date_from: str, date_to: str):
     """Pagina /orders/search. Devuelve los order id como string."""
     offset = 0
@@ -125,14 +150,7 @@ def iter_orders(token: str, seller_id: str, date_from: str, date_to: str):
         resp = requests.get(
             f"{API}/orders/search",
             headers={"Authorization": f"Bearer {token}"},
-            params={
-                "seller": seller_id,
-                "order.date_created.from": date_from,
-                "order.date_created.to": date_to,
-                "sort": "date_asc",
-                "offset": offset,
-                "limit": PAGE_SIZE,
-            },
+            params=build_search_params(seller_id, date_from, date_to, offset),
             timeout=30,
         )
 

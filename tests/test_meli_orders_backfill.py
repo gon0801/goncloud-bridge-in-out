@@ -106,3 +106,36 @@ def test_una_fecha_invalida_aborta_en_vez_de_barrer_todo(backfill):
     """Sin esto, un typo manda un rango vacio o gigante a /orders/search."""
     with pytest.raises(SystemExit):
         backfill.parse_day("24-08-2026")
+
+
+def test_se_filtra_por_ultima_actualizacion_no_por_creacion(backfill):
+    """Bug medido: filtrar por `date_created` recupera solo el 36% de las ordenes.
+
+    Un webhook se dispara cuando la orden cambia de estado, no cuando se crea.
+    Contra la ventana de control 2026-08-17..23 (33 ordenes conocidas en
+    `inbound_events`), `date_created` devolvio 12 y dejo 21 fuera del rescate
+    — en silencio, con el resumen diciendo "LISTO, 0 rechazadas".
+    """
+    params = backfill.build_search_params("135734858", "DESDE", "HASTA")
+
+    assert "order.date_last_updated.from" in params, (
+        "el rescate debe filtrar por fecha de ULTIMA ACTUALIZACION: es lo que "
+        "sigue la semantica del webhook"
+    )
+    assert params["order.date_last_updated.from"] == "DESDE"
+    assert params["order.date_last_updated.to"] == "HASTA"
+
+    filtros_por_creacion = [k for k in params if "date_created" in k]
+    assert not filtros_por_creacion, (
+        f"{filtros_por_creacion}: filtrar por fecha de creacion pierde toda "
+        f"orden creada antes de la ventana y actualizada dentro de ella"
+    )
+
+
+def test_la_paginacion_pide_el_maximo_que_permite_meli(backfill):
+    """Con un `limit` chico, un rescate largo hace 10x las llamadas necesarias."""
+    params = backfill.build_search_params("135734858", "DESDE", "HASTA", offset=100)
+
+    assert params["limit"] == backfill.PAGE_SIZE
+    assert params["offset"] == 100
+    assert params["seller"] == "135734858"
