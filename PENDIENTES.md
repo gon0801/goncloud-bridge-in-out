@@ -28,7 +28,11 @@ de los 4 mappings muertos de 3 SKUs · `amazon_fbm_paid_one_shot.py` promovido
 desde el repo al servidor (tenía un `except:` pelado) · las 2 diferencias
 reales de drift: la guarda del `die()` en `inbound_full_so_refund_and_cancel.py`
 y los dos `except:` pelados de `sync_meli_listings.py` · `check_tools_data_drift`
-reescrito para comparar por AST y mostrar qué cambia.
+reescrito para comparar por AST y mostrar qué cambia · S02172 y S02173
+facturadas (`INV/2026/01851` y `01852`, posteadas y pagadas a 2,274.21 c/u) ·
+los 2 SKUs de Amazon que las habían tumbado ya mapeados (`ST-MV02-LRFL` →
+`NH-CAR-AZU-20C-PLA`, `VO-0U7E-EWSL` → `NH-CAR-AZU-MAX-PLA`) · detector diario
+extendido para cazar "entregado y nunca facturado", que antes no veía nadie.
 
 **Descartados por el operador:** confirmar las OCs en borrador · el conteo físico
 de los 8 componentes (la mercancía está en tránsito) · S01460, demasiado vieja ·
