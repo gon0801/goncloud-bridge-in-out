@@ -245,6 +245,20 @@ Si el orden se invierte, los fixes deploiados a /data/ se ignoran.
 Esto causó el bug recurrente de client_order_ref (resuelto 2026-02-23).
 ```
 
+**Pero `/data/` no es el único lado vivo.** Los dos directorios corren, con
+llamadores distintos — antes de promover un archivo, ver quién lo invoca:
+
+| Llamador | Qué ejecuta |
+|---|---|
+| Workers (`run_tool()`) | `/data/` primero, `tools/` de fallback |
+| Timers de systemd del host | `tools/` directo (`ExecStart=...${BRIDGE_BASE}/tools/...`) |
+| `app/main.py` | algunos con ruta fija `/data/` (ej. `sync_meli_listings.py`) |
+
+Copiar "al lado bueno" sin mirar el llamador puede deployar un fix donde nadie
+lo lee, o pisar el que sí corre. Para ver el estado:
+`bash tools/check_tools_data_drift.sh` — compara por AST y muestra qué cambia,
+separando formato de comportamiento.
+
 ### Flujo al agregar nuevo SKU mapping
 
 ```

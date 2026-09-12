@@ -17,7 +17,7 @@ el host `goncloud` el 2026-09-12. Lo cerrado se eliminó del archivo (ver
 
 | # | Tarea | Estado | Prioridad |
 |---|-------|--------|-----------|
-| **1** | Drift `tools/` vs `data/`: 2 diferencias reales de 19 | ⏳ Abierta | Baja |
+| **1** | El checkout del servidor está parado en el 31-ago | ⏳ Abierta | Baja |
 | **2** | Almacenes por canal — **preparación, sin urgencia** | 🟡 En pausa | Baja |
 
 **Cerrados el 2026-09-12, después de la reescritura de este archivo:** ajuste de
@@ -25,7 +25,10 @@ el host `goncloud` el 2026-09-12. Lo cerrado se eliminó del archivo (ver
 offsite activado con `onedrive` y acotado con `sync` · búsqueda de payloads en
 `recover_manual_review.py` · duplicado MX/US en `amazon_fba_inventory` · purga
 de los 4 mappings muertos de 3 SKUs · `amazon_fbm_paid_one_shot.py` promovido
-desde el repo al servidor (tenía un `except:` pelado).
+desde el repo al servidor (tenía un `except:` pelado) · las 2 diferencias
+reales de drift: la guarda del `die()` en `inbound_full_so_refund_and_cancel.py`
+y los dos `except:` pelados de `sync_meli_listings.py` · `check_tools_data_drift`
+reescrito para comparar por AST y mostrar qué cambia.
 
 **Descartados por el operador:** confirmar las OCs en borrador · el conteo físico
 de los 8 componentes (la mercancía está en tránsito) · S01460, demasiado vieja ·
@@ -33,42 +36,28 @@ la orden de compra de `REP-GD`, que el operador maneja por su cuenta.
 
 ---
 
-## 1. Drift entre `tools/` y `data/` en el servidor · Baja
+## 1. El checkout del servidor está parado en el 31-ago · Baja
 
-El checker reporta 19 archivos distintos, pero comparados por **AST** (ignorando
-el formato) solo **2 tienen diferencia real de comportamiento**. Los otros 17 son
-el `ruff format` masivo del 2026-08-07: f-strings sin placeholder, imports en una
-línea vs varias, espacios dentro de un literal SQL.
+Las 2 diferencias reales de drift **ya están cerradas** (ver más abajo). Al
+arreglarlas salió la causa de fondo.
 
-**Primero, un dato que no estaba escrito en ningún lado:** los dos directorios
-están vivos, con llamadores distintos.
+`/mnt/data/appdata/bridge` es un checkout de git de `main`, pero su HEAD es
+`8a701b3` del **2026-08-31** — semanas atrás — y encima tiene ediciones a mano
+sin commitear (`app/main.py`, `app/inbound_worker.py`, `docker-compose.yml`,
+varios de `tools/`).
 
-| Llamador | Qué corre |
-|---|---|
-| Los workers (`run_tool`) | `/data/` primero, `tools/` de fallback |
-| Los timers de systemd del host | `tools/` directo (`ExecStart=...${BRIDGE_BASE}/tools/...`) |
+Por eso `tools/` del servidor no tiene los fixes de esta sesión: las guardas de
+precio $0 y la búsqueda de payloads viven en `/data/` y en el repo, pero no en
+el `tools/` del servidor. Hoy no rompe nada — cada archivo tiene su versión
+buena en el lado que su llamador lee — pero el fallback está viejo.
 
-Por eso "promover un lado" no es una sola decisión: depende de quién llama a cada
-archivo. La regla sellada en CLAUDE.md (`/data/` primero) es la del worker, no la
-del host.
+**No se toca a la ligera.** Entre las ediciones locales está el
+`docker-compose.yml`, que es exactamente el archivo cuyo desajuste dejó el
+inbound muerto 19 días. Un `git pull` o un `checkout` ahí necesita revisar
+primero si esas ediciones ya están en el repo o si se perderían.
 
-### Las 2 reales
-
-- [ ] **`inbound_full_so_refund_and_cancel.py`** (corre por worker desde `/data/`).
-      Le falta la guarda del `die()`: llama `write_audit(audit)` sin verificar que
-      `audit` exista. `audit` se arma después de autenticar contra Odoo, así que
-      si muere antes — falta una env var, falla el auth — tira `NameError` y tapa
-      el error real. **Latente:** hay 0 órdenes MeLi FULL en 1209 del histórico,
-      este camino nunca se ejecutó.
-- [ ] **`sync_meli_listings.py`** (`/data/`). Dos `except:` pelados, la misma
-      clase de bug que el de `amazon_fbm_paid_one_shot.py`: también atrapan
-      `KeyboardInterrupt` y `SystemExit`.
-
-### Lo que NO es un problema
-
-`amazon_prices_sync.py`: el fix del inventario duplicado MX/US **sí está vivo**.
-El timer corre `tools/`, que coincide con el repo. La copia de `/data/` es un
-sobrante viejo que nadie invoca.
+- [ ] Comparar cada edición local del servidor contra el repo
+- [ ] Poner el checkout al día sin pisar lo que solo existe en el servidor
 
 ---
 
