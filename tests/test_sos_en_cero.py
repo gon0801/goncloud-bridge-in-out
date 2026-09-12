@@ -104,3 +104,32 @@ def test_el_reproceso_descarta_el_payload_sin_precio():
     assert i_compuerta < i_delete, (
         "se borra la auditoria antes de saber si el reproceso va a servir"
     )
+
+
+def test_extrae_el_order_id_en_los_tres_formatos(mod):
+    """El formato de `client_order_ref` cambio el 2026-02-23 y conviven ambos.
+
+    Buscar por posicion (`split("|")[0]`) funcionaba con el formato nuevo y
+    devolvia la cadena entera con el viejo, que luego el filtro descartaba.
+    Nueve SOs de febrero por 9,174 MXN quedaban fuera del reproceso por eso —
+    el detector las encontraba y no podia arreglarlas.
+    """
+    assert mod.extraer_order_id_amazon("701-1234567-1234567 | Juan Garcia") == (
+        "701-1234567-1234567"
+    )
+    assert (
+        mod.extraer_order_id_amazon("AMZFBA:A1AM78C64UM0Y8:701-2189652-3183433")
+        == "701-2189652-3183433"
+    )
+    assert mod.extraer_order_id_amazon("AMZFBM:ATVPDKIKX0DER:114-6533163-7350645") == (
+        "114-6533163-7350645"
+    )
+
+
+def test_no_confunde_una_orden_de_mercadolibre_con_una_de_amazon(mod):
+    """Los ids de MeLi son 16 digitos seguidos; no deben entrar al reproceso
+    de Amazon, que consultaria la SP-API por una orden que no existe."""
+    assert mod.extraer_order_id_amazon("2000018393906916 | COMPRADOR123") is None
+    assert mod.extraer_order_id_amazon("MLFBM:MLM:2000018393906916") is None
+    assert mod.extraer_order_id_amazon("") is None
+    assert mod.extraer_order_id_amazon(None) is None

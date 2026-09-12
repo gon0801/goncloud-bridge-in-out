@@ -46,6 +46,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import sys
 import urllib.request
@@ -55,6 +56,28 @@ DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 POLL_PATH = os.getenv("AMAZON_POLL", "/data/amazon_orders_poll.py")
 UMBRAL_DIAS = 7
 CLAVE_ESTADO = "sos_en_cero_ultimo_chequeo"
+
+
+def extraer_order_id_amazon(ref: str):
+    """Saca el AmazonOrderId de un `client_order_ref`, sea cual sea su formato.
+
+    Conviven tres formas en la base, porque el formato cambio el 2026-02-23:
+
+        "701-1234567-1234567 | Juan Garcia"          formato actual
+        "AMZFBA:A1AM78C64UM0Y8:701-1234567-1234567"  formato crudo, anterior
+        "2000018393906916 | comprador"               MercadoLibre, no aplica
+
+    Buscar por posicion fallaba con el formato viejo: `split("|")[0]` devolvia
+    la cadena entera con el prefijo, y el filtro la descartaba. Nueve SOs de
+    febrero por 9,174 MXN quedaban fuera del reproceso justo por eso.
+
+    El id de Amazon tiene una forma fija (3-7-7 digitos), asi que se busca por
+    patron y no por posicion.
+    """
+    if not ref:
+        return None
+    m = re.search(r"\b\d{3}-\d{7}-\d{7}\b", ref)
+    return m.group(0) if m else None
 
 
 def es_sospechosa(
@@ -268,8 +291,7 @@ def main() -> int:
         print("%-10s %-9s %s" % (h["so"], h["dias"], h["ref"][:40]))
 
     if args.reprocesar:
-        oids = [h["ref"].split("|")[0].strip() for h in hallazgos]
-        oids = [o for o in oids if o and o[:2] in ("70", "11")]
+        oids = [x for x in (extraer_order_id_amazon(h["ref"]) for h in hallazgos) if x]
         print(f"\nReprocesando {len(oids)} ordenes de Amazon:")
         n = reprocesar(oids)
         print(f"\n{n} encoladas. El worker las corrige en segundos.")
