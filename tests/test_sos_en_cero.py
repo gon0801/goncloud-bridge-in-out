@@ -133,3 +133,27 @@ def test_no_confunde_una_orden_de_mercadolibre_con_una_de_amazon(mod):
     assert mod.extraer_order_id_amazon("MLFBM:MLM:2000018393906916") is None
     assert mod.extraer_order_id_amazon("") is None
     assert mod.extraer_order_id_amazon(None) is None
+
+
+def test_las_aceptadas_dejan_de_reportarse(mod):
+    """El operador decidio dejar las nueve de febrero como estan.
+
+    Si siguen saliendo en cada corrida, el dia que aparezca una NUEVA va a estar
+    enterrada entre diez que ya nadie lee. Es el mismo patron que costo 19 dias
+    de ordenes en agosto: rojo permanente por algo conocido, y la falla real
+    invisible detras.
+    """
+    hallazgos = [
+        {"so": "S00476", "ref": "AMZFBA:mkt:701-6546898-4975422", "dias": 205},
+        {"so": "S00487", "ref": "AMZFBA:mkt:701-2189652-3183433", "dias": 205},
+        {"so": "S02300", "ref": "701-9999999-9999999 | Nuevo", "dias": 9},
+    ]
+    quedan = mod.filtrar_aceptadas(hallazgos, {"S00476", "S00487"})
+    assert [h["so"] for h in quedan] == ["S02300"], (
+        "una venta nueva tiene que seguir reportandose aunque haya aceptadas"
+    )
+
+
+def test_sin_aceptadas_no_se_filtra_nada(mod):
+    hallazgos = [{"so": "S00476", "dias": 205}, {"so": "S02300", "dias": 9}]
+    assert mod.filtrar_aceptadas(hallazgos, set()) == hallazgos

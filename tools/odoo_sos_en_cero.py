@@ -58,6 +58,24 @@ UMBRAL_DIAS = 7
 CLAVE_ESTADO = "sos_en_cero_ultimo_chequeo"
 
 
+CLAVE_ACEPTADAS = "sos_en_cero_aceptadas"
+
+
+def filtrar_aceptadas(hallazgos: list, aceptadas: set) -> list:
+    """Saca de la lista las ventas que el operador ya decidio dejar asi.
+
+    Sin esto el reporte deja de servir. Las nueve facturas de febrero de 2026 no
+    se van a corregir — son `posted` y `paid`, se arreglan con nota de credito y
+    el operador decidio dejarlas. Si salen en cada corrida, el dia que aparezca
+    una NUEVA va a estar enterrada entre diez que ya nadie lee.
+
+    Es el mismo patron que costo 19 dias de ordenes perdidas en agosto: un
+    semaforo en rojo permanente por algo conocido, y una falla real invisible
+    detras.
+    """
+    return [h for h in hallazgos if h.get("so") not in aceptadas]
+
+
 def extraer_order_id_amazon(ref: str):
     """Saca el AmazonOrderId de un `client_order_ref`, sea cual sea su formato.
 
@@ -218,6 +236,11 @@ def main() -> int:
     ap.add_argument(
         "--reprocesar", action="store_true", help="re-encolar las encontradas"
     )
+    ap.add_argument(
+        "--aceptar",
+        action="store_true",
+        help="marcar las encontradas como conocidas: dejan de reportarse",
+    )
     args = ap.parse_args()
 
     od = Odoo()
@@ -267,6 +290,16 @@ def main() -> int:
                 }
             )
 
+    aceptadas = set(json.loads(get_setting(CLAVE_ACEPTADAS) or "[]"))
+    hallazgos = filtrar_aceptadas(hallazgos, aceptadas)
+
+    if args.aceptar:
+        nuevas = sorted(aceptadas | {h["so"] for h in hallazgos})
+        set_setting(CLAVE_ACEPTADAS, json.dumps(nuevas))
+        print(f"Aceptadas {len(hallazgos)} ventas. Ya no se reportaran.")
+        print(f"Total aceptadas: {len(nuevas)}")
+        return 0
+
     set_setting(
         CLAVE_ESTADO,
         json.dumps(
@@ -279,7 +312,8 @@ def main() -> int:
 
     if not hallazgos:
         print(
-            f"Sin ventas en $0 con mas de {args.dias} dias. ({len(sos)} en cero, todas recientes)"
+            f"Sin ventas en $0 con mas de {args.dias} dias sin aceptar. "
+            f"({len(sos)} en cero; {len(aceptadas)} aceptadas previamente)"
         )
         return 0
 

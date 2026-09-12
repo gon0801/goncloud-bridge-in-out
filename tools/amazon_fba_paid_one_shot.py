@@ -478,6 +478,32 @@ for pick in pickings:
         print(f"[FBA_PAID] WARN picking cancel failed: {pick['name']} err={e}")
 
 # =========================
+# Si todos los precios son $0 → SO listo, factura DIFERIDA hasta que llegue precio.
+#
+# Amazon devuelve OrderTotal=0 mientras la orden esta en `Pending` y lo llena
+# despues sin cambiar de estado. Sin esta guarda se emite una factura en cero
+# que luego no se puede corregir: el 18-19 de febrero de 2026 quedaron NUEVE
+# facturas `posted` y `paid` en $0.00 por 9,194 MXN reales, y siguen asi porque
+# una factura publicada y pagada no se edita, se nota-de-credita.
+#
+# El tool de FBM ya tenia esta guarda; este no. Se agrega para cerrar el mismo
+# agujero en el camino de FBA.
+# =========================
+current_line_prices = exec_kw(
+    uid,
+    "sale.order.line",
+    "search_read",
+    [[["order_id", "=", so_id]]],
+    {"fields": ["price_unit"]},
+)
+if current_line_prices and all(
+    linea["price_unit"] == 0 for linea in current_line_prices
+):
+    print("[FBA_PAID] SO listo, precios $0 — factura diferida hasta que llegue precio")
+    print(f"[FBA_PAID] OK_DONE ref={CLIENT_ORDER_REF}")
+    sys.exit(0)
+
+# =========================
 # Create Invoice
 # Usamos invoice manual con qty ordenada (NO el wizard "delivered")
 # porque los pickings están cancelados y delivered_qty = 0.
