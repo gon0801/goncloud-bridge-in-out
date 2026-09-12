@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 from auth_middleware import require_secret  # noqa: E402
 from health_checks import evaluar_frescura  # noqa: E402
+from meli_config import resolver_redirect_uri  # noqa: E402
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 REDIS_URL = os.getenv("REDIS_URL", "redis://bridge-redis:6379/0")
@@ -153,7 +154,24 @@ async def _security_headers_middleware(request: Request, call_next):
 
 MELI_CLIENT_ID = "2932799975062215"
 MELI_CLIENT_SECRET = "GAhxyksH714JoOXz0JGw9sffs7PTXO3J"
-MELI_REDIRECT_URI = "https://meli.goncloud.cc/oauth/callback"
+
+
+def meli_redirect_uri() -> str:
+    """URI de callback OAuth. Se resuelve en cada llamada, no al importar.
+
+    Antes era un literal con el host del servidor viejo. Sobrevivio a la
+    migracion del 2026-05-02 sin que nadie lo notara porque el refresh diario
+    usa el `refresh_token` y no toca el redirect — pero una re-auth desde cero
+    habria fallado. Ver app/meli_config.py para el detalle.
+
+    Se lee en cada llamada para poder corregirlo desde `bridge_settings` sin
+    reiniciar (leccion de CLAUDE.md PROBLEMA 10).
+    """
+    return resolver_redirect_uri(
+        desde_settings=_get_setting("meli_redirect_uri", ""),
+        desde_env=os.getenv("MELI_REDIRECT_URI"),
+    )
+
 
 TOKEN_FILE = "/data/.meli_tokens.json"
 
@@ -434,7 +452,7 @@ def meli_oauth_start():
     params = {
         "response_type": "code",
         "client_id": MELI_CLIENT_ID,
-        "redirect_uri": MELI_REDIRECT_URI,
+        "redirect_uri": meli_redirect_uri(),
         # IMPORTANTE: pide refresh token (offline access)
         "scope": "offline_access",
         "state": state,
@@ -489,7 +507,7 @@ def meli_oauth_callback(request: Request):
         "client_id": MELI_CLIENT_ID,
         "client_secret": MELI_CLIENT_SECRET,
         "code": code,
-        "redirect_uri": MELI_REDIRECT_URI,
+        "redirect_uri": meli_redirect_uri(),
     }
     if code_verifier:
         token_payload["code_verifier"] = code_verifier
