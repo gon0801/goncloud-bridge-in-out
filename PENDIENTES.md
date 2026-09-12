@@ -4,8 +4,8 @@
 > Al cerrar una tarea: actualizar checkbox + contador + commit.
 > **No** convertir este archivo en diario — el histórico vive en `git log`.
 
-**Última verificación contra producción:** 2026-08-09
-**Abiertos:** 10 · **Bloqueantes:** 1
+**Última verificación contra producción:** 2026-09-12
+**Abiertos:** 13 · **Bloqueantes:** 1
 
 Todo lo de abajo fue verificado contra Odoo, `bridge.db` y el host `goncloud` el 2026-08-09.
 Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el histórico).
@@ -26,6 +26,9 @@ Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el h
 | **8** | Rebuild imagen Docker — sigue en `fastapi 0.110.0` | ⏳ Abierta | Media |
 | **9** | Crons del host: stats / backup offsite / restore test + remote rclone | ⏳ Abierta | Media |
 | **10** | Purgar 2 mappings MeLi muertos de `sku_mapping` | ⏳ Abierta | Baja |
+| **11** | Cerrar el apagón de ingress MeLi: reconectar red + recuperar ~19 días | 🔴 En curso | **Crítica** |
+| **12** | Nada alertó durante 19 días de inbound MeLi caído | ⏳ Abierta | **Alta** |
+| **13** | `MELI_REDIRECT_URI` apunta a un host que no existe → re-auth OAuth imposible | ⏳ Abierta | Media |
 
 ---
 
@@ -136,3 +139,70 @@ del bridge; sólo queda purgar las filas para que dejen de aparecer como huérfa
 
 - [ ] Confirmar en el panel de MeLi que ambos están inactivos
 - [ ] `DELETE FROM sku_mapping WHERE remote_item_id IN ('MLM2787930515','MLM2787902225');`
+
+---
+
+## 11. Apagón de ingress MeLi (2026-08-24 → 2026-09-12) · Crítica
+
+Los webhooks entran por un **Cloudflare Tunnel** (`cloudflared.service` en el
+host, config remota en el dashboard) que enruta
+`meli-webhooks.goncloud.cc` → `http://localhost:8099`. El compose publicaba el
+puerto **solo en la interfaz WireGuard** (`10.13.13.1:8099:8099`), así que tras
+el recreate del 2026-08-24 02:00 UTC cloudflared resolvió `localhost` a `[::1]`
+y se comió un `connection refused` en cada entrega:
+
+```
+ERR Unable to reach the origin service ... dial tcp [::1]:8099: connection refused
+    originService=http://localhost:8099
+    dest=https://meli-webhooks.goncloud.cc/webhooks/meli/orders/***
+```
+
+**138 intentos rechazados por día.** MeLi nunca dejó de entregar — la
+suscripción sigue viva. Último webhook recibido: 01:44 UTC, 16 min antes del
+recreate. Amazon no se vio afectado (polling). Impacto verificado contra el catálogo completo de MeLi: **18 órdenes creadas
+durante el apagón nunca llegaron a Odoo** (0 huérfanas fuera del rango de rescate).
+Otras 39 órdenes previas cambiaron de estado durante la ventana y también se
+reencolan: entre ellas puede haber cancelaciones que nunca se aplicaron.
+
+Ruta aparte, también rota y de consecuencias mucho menores: `bridge-api` quedó
+fuera de la red docker `proxy`, así que `mapper.goncloud.cc` (UI del SKU mapper)
+devolvía 502. Reconectado en caliente el 2026-09-12 y ya declarado en el compose.
+
+- [x] Reconectar la red `proxy` (arregla la UI del mapper, no los webhooks)
+- [ ] **Publicar el puerto en loopback** — el fix real. Copiar el compose nuevo al servidor y `docker compose up -d bridge-api`
+- [ ] Verificar en `journalctl -u cloudflared -f` que dejen de aparecer `connection refused`
+- [x] Desplegar `tools/meli_orders_backfill.py` a `/mnt/data/appdata/bridge/data/`
+- [x] Validar el backfill: filtraba por `date_created` y recuperaba 13/33 en la ventana de control; corregido a `date_last_updated` (33/33, y 18/18 sobre lo creado en el apagón)
+- [ ] Recuperar el rango: `--from 2026-08-24 --dry-run` y después sin `--dry-run`
+- [ ] Conciliar contra Odoo cuántas órdenes entraron y revisar `manual_review`
+
+---
+
+## 12. Nada alertó durante 19 días · Alta
+
+El health endpoint (D5.4) vigila profundidad de *dead queues*, pero
+`ml_orders_jobs` estaba en **0**: no había nada atascado, simplemente no
+llegaba nada. Un inbound en silencio total no dispara ninguna alarma hoy.
+
+- [ ] Chequeo de *staleness*: si no entra un evento MeLi en N horas → `ok: false`
+- [ ] Que ese chequeo llegue a algún lado (uptime-kuma ya corre en el host)
+- [ ] Test que cubra el caso (regla del quality-kit)
+
+---
+
+## 13. `MELI_REDIRECT_URI` apunta a un host inexistente · Media
+
+[`app/main.py:155`](app/main.py) tiene hardcodeado
+`https://meli.goncloud.cc/oauth/callback`. Ese host **no existe**: no tiene
+proxy host ni certificado en `nginx-proxy-manager` (revisada la tabla completa,
+incluidos los borrados). Es del servidor viejo. El refresh diario funciona
+porque usa el `refresh_token` y no necesita redirect — pero **una re-auth desde
+cero fallaría**, justo cuando más urge.
+
+Ojo: cambiar el valor en el código sin cambiarlo también en el panel de MeLi
+rompe OAuth. Las dos puntas tienen que moverse juntas.
+
+- [ ] Decidir el host definitivo (`mapper.goncloud.cc` es el que sí existe)
+- [ ] Actualizar el redirect URI registrado en el DevCenter de MeLi
+- [ ] Actualizar `app/main.py:155`
+- [ ] Limpiar `meli.goncloud.cc` de `MASTER_RUNBOOK.md`, `docs/RUNBOOK.md` y `SETUP_WIZARD_CANONICAL_v1.md` (15 menciones)

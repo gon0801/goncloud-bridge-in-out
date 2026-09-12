@@ -50,7 +50,12 @@ MercadoLibre y Amazon con Odoo 17 ERP.
 
 - **Inbound:** Órdenes de MeLi/Amazon → crea Sale Orders + facturas pagadas en Odoo
 - **Outbound:** Cambios de stock en Odoo → actualiza listings en MeLi/Amazon
-- **Servidor:** VPS Hetzner — alias SSH `gonserver` o `goncloud` (user `root`, IP pública `65.109.4.81`, Tailscale `100.127.167.103`). Migrado del servidor LAN viejo (192.168.0.200, user `gon`) el 2026-05-03. · **URL pública:** `https://meli.goncloud.cc`
+- **Servidor:** VPS Hetzner — alias SSH `gonserver` o `goncloud` (user `root`, IP pública `65.109.4.81`, Tailscale `100.127.167.103`). Migrado del servidor LAN viejo (192.168.0.200, user `gon`) el 2026-05-03.
+- **Ingress — dos caminos distintos hacia `bridge-api`, no confundirlos:**
+  1. **Webhooks** (`meli-webhooks.goncloud.cc`) → **Cloudflare Tunnel**, servicio del host `cloudflared.service`, config remota en el dashboard de Cloudflare (no hay `config.yml` en disco). Enruta a `http://localhost:8099`, así que el puerto **debe** publicarse en `127.0.0.1` (ver `ports` en `docker-compose.yml`). Ver reglas vivas: `journalctl -u cloudflared | grep originService`.
+  2. **UI del mapper** (`mapper.goncloud.cc`) → nginx-proxy-manager, que requiere `bridge-api` en la red docker `proxy`.
+  `meli.goncloud.cc` (lo que decía este archivo) es del servidor viejo y **no existe**.
+- Un binding de puerto o una red que se pongan a mano se pierden en el siguiente recreate y **el inbound muere en silencio** — 19 días así desde 2026-08-24. Todo va declarado en el compose.
 - **DB:** SQLite en `/mnt/data/appdata/bridge/data/bridge.db`
 - **Repo:** `https://github.com/gon0801/goncloud-bridge-in-out.git`
 

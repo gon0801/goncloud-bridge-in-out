@@ -12,3 +12,9 @@ httpx
 pydantic
 redis
 requests
+# No lo importa el bridge en runtime: lo usa tests/test_docker_compose_topologia.py
+# para parsear docker-compose.yml de verdad (no por grep) y verificar que
+# bridge-api declare la red del proxy. Va aca y no en un requirements-dev.txt
+# porque quality.yml lo genera el quality-kit y se regenera; este archivo es el
+# unico que CI instala siempre.
+pyyaml
