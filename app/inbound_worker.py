@@ -785,6 +785,34 @@ _MELI_REAUTH_SENTINEL = Config.TOKEN_FILE.replace(
 TOPICS_SIN_MANEJO = frozenset({"payments", "messages", "questions"})
 
 
+def clave_inicial_del_job(job: dict, item_data: str) -> str:
+    """Clave que identifica la ORDEN, no el payload.
+
+    Se usa para dos cosas distintas: es el `lock_key` que serializa el
+    procesamiento, y el nombre bajo el que se persiste el payload. El key de
+    auditoria se deriva despues, cuando ya se conoce la accion
+    (`ml:{id}:{paid|cancelled}`).
+
+    El webhook fijaba `dedupe_key = rawsha:{sha256}` y esta funcion lo
+    respetaba, asi que cada re-entrega de MeLi — cuerpo distinto, misma orden —
+    producia clave nueva: 7.4 pasadas por orden medidas en produccion, y dos
+    notificaciones de la misma orden podian correr en paralelo porque tomaban
+    locks distintos.
+
+    Se conserva un `dedupe_key` explicito a proposito: los jobs encolados antes
+    del cambio siguen funcionando, y `recover_manual_review.py` re-encola el
+    payload persistido tal cual.
+    """
+    explicita = job.get("dedupe_key")
+    if explicita:
+        return explicita
+
+    m = re.match(r"^/orders/([A-Z0-9\-]+)$", job.get("resource", ""))
+    if m:
+        return f"ml:{m.group(1)}"
+    return f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
+
+
 def clasificar_resource_no_orden(topic: str) -> tuple[str, str]:
     """Como registrar un evento cuyo `resource` no es `/orders/{id}`.
 
@@ -1428,17 +1456,8 @@ def main():
                 continue
 
             # Generar/extraer dedupe_key
-            dedupe_key = job.get("dedupe_key")
-            if not dedupe_key:
-                resource = job.get("resource", "")
-                m = re.match(r"^/orders/([A-Z0-9\-]+)$", resource)
-                if m:
-                    dedupe_key = f"ml:{m.group(1)}"
-                else:
-                    dedupe_key = (
-                        f"legacy:{hashlib.sha256(item_data.encode()).hexdigest()[:16]}"
-                    )
-                job["dedupe_key"] = dedupe_key
+            dedupe_key = clave_inicial_del_job(job, item_data)
+            job["dedupe_key"] = dedupe_key
 
             # 1. Persistir payload ANTES de cualquier operación — Fix v8.4
             payload_hash = persist_payload(dedupe_key, job)
