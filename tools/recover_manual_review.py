@@ -66,9 +66,17 @@ def claves_de_payload(dedupe_key: str) -> list:
     exacta no encuentra nada: medido en produccion, el join exacto entre
     `processed_inbound_events` e `inbound_job_payloads` daba 1 fila de todas.
 
-    Eso es lo que hay detras de la nota de CLAUDE.md sobre que las ordenes MeLi
-    con clave `rawsha:` son irrecuperables. No es que no se persistan: se buscan
-    mal, y el tool reporta "sin payload persistido" para todas.
+    La nota de CLAUDE.md sobre que las ordenes MeLi con clave `rawsha:` son
+    irrecuperables tiene DOS causas, y conviene no confundirlas:
+
+      * esta busqueda rota, que afecta a todas; y
+      * el TTL de 7 dias de `inbound_job_payloads` (hay un cron semanal de
+        limpieza), que borra los payloads viejos de verdad.
+
+    Medido el 2026-09-12: de 141 eventos en manual_review/dead, 2 recuperan su
+    payload con este arreglo y 139 no — esos son `rawsha:` de hace meses y sus
+    payloads ya expiraron. Arreglar la busqueda no los resucita; lo que evita
+    es que los nuevos se pierdan dentro de su ventana de 7 dias.
 
     Se devuelve la exacta primero — las claves `legacy:` no llevan sufijo de
     accion y ahi si coincide directo.
