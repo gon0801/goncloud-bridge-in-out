@@ -86,19 +86,21 @@ def test_el_reproceso_descarta_el_payload_sin_precio():
     orden bajo `order`, no bajo `payload`) y el worker los consumio sin dejar
     rastro.
     """
-    fuente = TOOL.read_text(encoding="utf-8")
+    # Con los espacios colapsados: `ruff format` parte las llamadas largas y un
+    # test atado al formato se rompe solo. Ya paso hoy — dejo main en rojo.
+    plano = "".join(TOOL.read_text(encoding="utf-8").split())
 
-    assert '(resp.json() or {}).get("order")' in fuente, (
+    assert '(resp.json()or{}).get("order")' in plano, (
         "la v2026 anida la orden bajo `order`; tomar `payload` devuelve un "
         "objeto vacio que normaliza a total 0"
     )
-    i_compuerta = fuente.index("total <= 0 or items == 0")
-    i_push = fuente.index("poll.push_to_redis")
+    i_compuerta = plano.index("total<=0oritems==0")
+    i_push = plano.index("poll.push_to_redis")
     assert i_compuerta < i_push, (
         "se encola antes de validar el payload: es exactamente el error que "
         "metio 4 jobs vacios en la cola"
     )
-    i_delete = fuente.index("DELETE FROM amazon_processed_events")
+    i_delete = plano.index("DELETEFROMamazon_processed_events")
     assert i_compuerta < i_delete, (
         "se borra la auditoria antes de saber si el reproceso va a servir"
     )
