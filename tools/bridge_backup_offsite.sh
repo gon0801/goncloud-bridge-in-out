@@ -28,7 +28,16 @@ if [ ! -d "$LOCAL_DIR" ]; then
 fi
 
 echo "$(ts) INFO starting offsite sync local=$LOCAL_DIR remote=$REMOTE_PATH"
-rclone copy "$LOCAL_DIR" "$REMOTE_PATH" \
+# `sync`, no `copy`. Con `copy` el remoto nunca borra: 2.4 GiB por noche sin
+# tope son ~875 GB al ano en la cuenta. `sync` espeja la ventana de 7 dias que
+# ya mantiene bridge_backup.sh localmente, asi que el remoto queda acotado en
+# ~17 GiB.
+#
+# El costo de esa decision, explicito: son 7 dias de proteccion offsite, no un
+# archivo historico. Si una corrupcion se detecta al octavo dia, el respaldo
+# remoto ya la replico. Para archivo de largo plazo hace falta otra politica
+# (snapshots mensuales comprimidos), que es otra tarea.
+rclone sync "$LOCAL_DIR" "$REMOTE_PATH" \
   --include "*.db" \
   --transfers 2 \
   --retries 3 \

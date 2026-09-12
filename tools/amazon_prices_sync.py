@@ -393,6 +393,8 @@ def main():
     def _tok():
         return get_access_token(client_id, client_secret, refresh_token)
 
+    # El reporte AFN no esta scopeado por marketplace: se pide una sola vez.
+    fba_pedido = False
     for marketplace_id, marketplace_name in MARKETPLACES:
         log.info(
             f"── Procesando {marketplace_name} ({marketplace_id}) — merchant listings ──"
@@ -405,11 +407,23 @@ def main():
         except Exception as e:
             log.error(f"Error merchant {marketplace_name}: {e}")
 
-        # FBA inventory — reporte separado, stock real de Amazon warehouses
-        log.info(
-            f"── Procesando {marketplace_name} ({marketplace_id}) — FBA inventory ──"
-        )
-        sync_fba_inventory(_tok(), db, marketplace_id, marketplace_name, creds=creds)
+        # FBA inventory — reporte separado, stock real de Amazon warehouses.
+        #
+        # Se pide UNA sola vez: `GET_AFN_INVENTORY_DATA` no esta scopeado por
+        # marketplace, devuelve el inventario AFN de toda la cuenta de la region.
+        # Guardarlo bajo cada marketplace duplicaba las filas — medido el
+        # 2026-09-12: 1071 de 1071 identicas entre amazon_mx y amazon_us, asi
+        # que sumar por marketplace daba 65,580 unidades donde hay 32,790.
+        if fba_pedido:
+            log.info(f"── {marketplace_name}: FBA inventory ya obtenido, se omite ──")
+        else:
+            log.info(
+                f"── Procesando {marketplace_name} ({marketplace_id}) — FBA inventory ──"
+            )
+            sync_fba_inventory(
+                _tok(), db, marketplace_id, marketplace_name, creds=creds
+            )
+            fba_pedido = True
 
     db.close()
     log.info("Sync de precios + FBA inventory Amazon completado")
