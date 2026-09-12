@@ -55,6 +55,43 @@ def get_redis():
 # ─────────────────────────────────────────────────────
 # MELI recovery
 # ─────────────────────────────────────────────────────
+
+
+def claves_de_payload(dedupe_key: str) -> list:
+    """Claves bajo las que puede estar guardado el payload de un evento.
+
+    El payload se persiste con la clave INICIAL (`ml:{order_id}`), pero la
+    auditoria guarda la clave ACTION-AWARE (`ml:{order_id}:paid`), que el worker
+    calcula despues de leer el estado real de la orden. Buscar por igualdad
+    exacta no encuentra nada: medido en produccion, el join exacto entre
+    `processed_inbound_events` e `inbound_job_payloads` daba 1 fila de todas.
+
+    Eso es lo que hay detras de la nota de CLAUDE.md sobre que las ordenes MeLi
+    con clave `rawsha:` son irrecuperables. No es que no se persistan: se buscan
+    mal, y el tool reporta "sin payload persistido" para todas.
+
+    Se devuelve la exacta primero — las claves `legacy:` no llevan sufijo de
+    accion y ahi si coincide directo.
+    """
+    if not dedupe_key:
+        return []
+    candidatas = [dedupe_key]
+    if dedupe_key.count(":") >= 2:
+        candidatas.append(dedupe_key.rsplit(":", 1)[0])
+    return candidatas
+
+
+def buscar_payload(db, dedupe_key: str):
+    for clave in claves_de_payload(dedupe_key):
+        fila = db.execute(
+            "SELECT payload_json FROM inbound_job_payloads WHERE dedupe_key=?",
+            (clave,),
+        ).fetchone()
+        if fila:
+            return fila
+    return None
+
+
 def recover_meli(db, r, since_iso: str, include_dead: bool, dry_run: bool) -> int:
     """
     Re-encola órdenes MeLi bloqueadas.
@@ -105,10 +142,7 @@ def recover_meli(db, r, since_iso: str, include_dead: bool, dry_run: bool) -> in
         print(f"    result={result}  ref={ref}  reason={reason[:80]}")
 
         # Buscar payload
-        payload_row = db.execute(
-            "SELECT payload_json FROM inbound_job_payloads WHERE dedupe_key=?",
-            (dk,),
-        ).fetchone()
+        payload_row = buscar_payload(db, dk)
 
         if not payload_row:
             print(

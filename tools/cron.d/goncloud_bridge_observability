@@ -26,14 +26,13 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 # Umbral 7 dias: p99 de la espera normal = 4.1d (1 falso positivo en 103).
 0 13 * * * root docker exec bridge-api python3 /data/odoo_sos_en_cero.py >> /mnt/data/appdata/bridge/data/sos_en_cero.log 2>&1
 
-# D6.9 — sync offsite via rclone. DESACTIVADO a proposito.
+# D6.9 — sync offsite. Usa el remote `onedrive` que ya existe y esta
+# autenticado, en vez de crear uno nuevo: no habia motivo para pedir
+# credenciales nuevas solo por el nombre.
 #
-# Requiere un remote de rclone llamado "bridge-offsite" que todavia NO existe
-# (hoy solo hay "onedrive:"). Habilitarlo antes de configurarlo garantiza un
-# fallo cada noche a las 03:30 — y un chequeo que falla siempre es ruido que
-# entrena a ignorar el resto, que es exactamente como se perdieron 19 dias de
-# ordenes en agosto de 2026.
+# Son ~16 GiB la primera corrida y ~2.4 GiB por noche. El script usa `sync`,
+# asi que el remoto espeja la ventana de 7 dias del backup local y queda
+# acotado en ~17 GiB en vez de crecer sin tope.
 #
-# Para habilitar:  rclone config   (nombrar el remote "bridge-offsite")
-# y despues descomentar esta linea:
-#30 3 * * * root /mnt/data/appdata/bridge/tools/bridge_backup_offsite.sh >> /mnt/data/appdata/bridge/data/backup_offsite.log 2>&1
+# 03:30 UTC, despues del backup local de las 02:00.
+30 3 * * * root RCLONE_REMOTE=onedrive /mnt/data/appdata/bridge/tools/bridge_backup_offsite.sh >> /mnt/data/appdata/bridge/data/backup_offsite.log 2>&1
