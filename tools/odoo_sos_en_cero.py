@@ -46,6 +46,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import sys
 import urllib.request
@@ -55,6 +56,46 @@ DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 POLL_PATH = os.getenv("AMAZON_POLL", "/data/amazon_orders_poll.py")
 UMBRAL_DIAS = 7
 CLAVE_ESTADO = "sos_en_cero_ultimo_chequeo"
+
+
+CLAVE_ACEPTADAS = "sos_en_cero_aceptadas"
+
+
+def filtrar_aceptadas(hallazgos: list, aceptadas: set) -> list:
+    """Saca de la lista las ventas que el operador ya decidio dejar asi.
+
+    Sin esto el reporte deja de servir. Las nueve facturas de febrero de 2026 no
+    se van a corregir — son `posted` y `paid`, se arreglan con nota de credito y
+    el operador decidio dejarlas. Si salen en cada corrida, el dia que aparezca
+    una NUEVA va a estar enterrada entre diez que ya nadie lee.
+
+    Es el mismo patron que costo 19 dias de ordenes perdidas en agosto: un
+    semaforo en rojo permanente por algo conocido, y una falla real invisible
+    detras.
+    """
+    return [h for h in hallazgos if h.get("so") not in aceptadas]
+
+
+def extraer_order_id_amazon(ref: str):
+    """Saca el AmazonOrderId de un `client_order_ref`, sea cual sea su formato.
+
+    Conviven tres formas en la base, porque el formato cambio el 2026-02-23:
+
+        "701-1234567-1234567 | Juan Garcia"          formato actual
+        "AMZFBA:A1AM78C64UM0Y8:701-1234567-1234567"  formato crudo, anterior
+        "2000018393906916 | comprador"               MercadoLibre, no aplica
+
+    Buscar por posicion fallaba con el formato viejo: `split("|")[0]` devolvia
+    la cadena entera con el prefijo, y el filtro la descartaba. Nueve SOs de
+    febrero por 9,174 MXN quedaban fuera del reproceso justo por eso.
+
+    El id de Amazon tiene una forma fija (3-7-7 digitos), asi que se busca por
+    patron y no por posicion.
+    """
+    if not ref:
+        return None
+    m = re.search(r"\b\d{3}-\d{7}-\d{7}\b", ref)
+    return m.group(0) if m else None
 
 
 def es_sospechosa(
@@ -195,6 +236,11 @@ def main() -> int:
     ap.add_argument(
         "--reprocesar", action="store_true", help="re-encolar las encontradas"
     )
+    ap.add_argument(
+        "--aceptar",
+        action="store_true",
+        help="marcar las encontradas como conocidas: dejan de reportarse",
+    )
     args = ap.parse_args()
 
     od = Odoo()
@@ -244,6 +290,16 @@ def main() -> int:
                 }
             )
 
+    aceptadas = set(json.loads(get_setting(CLAVE_ACEPTADAS) or "[]"))
+    hallazgos = filtrar_aceptadas(hallazgos, aceptadas)
+
+    if args.aceptar:
+        nuevas = sorted(aceptadas | {h["so"] for h in hallazgos})
+        set_setting(CLAVE_ACEPTADAS, json.dumps(nuevas))
+        print(f"Aceptadas {len(hallazgos)} ventas. Ya no se reportaran.")
+        print(f"Total aceptadas: {len(nuevas)}")
+        return 0
+
     set_setting(
         CLAVE_ESTADO,
         json.dumps(
@@ -256,7 +312,8 @@ def main() -> int:
 
     if not hallazgos:
         print(
-            f"Sin ventas en $0 con mas de {args.dias} dias. ({len(sos)} en cero, todas recientes)"
+            f"Sin ventas en $0 con mas de {args.dias} dias sin aceptar. "
+            f"({len(sos)} en cero; {len(aceptadas)} aceptadas previamente)"
         )
         return 0
 
@@ -268,8 +325,7 @@ def main() -> int:
         print("%-10s %-9s %s" % (h["so"], h["dias"], h["ref"][:40]))
 
     if args.reprocesar:
-        oids = [h["ref"].split("|")[0].strip() for h in hallazgos]
-        oids = [o for o in oids if o and o[:2] in ("70", "11")]
+        oids = [x for x in (extraer_order_id_amazon(h["ref"]) for h in hallazgos) if x]
         print(f"\nReprocesando {len(oids)} ordenes de Amazon:")
         n = reprocesar(oids)
         print(f"\n{n} encoladas. El worker las corrige en segundos.")

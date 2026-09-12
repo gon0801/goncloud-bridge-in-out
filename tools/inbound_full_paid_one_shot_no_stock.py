@@ -381,6 +381,29 @@ if so["state"] != "sale":
 else:
     step("so_already_sale", so_name=so["name"])
 
+# 6.5) Si todos los precios son $0 → SO listo, factura DIFERIDA.
+#
+# Una factura en cero no se corrige despues: se emite, se paga y queda. El
+# 18-19 de febrero de 2026 quedaron nueve facturas `posted` y `paid` en $0.00
+# por 9,194 MXN reales (camino de Amazon), y siguen asi. El tool de Amazon FBM
+# ya tenia esta guarda; los de MeLi no. Se agrega para cerrar el mismo agujero
+# aunque MeLi hoy siempre mande precio: el costo de la guarda es nulo y el de
+# la falla es irreversible.
+current_line_prices = exec_kw(
+    uid,
+    "sale.order.line",
+    "search_read",
+    [[["order_id", "=", so_id]]],
+    {"fields": ["price_unit"]},
+)
+if current_line_prices and all(
+    linea["price_unit"] == 0 for linea in current_line_prices
+):
+    step("invoice_deferred", reason="all_prices_zero", so_id=so_id)
+    print("[FULL_PAID] SO listo, precios $0 — factura diferida")
+    print("[FULL_PAID] OK_DONE")
+    sys.exit(0)
+
 # 7) Invoice: si ya existe posted por origin/ref -> usar; si no -> wizard 100%
 inv_ids = (
     exec_kw(
