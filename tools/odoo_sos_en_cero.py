@@ -55,10 +55,18 @@ from datetime import datetime, timezone
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 POLL_PATH = os.getenv("AMAZON_POLL", "/data/amazon_orders_poll.py")
 UMBRAL_DIAS = 7
+# Entregado y nunca facturado es otro modo de falla, y mas silencioso: no hay
+# factura en $0 que mirar, no hay nada. El bridge factura en la misma corrida
+# en que valida la entrega, asi que un hueco de dias solo aparece cuando la
+# venta se armo a mano. Medido el 2026-09-12 sobre toda la base: 3 ventas en
+# ese estado, las 3 reales. No hay poblacion "normal" de la que distinguirlas,
+# asi que 2 dias es margen de sobra para una entrega legitimamente en vuelo.
+UMBRAL_SIN_FACTURAR = 2
 CLAVE_ESTADO = "sos_en_cero_ultimo_chequeo"
 
 
 CLAVE_ACEPTADAS = "sos_en_cero_aceptadas"
+CLAVE_ACEPTADAS_SF = "sos_sin_facturar_aceptadas"
 
 
 def filtrar_aceptadas(hallazgos: list, aceptadas: set) -> list:
@@ -110,6 +118,34 @@ def es_sospechosa(
     if (estado or "").lower() == "cancel":
         return False
     if (monto or 0) > 0:
+        return False
+    return dias >= umbral
+
+
+def es_entregada_sin_facturar(
+    estado: str,
+    invoice_status: str,
+    entregado: float,
+    facturado: float,
+    dias: float,
+    umbral: float = UMBRAL_SIN_FACTURAR,
+) -> bool:
+    """Si una venta ya entregada lleva demasiado sin que exista su factura.
+
+    Distinto de `es_sospechosa`: ahi hay factura y esta en cero. Aqui la
+    mercancia salio y no hay factura ninguna, que no dispara ninguna alarma
+    contable porque no hay documento que revisar.
+
+    Solo cuenta si de verdad se entrego: un SO confirmado y sin entregar
+    todavia no tiene por que estar facturado.
+    """
+    if (estado or "").lower() != "sale":
+        return False
+    if (invoice_status or "") != "to invoice":
+        return False
+    if (entregado or 0) <= 0:
+        return False
+    if (facturado or 0) > 0:
         return False
     return dias >= umbral
 
@@ -178,6 +214,75 @@ class Odoo:
         )
 
 
+def buscar_sin_facturar(od, umbral: float, ahora) -> list:
+    """Ventas entregadas cuya factura nunca se creo.
+
+    Se pide `invoice_status = to invoice` a Odoo y despues se confirma linea
+    por linea que haya entrega real y cero facturado. El campo por si solo no
+    alcanza: tambien lo tiene un SO confirmado que aun no sale del almacen.
+    """
+    sos = (
+        od.kw(
+            "sale.order",
+            "search_read",
+            [[["state", "=", "sale"], ["invoice_status", "=", "to invoice"]]],
+            {
+                "fields": [
+                    "id",
+                    "name",
+                    "client_order_ref",
+                    "amount_total",
+                    "state",
+                    "invoice_status",
+                    "date_order",
+                ],
+                "limit": 500,
+            },
+        )
+        or []
+    )
+    hallazgos = []
+    for s_ in sos:
+        lineas = (
+            od.kw(
+                "sale.order.line",
+                "search_read",
+                [[["order_id", "=", s_["id"]]]],
+                {"fields": ["qty_delivered", "qty_invoiced", "display_type"]},
+            )
+            or []
+        )
+        reales = [x for x in lineas if not x.get("display_type")]
+        if not reales:
+            continue
+        entregado = min(x.get("qty_delivered") or 0 for x in reales)
+        facturado = max(x.get("qty_invoiced") or 0 for x in reales)
+        try:
+            fecha = datetime.fromisoformat(s_["date_order"]).replace(
+                tzinfo=timezone.utc
+            )
+        except Exception:
+            continue
+        dias = (ahora - fecha).total_seconds() / 86400
+        if es_entregada_sin_facturar(
+            s_.get("state"),
+            s_.get("invoice_status"),
+            entregado,
+            facturado,
+            dias,
+            umbral,
+        ):
+            hallazgos.append(
+                {
+                    "so": s_["name"],
+                    "ref": s_.get("client_order_ref") or "",
+                    "dias": round(dias, 1),
+                    "monto": s_.get("amount_total") or 0,
+                }
+            )
+    return hallazgos
+
+
 def reprocesar(oids: list) -> int:
     """Re-encola las ordenes con el payload FRESCO de Amazon.
 
@@ -231,11 +336,14 @@ def reprocesar(oids: list) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Ventas de marketplace facturadas en $0")
+    ap = argparse.ArgumentParser(
+        description="Ventas de marketplace en $0, o entregadas sin facturar"
+    )
     ap.add_argument("--dias", type=float, default=UMBRAL_DIAS)
     ap.add_argument(
         "--reprocesar", action="store_true", help="re-encolar las encontradas"
     )
+    ap.add_argument("--dias-sin-facturar", type=float, default=UMBRAL_SIN_FACTURAR)
     ap.add_argument(
         "--aceptar",
         action="store_true",
@@ -293,11 +401,21 @@ def main() -> int:
     aceptadas = set(json.loads(get_setting(CLAVE_ACEPTADAS) or "[]"))
     hallazgos = filtrar_aceptadas(hallazgos, aceptadas)
 
+    aceptadas_sf = set(json.loads(get_setting(CLAVE_ACEPTADAS_SF) or "[]"))
+    sin_facturar = filtrar_aceptadas(
+        buscar_sin_facturar(od, args.dias_sin_facturar, ahora), aceptadas_sf
+    )
+
     if args.aceptar:
         nuevas = sorted(aceptadas | {h["so"] for h in hallazgos})
         set_setting(CLAVE_ACEPTADAS, json.dumps(nuevas))
-        print(f"Aceptadas {len(hallazgos)} ventas. Ya no se reportaran.")
-        print(f"Total aceptadas: {len(nuevas)}")
+        nuevas_sf = sorted(aceptadas_sf | {h["so"] for h in sin_facturar})
+        set_setting(CLAVE_ACEPTADAS_SF, json.dumps(nuevas_sf))
+        print(f"Aceptadas {len(hallazgos)} ventas en $0. Total: {len(nuevas)}")
+        print(
+            f"Aceptadas {len(sin_facturar)} entregadas sin facturar. "
+            f"Total: {len(nuevas_sf)}"
+        )
         return 0
 
     set_setting(
@@ -305,6 +423,7 @@ def main() -> int:
         json.dumps(
             {
                 "pendientes": len(hallazgos),
+                "sin_facturar": len(sin_facturar),
                 "revisado": ahora.isoformat(timespec="seconds"),
             }
         ),
@@ -315,23 +434,44 @@ def main() -> int:
             f"Sin ventas en $0 con mas de {args.dias} dias sin aceptar. "
             f"({len(sos)} en cero; {len(aceptadas)} aceptadas previamente)"
         )
-        return 0
-
-    print(
-        f"Ventas de marketplace en $0 con mas de {args.dias} dias: {len(hallazgos)}\n"
-    )
-    print("%-10s %-9s %s" % ("SO", "DIAS", "ORDEN"))
-    for h in sorted(hallazgos, key=lambda x: -x["dias"]):
-        print("%-10s %-9s %s" % (h["so"], h["dias"], h["ref"][:40]))
-
-    if args.reprocesar:
-        oids = [x for x in (extraer_order_id_amazon(h["ref"]) for h in hallazgos) if x]
-        print(f"\nReprocesando {len(oids)} ordenes de Amazon:")
-        n = reprocesar(oids)
-        print(f"\n{n} encoladas. El worker las corrige en segundos.")
     else:
-        print("\nCon --reprocesar se re-encolan para que el bridge las corrija.")
-    return 1
+        print(
+            f"Ventas de marketplace en $0 con mas de {args.dias} dias: "
+            f"{len(hallazgos)}\n"
+        )
+        print("%-10s %-9s %s" % ("SO", "DIAS", "ORDEN"))
+        for h in sorted(hallazgos, key=lambda x: -x["dias"]):
+            print("%-10s %-9s %s" % (h["so"], h["dias"], h["ref"][:40]))
+
+        if args.reprocesar:
+            oids = [
+                x for x in (extraer_order_id_amazon(h["ref"]) for h in hallazgos) if x
+            ]
+            print(f"\nReprocesando {len(oids)} ordenes de Amazon:")
+            n = reprocesar(oids)
+            print(f"\n{n} encoladas. El worker las corrige en segundos.")
+        else:
+            print("\nCon --reprocesar se re-encolan para que el bridge las corrija.")
+
+    if sin_facturar:
+        perdido = sum(h["monto"] for h in sin_facturar)
+        print(
+            f"\nEntregadas y NUNCA facturadas, con mas de "
+            f"{args.dias_sin_facturar} dias: {len(sin_facturar)}\n"
+        )
+        print("%-10s %-9s %12s  %s" % ("SO", "DIAS", "MONTO", "ORDEN"))
+        for h in sorted(sin_facturar, key=lambda x: -x["dias"]):
+            print(
+                "%-10s %-9s %12.2f  %s"
+                % (h["so"], h["dias"], h["monto"], h["ref"][:40])
+            )
+        print(f"\n  sin facturar: {perdido:.2f} MXN")
+        print(
+            "  Estas NO se reprocesan solas: la mercancia ya salio y el SO ya "
+            "existe.\n  Revisar a mano, o --aceptar si se decide dejarlas asi."
+        )
+
+    return 1 if (hallazgos or sin_facturar) else 0
 
 
 if __name__ == "__main__":
