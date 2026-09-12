@@ -157,3 +157,63 @@ def test_las_aceptadas_dejan_de_reportarse(mod):
 def test_sin_aceptadas_no_se_filtra_nada(mod):
     hallazgos = [{"so": "S00476", "dias": 205}, {"so": "S02300", "dias": 9}]
     assert mod.filtrar_aceptadas(hallazgos, set()) == hallazgos
+
+
+# ---------------------------------------------------------------------------
+# Entregado y nunca facturado — el otro modo de falla, mas silencioso
+#
+# S02172 y S02173: dos ventas de Amazon US del 1-sep. Los SKUs ST-MV02-LRFL y
+# VO-0U7E-EWSL no existian en Odoo, asi que la tool murio con `missing
+# products` cuatro veces sin crear nada. Alguien las armo a mano el 6-sep,
+# confirmo la venta y valido la entrega — y se detuvo antes de facturar.
+#
+# `es_sospechosa` no las ve: no hay factura en $0 que mirar, no hay factura.
+# La mercancia salio y el ingreso nunca se registro.
+# ---------------------------------------------------------------------------
+
+
+def test_entregada_sin_factura_se_detecta(mod):
+    """El caso real de S02172: entregada, 0 facturado, 11 dias."""
+    assert mod.es_entregada_sin_facturar("sale", "to invoice", 1.0, 0.0, 11.0) is True
+
+
+def test_confirmada_pero_sin_entregar_todavia_no_es_problema(mod):
+    """Un SO confirmado que aun no sale del almacen no tiene por que facturarse."""
+    assert mod.es_entregada_sin_facturar("sale", "to invoice", 0.0, 0.0, 30.0) is False
+
+
+def test_entregada_y_ya_facturada_no_se_reporta(mod):
+    assert mod.es_entregada_sin_facturar("sale", "invoiced", 1.0, 1.0, 30.0) is False
+
+
+def test_entregada_con_factura_parcial_no_se_reporta(mod):
+    """Si algo se facturo, el hueco no es 'nunca se creo la factura'."""
+    assert mod.es_entregada_sin_facturar("sale", "to invoice", 2.0, 1.0, 30.0) is False
+
+
+def test_una_cancelada_no_cuenta(mod):
+    assert (
+        mod.es_entregada_sin_facturar("cancel", "to invoice", 1.0, 0.0, 30.0) is False
+    )
+
+
+def test_un_presupuesto_sin_confirmar_no_cuenta(mod):
+    assert mod.es_entregada_sin_facturar("draft", "to invoice", 1.0, 0.0, 30.0) is False
+
+
+def test_recien_entregada_tiene_margen(mod):
+    """El bridge factura en la misma corrida; un dia de hueco aun puede ser normal."""
+    assert mod.es_entregada_sin_facturar("sale", "to invoice", 1.0, 0.0, 1.0) is False
+
+
+def test_a_los_2_dias_ya_es_anomalo(mod):
+    assert mod.es_entregada_sin_facturar("sale", "to invoice", 1.0, 0.0, 2.0) is True
+
+
+def test_las_dos_alarmas_son_independientes(mod):
+    """Una venta entregada sin facturar tiene monto > 0: `es_sospechosa` la ignora.
+
+    Son dos defectos distintos y cada uno necesita su propia deteccion.
+    """
+    assert mod.es_sospechosa(2274.21, "sale", 11.0) is False
+    assert mod.es_entregada_sin_facturar("sale", "to invoice", 1.0, 0.0, 11.0) is True
