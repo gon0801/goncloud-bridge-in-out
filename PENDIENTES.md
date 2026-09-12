@@ -5,7 +5,7 @@
 > **No** convertir este archivo en diario — el histórico vive en `git log`.
 
 **Última verificación contra producción:** 2026-09-12
-**Abiertos:** 7 · **Bloqueantes:** 1
+**Abiertos:** 6 · **Bloqueantes:** 1
 
 Todo lo de abajo fue verificado contra Odoo, `bridge.db` y el host `goncloud` el 2026-08-09.
 Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el histórico).
@@ -28,10 +28,10 @@ Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el h
 | **10** | ~~Purgar 2 mappings MeLi muertos~~ — hecho; aparecieron 4 más | 🟡 Parcial | Baja |
 | **11** | ~~Apagón de ingress MeLi~~ — resuelto y verificado | ✅ Cerrada 2026-09-12 | — |
 | **12** | ~~Nada alertó en 19 días~~ — chequeo de frescura en `/v1/health` | ✅ Cerrada 2026-09-12 | — |
-| **13** | `MELI_REDIRECT_URI` apunta a un host que no existe → re-auth OAuth imposible | ⏳ Abierta | Media |
-| **16** | Cada orden MeLi se reprocesa ~6 veces (dedupe por `rawsha`) | ⏳ Abierta | Baja |
+| **13** | ~~`MELI_REDIRECT_URI` a un host inexistente~~ — configurable y registrado | ✅ Cerrada 2026-09-12 | — |
 | **14** | ~~Health en rojo por `amazon_inventory_cache` sin refresco~~ | ✅ Cerrada 2026-09-12 | — |
 | **15** | ~~113 `stock_jobs` encolados~~ — drenaban normal, hoy en 0 | ✅ Cerrada 2026-09-12 | — |
+| **16** | Cada orden MeLi se reprocesa ~6 veces (dedupe por `rawsha`) | ⏳ Abierta | Baja |
 
 ---
 
@@ -221,29 +221,39 @@ el rojo viejo lo deja igual de ignorado.
 
 ---
 
-## 13. `MELI_REDIRECT_URI` apunta a un host inexistente · Media
+## 13. ~~`MELI_REDIRECT_URI` a un host inexistente~~ · ✅ Cerrada 2026-09-12
 
-[`app/main.py:155`](app/main.py) tiene hardcodeado
-`https://meli.goncloud.cc/oauth/callback`. Ese host **no existe**: no tiene
-proxy host ni certificado en `nginx-proxy-manager` (revisada la tabla completa,
-incluidos los borrados). Es del servidor viejo. El refresh diario funciona
-porque usa el `refresh_token` y no necesita redirect — pero **una re-auth desde
-cero fallaría**, justo cuando más urge.
+Resuelto en PR #40, desplegado y verificado contra la API de MeLi.
 
-**Confirmado contra la API el 2026-09-12** (`GET /applications/{app_id}`):
+El literal `https://meli.goncloud.cc/oauth/callback` (main.py:156) apuntaba a un
+host del servidor viejo: sin proxy host, sin certificado y fuera del ingress del
+tunnel. El refresh diario nunca lo tocó (usa `grant_type=refresh_token`), así que
+el problema era invisible hasta que hiciera falta una re-auth desde cero.
+
+Ahora se resuelve en cada llamada con precedencia
+`bridge_settings` → env → default (`app/meli_config.py`), para poder corregirlo
+en caliente sin redeploy.
+
+**Verificado end-to-end:**
 
 ```
-callback_url               = https://meli.goncloud.cc/oauth/callback      ← host inexistente
-notifications_callback_url = https://meli-webhooks.goncloud.cc/webhooks/… ← este sí funciona
+registrado en MeLi  : https://meli-webhooks.goncloud.cc/oauth/callback
+que manda el código : https://meli-webhooks.goncloud.cc/oauth/callback
+                      -> COINCIDEN EXACTO
+
+GET /oauth/start -> 307 https://auth.mercadolibre.com.mx/authorization
+  response_type=code · client_id=2932799975062215
+  redirect_uri=https://meli-webhooks.goncloud.cc/oauth/callback
+  scope=offline_access · code_challenge_method=S256 · state y challenge presentes
 ```
 
-Ojo: cambiar el valor en el código sin cambiarlo también en el panel de MeLi
-rompe OAuth. Las dos puntas tienen que moverse juntas.
+El único paso no ejercitado es el consentimiento del usuario y el canje del
+code — requiere navegador y rotaría los tokens vivos sin necesidad.
 
-- [ ] Decidir el host definitivo (`mapper.goncloud.cc` es el que sí existe)
-- [ ] Actualizar el redirect URI registrado en el DevCenter de MeLi
-- [ ] Actualizar `app/main.py:155`
-- [ ] Limpiar `meli.goncloud.cc` de `MASTER_RUNBOOK.md`, `docs/RUNBOOK.md` y `SETUP_WIZARD_CANONICAL_v1.md` (15 menciones)
+**Datos de la app**, por si hace falta volver al DevCenter
+(https://developers.mercadolibre.com.mx/devcenter, entrando con la cuenta
+vendedora `135734858`): nombre `ehv-odoo`, short name `eh-odoo3`,
+id `2932799975062215`, site MLM.
 
 ---
 
