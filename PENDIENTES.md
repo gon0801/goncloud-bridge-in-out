@@ -5,7 +5,7 @@
 > **No** convertir este archivo en diario — el histórico vive en `git log`.
 
 **Última verificación contra producción:** 2026-09-12
-**Abiertos:** 13 · **Bloqueantes:** 1
+**Abiertos:** 14 · **Bloqueantes:** 1
 
 Todo lo de abajo fue verificado contra Odoo, `bridge.db` y el host `goncloud` el 2026-08-09.
 Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el histórico).
@@ -26,9 +26,11 @@ Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el h
 | **8** | Rebuild imagen Docker — sigue en `fastapi 0.110.0` | ⏳ Abierta | Media |
 | **9** | Crons del host: stats / backup offsite / restore test + remote rclone | ⏳ Abierta | Media |
 | **10** | Purgar 2 mappings MeLi muertos de `sku_mapping` | ⏳ Abierta | Baja |
-| **11** | Cerrar el apagón de ingress MeLi: reconectar red + recuperar ~19 días | 🔴 En curso | **Crítica** |
-| **12** | Nada alertó durante 19 días de inbound MeLi caído | ⏳ Abierta | **Alta** |
+| **11** | Apagón de ingress MeLi — resuelto; falta ver el primer webhook real | 🟡 Verificando | Media |
+| **12** | Nada alertó en 19 días — el health ya estaba rojo por otra causa | ⏳ Abierta | **Alta** |
 | **13** | `MELI_REDIRECT_URI` apunta a un host que no existe → re-auth OAuth imposible | ⏳ Abierta | Media |
+| **14** | Caché de Amazon congelado desde 2026-08-10 pese a que el timer corre c/6h | ⏳ Abierta | **Alta** |
+| **15** | 113 `stock_jobs` encolados sin drenar | ⏳ Abierta | Media |
 
 ---
 
@@ -168,13 +170,21 @@ Ruta aparte, también rota y de consecuencias mucho menores: `bridge-api` quedó
 fuera de la red docker `proxy`, así que `mapper.goncloud.cc` (UI del SKU mapper)
 devolvía 502. Reconectado en caliente el 2026-09-12 y ya declarado en el compose.
 
-- [x] Reconectar la red `proxy` (arregla la UI del mapper, no los webhooks)
-- [ ] **Publicar el puerto en loopback** — el fix real. Copiar el compose nuevo al servidor y `docker compose up -d bridge-api`
-- [ ] Verificar en `journalctl -u cloudflared -f` que dejen de aparecer `connection refused`
-- [x] Desplegar `tools/meli_orders_backfill.py` a `/mnt/data/appdata/bridge/data/`
-- [x] Validar el backfill: filtraba por `date_created` y recuperaba 13/33 en la ventana de control; corregido a `date_last_updated` (33/33, y 18/18 sobre lo creado en el apagón)
-- [ ] Recuperar el rango: `--from 2026-08-24 --dry-run` y después sin `--dry-run`
-- [ ] Conciliar contra Odoo cuántas órdenes entraron y revisar `manual_review`
+**Resuelto el 2026-09-12** (PR #34). Puerto publicado en `127.0.0.1` + `10.13.13.1`,
+red `proxy` declarada, 0 `connection refused` desde el fix. Rescate corrido:
+57 encoladas → 55 `success`, 2 `manual_review` benignas (órdenes creadas y
+reembolsadas dentro del apagón: no hay SO que revertir). Cobertura verificada
+contra el catálogo completo de MeLi: **18/18** de las creadas durante la ventana.
+
+Suscripción confirmada viva vía API:
+`notifications_callback_url = https://meli-webhooks.goncloud.cc/webhooks/meli/orders/***`
+
+- [ ] **Único pendiente:** confirmar la llegada del primer webhook real post-fix.
+      Al cierre de la sesión aún no había entrado ninguno (volumen bajo de sábado).
+      Si pasan >24h sin ninguno: revisar la suscripción en el DevCenter de MeLi.
+      Comprobar con: `sqlite3 bridge.db "SELECT MAX(received_at) FROM inbound_events WHERE dedupe_key LIKE 'rawsha:%';"`
+- [ ] Sincronizar `meli_orders_backfill.py` del servidor con `main` (solo difieren
+      los docstrings; el del servidor explica mal la idempotencia)
 
 ---
 
@@ -183,6 +193,12 @@ devolvía 502. Reconectado en caliente el 2026-09-12 y ya declarado en el compos
 El health endpoint (D5.4) vigila profundidad de *dead queues*, pero
 `ml_orders_jobs` estaba en **0**: no había nada atascado, simplemente no
 llegaba nada. Un inbound en silencio total no dispara ninguna alarma hoy.
+
+**Y hay algo peor:** `/v1/health` lleva devolviendo `ok: false` **desde el
+2026-08-10** por el caché de Amazon (ver #14). Cuando el apagón empezó el
+24-ago, el semáforo ya estaba en rojo por una causa distinta e inofensiva.
+No faltaba monitoreo — estaba saturado. Agregar un chequeo nuevo sin limpiar
+el rojo viejo lo deja igual de ignorado.
 
 - [ ] Chequeo de *staleness*: si no entra un evento MeLi en N horas → `ok: false`
 - [ ] Que ese chequeo llegue a algún lado (uptime-kuma ya corre en el host)
@@ -199,6 +215,13 @@ incluidos los borrados). Es del servidor viejo. El refresh diario funciona
 porque usa el `refresh_token` y no necesita redirect — pero **una re-auth desde
 cero fallaría**, justo cuando más urge.
 
+**Confirmado contra la API el 2026-09-12** (`GET /applications/{app_id}`):
+
+```
+callback_url               = https://meli.goncloud.cc/oauth/callback      ← host inexistente
+notifications_callback_url = https://meli-webhooks.goncloud.cc/webhooks/… ← este sí funciona
+```
+
 Ojo: cambiar el valor en el código sin cambiarlo también en el panel de MeLi
 rompe OAuth. Las dos puntas tienen que moverse juntas.
 
@@ -206,3 +229,29 @@ rompe OAuth. Las dos puntas tienen que moverse juntas.
 - [ ] Actualizar el redirect URI registrado en el DevCenter de MeLi
 - [ ] Actualizar `app/main.py:155`
 - [ ] Limpiar `meli.goncloud.cc` de `MASTER_RUNBOOK.md`, `docs/RUNBOOK.md` y `SETUP_WIZARD_CANONICAL_v1.md` (15 menciones)
+
+---
+
+## 14. Caché de Amazon congelado · Alta
+
+`/v1/health` reporta `amazon_cache_age_hours: 802` (~33 días) y
+`amazon_cache_warn: stale_802h`. El último refresco fue el **2026-08-10**, pese
+a que `amazon-prices-sync.timer` corre cada 6h y aparece como activo.
+
+Es la causa de que el health esté en rojo desde entonces, que es lo que tapó el
+apagón de MeLi durante 19 días (ver #12). Mientras no se arregle, cualquier
+alerta nueva que cuelgue del health nace ignorada.
+
+- [ ] Ver por qué falla en silencio: `journalctl -u amazon-prices-sync --since "7 days ago"`
+- [ ] Arreglar la causa y confirmar que `amazon_cache_age_hours` baja
+- [ ] Test que cubra el caso (regla del quality-kit)
+
+---
+
+## 15. `stock_jobs` sin drenar · Media
+
+`/v1/health` reporta `stock_jobs_queued: 113`. Sin diagnosticar todavía — puede
+ser backlog normal del sync outbound o un consumidor atascado.
+
+- [ ] Revisar si el worker outbound los está consumiendo o están parados
+- [ ] Si están parados, encontrar por qué antes de purgar
