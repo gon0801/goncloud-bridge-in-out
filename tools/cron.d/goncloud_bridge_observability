@@ -1,0 +1,32 @@
+# Observabilidad del bridge (D5.8, D6.9, D6.10 de la auditoria 2026-05-08).
+#
+# Va versionado en el repo a proposito. La leccion del apagon del 2026-08-24:
+# la infra que vive solo en el servidor se pierde en el siguiente recreate y
+# falla en silencio. Instalar con:
+#   cp tools/cron.d/goncloud_bridge_observability /etc/cron.d/
+#
+# Los scripts se despliegan a /mnt/data/appdata/bridge/tools/ y deben ser
+# ejecutables (chmod +x).
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# D5.8 — muestreo de recursos por contenedor, con rotacion a 10k lineas.
+*/5 * * * * root /mnt/data/appdata/bridge/tools/docker_stats_log.sh >> /mnt/data/appdata/bridge/data/docker_stats.log 2>&1
+
+# D6.10 — prueba mensual de restore: integrity_check + conteo de tablas y filas
+# sobre el backup mas reciente. Un backup que nunca se restauro no es un backup.
+# Corre el dia 1 a las 04:00 UTC, despues del backup diario de las 02:00.
+0 4 1 * * root /mnt/data/appdata/bridge/tools/bridge_restore_test.sh >> /mnt/data/appdata/bridge/data/restore_test.log 2>&1
+
+# D6.9 — sync offsite via rclone. DESACTIVADO a proposito.
+#
+# Requiere un remote de rclone llamado "bridge-offsite" que todavia NO existe
+# (hoy solo hay "onedrive:"). Habilitarlo antes de configurarlo garantiza un
+# fallo cada noche a las 03:30 — y un chequeo que falla siempre es ruido que
+# entrena a ignorar el resto, que es exactamente como se perdieron 19 dias de
+# ordenes en agosto de 2026.
+#
+# Para habilitar:  rclone config   (nombrar el remote "bridge-offsite")
+# y despues descomentar esta linea:
+#30 3 * * * root /mnt/data/appdata/bridge/tools/bridge_backup_offsite.sh >> /mnt/data/appdata/bridge/data/backup_offsite.log 2>&1

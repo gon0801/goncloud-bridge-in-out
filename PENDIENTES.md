@@ -5,7 +5,7 @@
 > **No** convertir este archivo en diario — el histórico vive en `git log`.
 
 **Última verificación contra producción:** 2026-09-12
-**Abiertos:** 11 · **Bloqueantes:** 1
+**Abiertos:** 7 · **Bloqueantes:** 1
 
 Todo lo de abajo fue verificado contra Odoo, `bridge.db` y el host `goncloud` el 2026-08-09.
 Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el histórico).
@@ -23,11 +23,11 @@ Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el h
 | **5** | Activar mapping canal→almacén (3 UPDATE en `bridge_settings`) | ⏳ Abierta | Alta |
 | **6** | Lógica de picking por canal ⚠️ bloqueada por #3 | ⏳ Bloqueada | Alta |
 | **7** | Probar flujo completo con orden real en cada canal | ⏳ Abierta | Alta |
-| **8** | Rebuild imagen Docker — sigue en `fastapi 0.110.0` | ⏳ Abierta | Media |
-| **9** | Crons del host: stats / backup offsite / restore test + remote rclone | ⏳ Abierta | Media |
-| **10** | Purgar 2 mappings MeLi muertos de `sku_mapping` | ⏳ Abierta | Baja |
+| **8** | ~~Rebuild imagen Docker~~ — ya estaba hecho, tracker desactualizado | ✅ Cerrada 2026-09-12 | — |
+| **9** | Crons del host — 2 de 3 instalados; offsite espera remote de rclone | 🟡 Parcial | Media |
+| **10** | ~~Purgar 2 mappings MeLi muertos~~ — hecho; aparecieron 4 más | 🟡 Parcial | Baja |
 | **11** | Apagón de ingress MeLi — resuelto; falta ver el primer webhook real | 🟡 Verificando | Media |
-| **12** | Nada alertó en 19 días — el health ya estaba rojo por otra causa | ⏳ Abierta | **Alta** |
+| **12** | ~~Nada alertó en 19 días~~ — chequeo de frescura en `/v1/health` | ✅ Cerrada 2026-09-12 | — |
 | **13** | `MELI_REDIRECT_URI` apunta a un host que no existe → re-auth OAuth imposible | ⏳ Abierta | Media |
 | **14** | ~~Health en rojo por `amazon_inventory_cache` sin refresco~~ | ✅ Cerrada 2026-09-12 | — |
 | **15** | ~~113 `stock_jobs` encolados~~ — drenaban normal, hoy en 0 | ✅ Cerrada 2026-09-12 | — |
@@ -91,42 +91,69 @@ No requiere restart ni redeploy.
 
 ---
 
-## 8. Rebuild de la imagen Docker · Media
+## 8. ~~Rebuild de la imagen Docker~~ · ✅ Cerrada 2026-09-12
 
-La auditoría de seguridad del 2026-05-08 subió `requirements.txt` a `fastapi>=0.115.0` y convirtió
-`app/Dockerfile` a multi-stage, pero **la imagen nunca se reconstruyó**: el contenedor corre
-`fastapi 0.110.0`. Los fixes de seguridad de FastAPI y el multi-stage no están activos.
+El tracker estaba desactualizado: la imagen ya se había reconstruido (hace ~4
+semanas). Verificado en el contenedor vivo:
 
-- [ ] `docker compose up -d --build` (hacerlo con las colas vacías)
-- [ ] Verificar después: `docker exec bridge-api pip show fastapi` → debe decir ≥ 0.115.0
-
----
-
-## 9. Crons del host pendientes · Media
-
-De la auditoría del 2026-05-08. Los scripts están versionados en `tools/` pero **no desplegados**.
-`rclone` sí está instalado, pero el único remote configurado es `onedrive:` — falta `bridge-offsite`.
-
-- [ ] `tools/docker_stats_log.sh` → copiar al host + cron c/5 min
-- [ ] `tools/bridge_backup_offsite.sh` → copiar + cron `30 3 * * *` + configurar remote rclone `bridge-offsite`
-- [ ] `tools/bridge_restore_test.sh` → copiar + cron `0 4 1 * *`
-
-*(Ya activos y verificados: `goncloud_bridge_cleanup`, `goncloud_bridge_backup`,
-`goncloud_bridge_wal_checkpoint`, `goncloud_meli_refresh`, backfill c/4h, Redis SLOWLOG.)*
+```
+fastapi  0.141.1   (requirements pide >=0.115.0) ✓
+uvicorn  0.52.1                                   ✓
+multi-stage activo (/venv presente, sin compiladores) ✓
+imágenes rollback-20260810T060922Z preservadas
+```
 
 ---
 
-## 10. Mappings MeLi muertos · Baja
+## 9. Crons del host · 🟡 Parcial
 
-`MLM2787930515` y `MLM2787902225` (ambos SKU `NH-ITA-CEN-DOR`) siguen en `sku_mapping` con
-`last_seen_at = 2026-04-18` — casi 4 meses sin que el backfill los vea, mientras que el cron
-**sí está corriendo** (17 mappings refrescados en los últimos 7 días sobre 336 totales).
+Los tres scripts ya estaban desplegados y con md5 idéntico al repo. Lo que
+faltaba eran los crons — ninguno los llamaba. **Y los tres carecían de bit de
+ejecución**, en el repo y en el servidor: de haberlos cableado así habrían
+fallado con "Permission denied" en cada corrida, en silencio. Lo detectó
+`tests/test_schedulers_apuntan_a_scripts_reales.py` antes de desplegar.
 
-Conclusión: los dos listings están pausados o eliminados en MeLi. No hay nada que arreglar del lado
-del bridge; sólo queda purgar las filas para que dejen de aparecer como huérfanos.
+Definiciones versionadas en `tools/cron.d/goncloud_bridge_observability`.
 
-- [ ] Confirmar en el panel de MeLi que ambos están inactivos
-- [ ] `DELETE FROM sku_mapping WHERE remote_item_id IN ('MLM2787930515','MLM2787902225');`
+- [x] `docker_stats_log.sh` → cron c/5 min, verificado corriendo
+- [x] `bridge_restore_test.sh` → cron día 1 a las 04:00 UTC. **Primera corrida:
+      PASSED** (integrity_check ok, 41 tablas, conteos sanos sobre el backup de
+      2.5 GB). Nunca se había probado un backup.
+- [ ] `bridge_backup_offsite.sh` → **desactivado a propósito**: necesita un
+      remote de rclone llamado `bridge-offsite` que no existe (solo hay
+      `onedrive:`). Habilitarlo antes de configurarlo garantiza un fallo cada
+      noche a las 03:30 — el mismo patrón de rojo crónico que causó el apagón
+      de agosto. La línea está en el cron, comentada, lista para descomentar.
+      Configurar con: `rclone config` (nombrar el remote `bridge-offsite`).
+
+---
+
+## 10. Mappings MeLi muertos · 🟡 Parcial
+
+`MLM2787930515` y `MLM2787902225` purgados (336 → 334 filas). Confirmados
+`status=closed, sub_status=['deleted']` vía API antes de borrar. El SKU
+`NH-ITA-CEN-DOR` conserva `MLM2874375637`, activo. Filas respaldadas en
+`data/sku_mapping_purge_20260912.sql`.
+
+**Auditoría completa de los 73 items mapeados** (no estaba en el pendiente):
+
+| estado real | items | qué hacer |
+|---|---|---|
+| `active` | 50 | dejar |
+| `paused` / `out_of_stock` | 14 | **dejar** — vuelven cuando haya stock |
+| `closed` / `deleted` | 4 | muertos |
+| `inactive` / `forbidden,deleted` | 2 | muertos |
+| sin respuesta de la API | 3 | investigar |
+
+Quedan **4 items muertos** más. Borrar sus filas dejaría **3 SKUs sin ningún
+mapping**: `NH-ITA-PEZ-DOR`, `NH-SOLO-GAM-AZU-SAN-PLA`,
+`NH-SOLO-GAM-AZU-VCO-PLA`. Eso puede ser correcto (producto descontinuado) o
+señal de que el listing se recreó con otro ID y el backfill no lo tomó.
+Decisión del operador.
+
+- [ ] Revisar esos 3 SKUs en el panel de MeLi: ¿descontinuados o relistados?
+- [ ] Según eso, purgar los 4 items muertos restantes o corregir sus mappings
+- [ ] Investigar los 3 items sin respuesta de la API
 
 ---
 
