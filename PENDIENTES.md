@@ -17,7 +17,7 @@ el host `goncloud` el 2026-09-12. Lo cerrado se eliminó del archivo (ver
 
 | # | Tarea | Estado | Prioridad |
 |---|-------|--------|-----------|
-| **1** | Drift: 19 archivos difieren entre `tools/` y `data/` del servidor | ⏳ Abierta | Baja |
+| **1** | Drift `tools/` vs `data/`: 2 diferencias reales de 19 | ⏳ Abierta | Baja |
 | **2** | Almacenes por canal — **preparación, sin urgencia** | 🟡 En pausa | Baja |
 
 **Cerrados el 2026-09-12, después de la reescritura de este archivo:** ajuste de
@@ -35,16 +35,40 @@ la orden de compra de `REP-GD`, que el operador maneja por su cuenta.
 
 ## 1. Drift entre `tools/` y `data/` en el servidor · Baja
 
-`tools/check_tools_data_drift.sh` reporta **19 archivos** que difieren entre las
-dos copias que el servidor mantiene de cada herramienta. `/data/` es la que
-manda: el worker la busca ahí primero (regla sellada en CLAUDE.md), así que
-`tools/` puede estar sirviendo versiones viejas como fallback.
+El checker reporta 19 archivos distintos, pero comparados por **AST** (ignorando
+el formato) solo **2 tienen diferencia real de comportamiento**. Los otros 17 son
+el `ruff format` masivo del 2026-08-07: f-strings sin placeholder, imports en una
+línea vs varias, espacios dentro de un literal SQL.
 
-No es urgente — lo que corre es `/data/` — pero es una mina: el día que un
-archivo falte en `/data/`, el fallback ejecuta otra cosa sin avisar.
+**Primero, un dato que no estaba escrito en ningún lado:** los dos directorios
+están vivos, con llamadores distintos.
 
-- [ ] `bash tools/check_tools_data_drift.sh` y promover el lado correcto archivo
-      por archivo
+| Llamador | Qué corre |
+|---|---|
+| Los workers (`run_tool`) | `/data/` primero, `tools/` de fallback |
+| Los timers de systemd del host | `tools/` directo (`ExecStart=...${BRIDGE_BASE}/tools/...`) |
+
+Por eso "promover un lado" no es una sola decisión: depende de quién llama a cada
+archivo. La regla sellada en CLAUDE.md (`/data/` primero) es la del worker, no la
+del host.
+
+### Las 2 reales
+
+- [ ] **`inbound_full_so_refund_and_cancel.py`** (corre por worker desde `/data/`).
+      Le falta la guarda del `die()`: llama `write_audit(audit)` sin verificar que
+      `audit` exista. `audit` se arma después de autenticar contra Odoo, así que
+      si muere antes — falta una env var, falla el auth — tira `NameError` y tapa
+      el error real. **Latente:** hay 0 órdenes MeLi FULL en 1209 del histórico,
+      este camino nunca se ejecutó.
+- [ ] **`sync_meli_listings.py`** (`/data/`). Dos `except:` pelados, la misma
+      clase de bug que el de `amazon_fbm_paid_one_shot.py`: también atrapan
+      `KeyboardInterrupt` y `SystemExit`.
+
+### Lo que NO es un problema
+
+`amazon_prices_sync.py`: el fix del inventario duplicado MX/US **sí está vivo**.
+El timer corre `tools/`, que coincide con el repo. La copia de `/data/` es un
+sobrante viejo que nadie invoca.
 
 ---
 
