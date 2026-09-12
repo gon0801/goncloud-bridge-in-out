@@ -50,7 +50,8 @@ MercadoLibre y Amazon con Odoo 17 ERP.
 
 - **Inbound:** Órdenes de MeLi/Amazon → crea Sale Orders + facturas pagadas en Odoo
 - **Outbound:** Cambios de stock en Odoo → actualiza listings en MeLi/Amazon
-- **Servidor:** VPS Hetzner — alias SSH `gonserver` o `goncloud` (user `root`, IP pública `65.109.4.81`, Tailscale `100.127.167.103`). Migrado del servidor LAN viejo (192.168.0.200, user `gon`) el 2026-05-03. · **URL pública:** `https://meli.goncloud.cc`
+- **Servidor:** VPS Hetzner — alias SSH `gonserver` o `goncloud` (user `root`, IP pública `65.109.4.81`, Tailscale `100.127.167.103`). Migrado del servidor LAN viejo (192.168.0.200, user `gon`) el 2026-05-03. · **URL pública:** `https://mapper.goncloud.cc` (único proxy host hacia `bridge-api:8099`; `meli.goncloud.cc` es del servidor viejo y NO existe — sin proxy host ni certificado)
+- **Ingress:** `bridge-api` debe estar en la red docker `proxy` (la de `nginx-proxy-manager`) o nginx no resuelve el upstream y **todo webhook de MeLi se pierde en silencio**. Está declarado en `docker-compose.yml`; nunca conectarlo a mano con `docker network connect` (se borra en cada recreate — causó 19 días de apagón desde 2026-08-24).
 - **DB:** SQLite en `/mnt/data/appdata/bridge/data/bridge.db`
 - **Repo:** `https://github.com/gon0801/goncloud-bridge-in-out.git`
 

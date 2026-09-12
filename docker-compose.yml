@@ -38,6 +38,12 @@ services:
     networks:
       - goncloud-net
       - odoo_odoo_net
+      # `proxy` es la red de nginx-proxy-manager, que publica este servicio en
+      # internet. Sin ella nginx no resuelve el upstream "bridge-api" y TODO
+      # webhook de MercadoLibre muere en el proxy, en silencio (paso 19 dias
+      # seguidos desde 2026-08-24). Va aca y no con `docker network connect`
+      # porque la union manual se pierde en cada recreate del contenedor.
+      - proxy
 
   bridge-worker:
     build: ./app
@@ -119,4 +125,7 @@ networks:
   goncloud-net:
     external: true
   odoo_odoo_net:
+    external: true
+  # La crea el compose de nginx-proxy-manager; aca solo se referencia.
+  proxy:
     external: true

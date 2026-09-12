@@ -4,8 +4,8 @@
 > Al cerrar una tarea: actualizar checkbox + contador + commit.
 > **No** convertir este archivo en diario — el histórico vive en `git log`.
 
-**Última verificación contra producción:** 2026-08-09
-**Abiertos:** 10 · **Bloqueantes:** 1
+**Última verificación contra producción:** 2026-09-12
+**Abiertos:** 13 · **Bloqueantes:** 1
 
 Todo lo de abajo fue verificado contra Odoo, `bridge.db` y el host `goncloud` el 2026-08-09.
 Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el histórico).
@@ -26,6 +26,9 @@ Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el h
 | **8** | Rebuild imagen Docker — sigue en `fastapi 0.110.0` | ⏳ Abierta | Media |
 | **9** | Crons del host: stats / backup offsite / restore test + remote rclone | ⏳ Abierta | Media |
 | **10** | Purgar 2 mappings MeLi muertos de `sku_mapping` | ⏳ Abierta | Baja |
+| **11** | Cerrar el apagón de ingress MeLi: reconectar red + recuperar ~19 días | 🔴 En curso | **Crítica** |
+| **12** | Nada alertó durante 19 días de inbound MeLi caído | ⏳ Abierta | **Alta** |
+| **13** | `MELI_REDIRECT_URI` apunta a un host que no existe → re-auth OAuth imposible | ⏳ Abierta | Media |
 
 ---
 
@@ -136,3 +139,54 @@ del bridge; sólo queda purgar las filas para que dejen de aparecer como huérfa
 
 - [ ] Confirmar en el panel de MeLi que ambos están inactivos
 - [ ] `DELETE FROM sku_mapping WHERE remote_item_id IN ('MLM2787930515','MLM2787902225');`
+
+---
+
+## 11. Apagón de ingress MeLi (2026-08-24 → 2026-09-12) · Crítica
+
+`bridge-api` quedó fuera de la red docker `proxy` tras el recreate del
+2026-08-24 02:00 UTC. `nginx-proxy-manager` dejó de resolver el upstream y
+**todo webhook de MeLi murió en el proxy durante 19 días**. Último webhook:
+01:44 UTC, 16 min antes del recreate. Amazon no se vio afectado (entra por
+polling). Impacto estimado: **~70-95 órdenes MeLi nunca llegaron a Odoo**
+(~3.8-5/día antes del corte).
+
+La unión a `proxy` estaba hecha a mano con `docker network connect`, que no
+sobrevive a un recreate. Ya está declarada en `docker-compose.yml`.
+
+- [ ] Reconectar en caliente: `docker network connect proxy bridge-api` + `nginx -s reload`
+- [ ] Desplegar `tools/meli_orders_backfill.py` a `/mnt/data/appdata/bridge/data/`
+- [ ] Recuperar el rango: `--from 2026-08-24 --dry-run` y después sin `--dry-run`
+- [ ] Conciliar contra Odoo cuántas órdenes entraron y revisar `manual_review`
+- [ ] Aplicar el compose nuevo (`docker compose up -d`) para que el fix sea permanente
+
+---
+
+## 12. Nada alertó durante 19 días · Alta
+
+El health endpoint (D5.4) vigila profundidad de *dead queues*, pero
+`ml_orders_jobs` estaba en **0**: no había nada atascado, simplemente no
+llegaba nada. Un inbound en silencio total no dispara ninguna alarma hoy.
+
+- [ ] Chequeo de *staleness*: si no entra un evento MeLi en N horas → `ok: false`
+- [ ] Que ese chequeo llegue a algún lado (uptime-kuma ya corre en el host)
+- [ ] Test que cubra el caso (regla del quality-kit)
+
+---
+
+## 13. `MELI_REDIRECT_URI` apunta a un host inexistente · Media
+
+[`app/main.py:155`](app/main.py) tiene hardcodeado
+`https://meli.goncloud.cc/oauth/callback`. Ese host **no existe**: no tiene
+proxy host ni certificado en `nginx-proxy-manager` (revisada la tabla completa,
+incluidos los borrados). Es del servidor viejo. El refresh diario funciona
+porque usa el `refresh_token` y no necesita redirect — pero **una re-auth desde
+cero fallaría**, justo cuando más urge.
+
+Ojo: cambiar el valor en el código sin cambiarlo también en el panel de MeLi
+rompe OAuth. Las dos puntas tienen que moverse juntas.
+
+- [ ] Decidir el host definitivo (`mapper.goncloud.cc` es el que sí existe)
+- [ ] Actualizar el redirect URI registrado en el DevCenter de MeLi
+- [ ] Actualizar `app/main.py:155`
+- [ ] Limpiar `meli.goncloud.cc` de `MASTER_RUNBOOK.md`, `docs/RUNBOOK.md` y `SETUP_WIZARD_CANONICAL_v1.md` (15 menciones)
