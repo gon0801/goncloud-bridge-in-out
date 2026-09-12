@@ -5,7 +5,7 @@
 > **No** convertir este archivo en diario — el histórico vive en `git log`.
 
 **Última verificación contra producción:** 2026-09-12
-**Abiertos:** 14 · **Bloqueantes:** 1
+**Abiertos:** 11 · **Bloqueantes:** 1
 
 Todo lo de abajo fue verificado contra Odoo, `bridge.db` y el host `goncloud` el 2026-08-09.
 Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el histórico).
@@ -16,7 +16,7 @@ Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el h
 
 | # | Tarea | Estado | Prioridad |
 |---|-------|--------|-----------|
-| **1** | MeLi inbound: `bad_resource` ensucia la DLQ (359 dead/30d) | ⏳ Abierta | **Alta** |
+| **1** | ~~MeLi inbound: `bad_resource` ensucia la DLQ~~ | ✅ Cerrada 2026-09-12 | — |
 | **2** | Odoo: desmarcar Buy/Manufacture to Resupply en los 3 almacenes nuevos | ⏳ Abierta | Media |
 | **3** | **Decidir estrategia phantom BOM** ⚠️ bloquea 5 y 6 | ⏳ Abierta | **Crítica** |
 | **4** | Primera transferencia de prueba EHV/Stock → FBAMX/Stock | ⏳ Abierta | Alta |
@@ -29,39 +29,25 @@ Lo que ya estaba hecho se eliminó del archivo (ver `git log` si hace falta el h
 | **11** | Apagón de ingress MeLi — resuelto; falta ver el primer webhook real | 🟡 Verificando | Media |
 | **12** | Nada alertó en 19 días — el health ya estaba rojo por otra causa | ⏳ Abierta | **Alta** |
 | **13** | `MELI_REDIRECT_URI` apunta a un host que no existe → re-auth OAuth imposible | ⏳ Abierta | Media |
-| **14** | Caché de Amazon congelado desde 2026-08-10 pese a que el timer corre c/6h | ⏳ Abierta | **Alta** |
-| **15** | 113 `stock_jobs` encolados sin drenar | ⏳ Abierta | Media |
+| **14** | ~~Health en rojo por `amazon_inventory_cache` sin refresco~~ | ✅ Cerrada 2026-09-12 | — |
+| **15** | ~~113 `stock_jobs` encolados~~ — drenaban normal, hoy en 0 | ✅ Cerrada 2026-09-12 | — |
 
 ---
 
-## 1. MeLi inbound — `bad_resource` ensucia la DLQ · Alta
+## 1. ~~DLQ con `bad_resource`~~ · ✅ Cerrada 2026-09-12
 
-**Evidencia (2026-08-09):** 359 registros `dead` en 30 días en `processed_inbound_events`,
-**100 % con `reason=bad_resource`**. Desglose por recurso:
+Resuelto en PR #36, desplegado y `bridge-inbound-worker` reiniciado.
 
-| Recurso | Cantidad | Qué es |
-|---|---|---|
-| `/collections/{id}` | 303 (84 %) | notificaciones del topic **payments** |
-| `/questions/{id}` | 9 | topic **questions** (preguntas de compradores) |
-| UUID de 32 hex sin `/` | ~47 | formato nuevo de notificación de MeLi (topic por identificar) |
+Los topics conocidos que el worker no procesa (`payments`, `messages`,
+`questions`) ahora se registran como `skipped` con `reason=topic_not_handled`.
+Un topic **desconocido** sigue yendo a `dead` a propósito.
 
-**Causa:** [`app/inbound_worker.py:1473`](app/inbound_worker.py) — el regex
-`^/orders/([A-Z0-9\-]+)$` sólo acepta órdenes; **todo lo demás cae a `dead`**.
+Los "UUID de 32 hex de topic por identificar" eran **`messages`** (mensajería
+post-venta). Inventario completo: `orders_v2` 3474 · `payments` 1671 ·
+`messages` 267 · `questions` 105 · `orders` 29.
 
-**NO se están perdiendo órdenes.** Las órdenes reales siguen entrando (10–46 `success`/día).
-Estos son topics a los que la app está suscrita y el worker no maneja.
-
-**Por qué importa igual:**
-- Falsas alarmas en el health endpoint (D5.4 dispara con `ml_orders_dead > 50`).
-- Una falla real de una orden queda enterrada entre cientos de eventos de pago.
-- `ml_orders_dead` tiene 9 entradas ahora mismo.
-
-- [ ] Clasificar topics conocidos que no son órdenes como `ignored`/`skipped`, no `dead`
-- [ ] Identificar qué topic manda los UUID de 32 hex antes de decidir qué hacer con ellos
-- [ ] Alternativa complementaria: desuscribir topics no usados en el panel de MeLi
-- [ ] Test que cubra el caso (regla del quality-kit: todo fix lleva su prueba)
-
----
+Queda como opción del operador, no del código: desuscribir en el panel de MeLi
+los topics que no se usen. `questions` y `messages` podrían querer manejarse.
 
 ## 2–4. Almacenes en Odoo
 
@@ -231,26 +217,42 @@ rompe OAuth. Las dos puntas tienen que moverse juntas.
 
 ---
 
-## 14. Caché de Amazon congelado · Alta
+## 14. ~~Health en rojo por `amazon_inventory_cache`~~ · ✅ Cerrada 2026-09-12
 
-`/v1/health` reporta `amazon_cache_age_hours: 802` (~33 días) y
-`amazon_cache_warn: stale_802h`. El último refresco fue el **2026-08-10**, pese
-a que `amazon-prices-sync.timer` corre cada 6h y aparece como activo.
+Resuelto en PR #35, desplegado y verificado: **`/v1/health` devuelve `ok: true`**
+por primera vez desde el 2026-08-10.
 
-Es la causa de que el health esté en rojo desde entonces, que es lo que tapó el
-apagón de MeLi durante 19 días (ver #12). Mientras no se arregle, cualquier
-alerta nueva que cuelgue del health nace ignorada.
+**El diagnóstico anterior era falso.** Este archivo decía que
+`amazon-prices-sync.timer` "falla en silencio pese a correr cada 6h". Ese timer
+funciona perfecto (exit 0, 1071 items MX + 258 listings US + 1071 FBA US). El
+problema real: health y sync miran tablas distintas.
 
-- [ ] Ver por qué falla en silencio: `journalctl -u amazon-prices-sync --since "7 days ago"`
-- [ ] Arreglar la causa y confirmar que `amazon_cache_age_hours` baja
-- [ ] Test que cubra el caso (regla del quality-kit)
+| | |
+|---|---|
+| Health lee | `amazon_inventory_cache` |
+| El sync escribe | `amazon_listing_prices`, `amazon_fba_inventory` |
+
+`amazon_inventory_cache` solo alimenta la lista de SKUs del mapper UI y se
+escribía a mano. Ahora la refresca `amazon-inventory-refresh.timer` c/6h
+(00,06,12,18:55 UTC). Units versionadas en `tools/systemd/`.
 
 ---
 
-## 15. `stock_jobs` sin drenar · Media
+## 15. ~~`stock_jobs` sin drenar~~ · ✅ Cerrada 2026-09-12
 
-`/v1/health` reporta `stock_jobs_queued: 113`. Sin diagnosticar todavía — puede
-ser backlog normal del sync outbound o un consumidor atascado.
+Falsa alarma. Los 113 encolados eran backlog normal del sync outbound: se
+drenaron solos, medido tres veces seguidas en 0. No había consumidor atascado.
 
-- [ ] Revisar si el worker outbound los está consumiendo o están parados
-- [ ] Si están parados, encontrar por qué antes de purgar
+---
+
+## Nota: la cola `ml_orders_dead` (9 entradas)
+
+Residuo obsoleto del **2026-05-08**, dos órdenes que sí terminaron en Odoo:
+
+| orden | SO | estado | monto |
+|---|---|---|---|
+| `2000016327680524` | S01378 | sale | $1,488.54 |
+| `2000016330666386` | S01377 | sale | $1,310.87 |
+
+No hay nada perdido. Se puede purgar (`DEL ml_orders_dead`) para dejar de sumar
+ruido al health, pero es borrado en producción: decisión del operador.
