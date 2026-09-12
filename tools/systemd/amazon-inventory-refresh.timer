@@ -1,0 +1,13 @@
+[Unit]
+Description=Refrescar el cache de inventario Amazon cada 6 horas
+Requires=amazon-inventory-refresh.service
+
+[Timer]
+# Desfasado 20 min de amazon-prices-sync (00,06,12,18:35) para no competir
+# por la cuota de la SP-API.
+OnCalendar=*-*-* 00,06,12,18:55:00 UTC
+Persistent=true
+Unit=amazon-inventory-refresh.service
+
+[Install]
+WantedBy=timers.target
