@@ -19,9 +19,25 @@ on:
   push:
     branches: [main, master]
   pull_request:
+    # Ahorro CI (2026-09, pedido del dueno): en borrador la bateria espera;
+    # arranca sola al marcar listo para revision (ready_for_review), al
+    # etiquetar (labeled) o al salir de borrador (converted_to_draft).
+    types: [opened, synchronize, reopened, ready_for_review, labeled, converted_to_draft]
+
+# Ahorro CI: si llega un push nuevo sobre la misma rama o PR, la corrida
+# anterior se cancela sola y solo la ULTIMA corre la bateria. Lo cancelado
+# nunca deja un verde falso: el gate es fail-closed ante cancelaciones.
+concurrency:
+  group: quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 
 jobs:
   quality:
+    # Ahorro CI: en PR borrador este job NO corre (el gate lo da por
+    # pendiente); corre solo al marcar listo para revision. Push a main/master:
+    # no hay borrador.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -93,11 +109,25 @@ jobs:
       - name: Todos los jobs de calidad en verde
         env:
           R_QUALITY: ${{ needs.quality.result }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           rc=0
           for par in "quality=$R_QUALITY"; do
             printf '%s\n' "$par"
-            case "$par" in *=success) ;; *) rc=1 ;; esac
+            case "$par" in
+              *=success) ;;
+              # Omitido SOLO con borrador (bateria pausada) o fast; sin eso rebota.
+              *=skipped)
+                if [ "$DRAFT" = "true" ]; then
+                  echo "gate: $par omitido, PR en borrador: la bateria corre al marcar listo para revision"
+                else
+                  echo "gate: $par omitido SIN borrador que lo autorice" >&2
+                  rc=1
+                fi ;;
+              *)
+                echo "gate: $par no quedo en success (fallo o cancelacion)" >&2
+                rc=1 ;;
+            esac
           done
           [ "$rc" -eq 0 ] || { echo "gate: algun job de calidad NO quedo en success" >&2; exit 1; }
           echo "gate: OK -- todos en success"
