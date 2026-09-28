@@ -20,7 +20,7 @@ Este repo integra MercadoLibre y Amazon con Odoo 17. Las órdenes entran a Odoo;
 ## Invariantes que requieren atención
 
 - El inbound de webhooks llega por Cloudflare Tunnel a `127.0.0.1:8099`. La interfaz del mapper usa la red Docker `proxy`. Declara ambos caminos en `docker-compose.yml`; una configuración manual desaparece al recrear el contenedor.
-- Los workers buscan herramientas primero en `/data/` y después en `tools/`. Los timers del host ejecutan `tools/` directamente. Verifica qué copia llama cada servicio antes de desplegar.
+- Los workers buscan herramientas primero en `/data/` y después en `tools/`. Algunos timers del host ejecutan `tools/` directamente; otros llaman `/data/`. Verifica qué copia llama cada servicio antes de desplegar.
 - Una orden FULL de MercadoLibre en `returned` no prueba que se haya emitido un refund. La reversa contable exige una señal explícita según el anexo C.
 - Amazon Flex MX puede llegar en `Pending` y requiere el flujo con picking descrito en la referencia. Comprueba el tratamiento en el poll y en el worker al cambiar ese flujo.
 

@@ -290,8 +290,8 @@ WHERE result IN ('manual_review','dead')
 ORDER BY processed_at DESC;"
 ```
 
-> Órdenes MeLi con `rawsha:` como dedupe_key NO tienen payload persistido.
-> Para recuperarlas: re-enviar el webhook desde MeLi.
+> Para órdenes MeLi con `rawsha:` como dedupe_key, busca primero el payload con `tools/recover_manual_review.py`.
+> Si ya expiró, reenvía el webhook desde MeLi.
 
 ---
 

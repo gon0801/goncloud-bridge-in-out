@@ -109,7 +109,7 @@ MercadoLibre y Amazon con Odoo 17 ERP.
 | **FBA cancelled** | `FulfillmentChannel=AFN` + `OrderStatus=Canceled` | Credit Note | `AMZFBA:mkt:id` |
 | **FBM paid** | `FulfillmentChannel=MFN` + `OrderStatus=Unshipped/Shipped` | SO + Picking + Invoice pagada | `AMZFBM:mkt:id` |
 | **FBM cancelled** | `FulfillmentChannel=MFN` + `OrderStatus=Canceled` | Credit Note + cancel picking | `AMZFBM:mkt:id` |
-| **Flex MX paid** | `AFN` + `Marketplace=MX` + `OrderStatus=Pending` | SO + Picking + Invoice pagada | `AMZFBM:MX:id` |
+| **Flex MX paid** | `AFN` + `Marketplace=MX` + `OrderStatus=Pending` | SO + Picking; factura pagada cuando hay precio | `AMZFBM:MX:id` |
 
 ### Amazon — Perfiles por marketplace
 
@@ -211,7 +211,7 @@ llamadores distintos — antes de promover un archivo, ver quién lo invoca:
 | Llamador | Qué ejecuta |
 |---|---|
 | Workers (`run_tool()`) | `/data/` primero, `tools/` de fallback |
-| Timers de systemd del host | `tools/` directo (`ExecStart=...${BRIDGE_BASE}/tools/...`) |
+| Algunos timers de systemd del host | `tools/` directo (`ExecStart=...${BRIDGE_BASE}/tools/...`); otros llaman `/data/` |
 | `app/main.py` | algunos con ruta fija `/data/` (ej. `sync_meli_listings.py`) |
 
 Copiar "al lado bueno" sin mirar el llamador puede deployar un fix donde nadie
