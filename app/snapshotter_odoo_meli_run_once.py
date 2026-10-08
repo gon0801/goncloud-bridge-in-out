@@ -126,7 +126,7 @@ for p in products:
         skipped_not_mapped += 1
         continue
 
-    qty = int(p.get("qty_available") or 0)
+    qty = max(int(p.get("qty_available") or 0), 0)
 
     cur.execute(
         "INSERT INTO snapshot_items(event_id, channel, sku, qty) VALUES (?,?,?,?)",
