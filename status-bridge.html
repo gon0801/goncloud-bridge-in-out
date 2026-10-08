@@ -428,6 +428,13 @@
       <td><span class="badge badge-done">✅ Completada</span></td>
       <td><span class="pri pri-critica">Crítica</span></td>
     </tr>
+    <tr>
+      <td class="sub">D9</td>
+      <td>Deep-dive sync de stock: qué número viaja a MELI/Amazon</td>
+      <td><strong>2 hallazgos</strong>: 1 Crítico, 1 Alto — El stock sincronizado es el <code>qty_available</code> del kit (BOM fantasma), no el del componente; Amazon FBM pisa a 0 y FBA no recibe push. Top: <strong>snapshotter MELI mandaba qty negativo crudo</strong> (-102 en <code>NH-CAR-ROJ-*</code>) → HTTP 400 cada 5 min y publicación congelada (fix <code>cf72fd4</code> desplegado); <strong>6 productos con stock negativo en Odoo</strong> (peor: <code>EST-CAR-ROJ</code> -102) → requieren ajuste de inventario físico, fuera del bridge.</td>
+      <td><span class="badge badge-done">✅ Completada</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
 
     <!-- PUNTOS A CORREGIR — D1-D4 -->
     <tr class="group-header">
@@ -843,12 +850,31 @@
       <td><span class="pri pri-baja">Baja</span></td>
     </tr>
 
+    <!-- D9 Deep-dive sync de stock -->
+    <tr class="group-header">
+      <td>D9</td>
+      <td colspan="4">Deep-dive sync de stock Odoo→MELI/Amazon <span class="sub">2 puntos: 1 corregido, 1 pendiente operativo</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D9.1</td>
+      <td colspan="2"><code>app/snapshotter_odoo_meli_run_once.py:129</code> — stock negativo de kits viajaba crudo a MELI → HTTP 400 cada 5 min y publicación congelada; piso <code>max(..., 0)</code> (<code>cf72fd4</code>)</td>
+      <td><span class="badge badge-done">✅ Corregido</span></td>
+      <td><span class="pri pri-alta">Alta</span></td>
+    </tr>
+    <tr>
+      <td class="sub">D9.2</td>
+      <td colspan="2">6 productos con stock negativo en Odoo (peor: <code>EST-CAR-ROJ</code> -102) → ajuste de inventario físico; mientras sigan, sus kits calculan 0 y no se recuperan</td>
+      <td><span class="badge badge-blocker">🔴 Pendiente</span></td>
+      <td><span class="pri pri-critica">Crítica</span></td>
+    </tr>
+
   </tbody>
 </table>
 
 <div class="section-closed">
   <h3>✅ Cerrados recientemente</h3>
   <ul>
+    <li><strong>2026-10-07</strong> — <strong>Deep-dive D9 sync de stock completada:</strong> 2 hallazgos (1 Crítico, 1 Alto). El número que viaja a MELI/Amazon es el <code>qty_available</code> del kit (BOM fantasma), no el del componente; Amazon FBM pisa a 0 y FBA no recibe push. Top: snapshotter MELI mandaba <strong>-102 crudo</strong> (<code>NH-CAR-ROJ-*</code>, por el componente <code>EST-CAR-ROJ</code> en negativo) → HTTP 400 cada 5 min y publicación congelada — fix piso <code>max(..., 0)</code> en <code>app/snapshotter_odoo_meli_run_once.py:129</code> (<code>cf72fd4</code>) + test conductual que corre el script real contra un Odoo XML-RPC falso (<code>1e36ca2</code>, rojo → verde), desplegado y verificado en producción (evento 134769: los 8 SKUs ROJ ya snapshottean 0, los sanos siguen en 133). Queda pendiente operativo (D9.2): ajuste físico de inventario en Odoo para 6 productos en negativo.</li>
     <li><strong>2026-08-31</strong> — <strong>Auditoría D8 Mapeos Amazon ↔ Odoo completada:</strong> 6 hallazgos (1 Crítico, 2 Altos, 2 Medios, 1 Bajo). 568 filas auditadas (<code>amazon_sku_mapping</code> 450 + <code>amazon_sku_marketplace</code> 118) contra Odoo y los caches vivos de Amazon: 555 OK, 0 mapeos rotos hacia Odoo, 1 ASIN desactualizado, 12 ASINs vacíos. Top: 13 SKUs con 400u FBA c/u vendibles sin producto Odoo (D8.1); 42 listings activos sin resolver, incluye los 9 SKUs reportados por el operador (D8.2); el ASIN viejo de <code>XM-20QN-2YJR</code> producía joins falsos por ASIN — detectado al investigar <code>KQ-5BXO-THDH</code> (D8.3). Script: <code>tools/amazon_mapping_audit.py</code>; TSVs: <code>/mnt/data/appdata/bridge/data/mapping_audit_2026-08-31/</code>.</li>
     <li><strong>2026-05-08</strong> — <strong>Quick wins seguridad F3.1+F5.1+F8.1+D6.6:</strong> <code>/mapper</code>, <code>/setup</code>, <code>/amazon/mapper</code> protegidos con <code>Depends(require_secret)</code> (F3.1-3.3); contraseña Odoo no persiste en <code>state.odoo</code> — se lee del DOM inline y se descarta tras la llamada (F5.1); middleware de seguridad HTTP agregado: CSP, <code>X-Frame-Options: DENY</code>, <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy</code> (F8.1+8.3); <code>RECOVERY_CHECKLIST.txt</code> reescrito — comandos actuales, tablas reales, credenciales referenciadas correctamente (D6.6).</li>
     <li><strong>2026-05-08</strong> — <strong>Auditoría D7 MeLi OAuth &amp; API completada:</strong> 7 hallazgos (1 Alto, 3 Medios, 3 Bajos). Top: worker <code>ml_get()</code> en <code>inbound_worker.py</code> no refresca token inline ante HTTP 401 — depende 100% del cron cada 6h; cuando el cron falló el 8/may 01:07 UTC (archivo <code>/tmp</code> con owner <code>root</code>), el worker generó <strong>36 dead orders</strong> con <code>token_expired</code> antes del refresh manual a las 07:15 UTC (D7.1 ALTO); el comentario "circuit breaker pattern" en <code>ml_get()</code> es pura documentación — no existe implementación real (D7.2 MEDIO); rate limit 429 sin lectura de headers <code>X-Rate-Limit-Remaining/Reset</code> → retry ciego que puede empeorar throttling (D7.4 MEDIO); OAuth flow sin PKCE (D7.5 BAJO); callback no exige <code>refresh_token</code> obligatorio (D7.6 BAJO). Token actual verificado: válido (user_id 135734858), 17 scopes incluyendo <code>offline_access</code>.</li>
