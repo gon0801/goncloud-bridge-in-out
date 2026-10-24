@@ -1,5 +1,5 @@
 # Dependencias de terceros que importa el codigo del bridge.
-# Sirven para instalar el entorno y correr las pruebas a mano.
+# Sirven para instalar el entorno; para las pruebas, ademas pip install pytest.
 #
 # NO incluye `odoo`: bridge_connector/ es un addon que corre dentro del
 # runtime de Odoo, no se instala por pip. Los tests no lo importan.
