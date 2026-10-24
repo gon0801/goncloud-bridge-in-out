@@ -23,3 +23,12 @@ Este repo integra MercadoLibre y Amazon con Odoo 17. Las órdenes entran a Odoo;
 - Los workers buscan herramientas primero en `/data/` y después en `tools/`. Algunos timers del host ejecutan `tools/` directamente; otros llaman `/data/`. Verifica qué copia llama cada servicio antes de desplegar.
 - Una orden FULL de MercadoLibre en `returned` no prueba que se haya emitido un refund. La reversa contable exige una señal explícita según el anexo C.
 - Amazon Flex MX puede llegar en `Pending` y requiere el flujo con picking descrito en la referencia. Comprueba el tratamiento en el poll y en el worker al cambiar ese flujo.
+
+## Pruebas y revisiones
+- Pruebas nuevas SOLO en 4 casos: dinero (pujas, precios, presupuestos, cobros), escribir datos de produccion
+  (base del servidor, Amazon, Mercado Libre, Shopify, Odoo), instalar/borrar/deshacer en las maquinas, y una
+  falla que ya paso en produccion (una prueba, no una bateria). Lo demas: basta comprobar que corre. Nunca
+  pruebas de texto, de las pruebas ni mutantes. Un revisor no pide pruebas fuera de eso.
+- Un revisor solo bloquea por seguridad, datos, el comportamiento pedido roto o un caso de los 4 sin su
+  prueba, siempre con el comando que lo reproduce. Lo demas va en notas y se corrige en la misma ronda.
+- Nunca subir contrasenas ni llaves a un repo.
