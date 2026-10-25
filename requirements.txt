@@ -1,7 +1,5 @@
 # Dependencias de terceros que importa el codigo del bridge.
-# Sirven para dos cosas: instalar el entorno y habilitar el paso
-# "Run Python tests" del workflow de CI, que esta condicionado a que exista
-# este archivo (o pyproject.toml).
+# Sirven para instalar el entorno; para las pruebas, ademas pip install pytest.
 #
 # NO incluye `odoo`: bridge_connector/ es un addon que corre dentro del
 # runtime de Odoo, no se instala por pip. Los tests no lo importan.
@@ -14,7 +12,5 @@ redis
 requests
 # No lo importa el bridge en runtime: lo usa tests/test_docker_compose_topologia.py
 # para parsear docker-compose.yml de verdad (no por grep) y verificar que
-# bridge-api declare la red del proxy. Va aca y no en un requirements-dev.txt
-# porque quality.yml lo genera el quality-kit y se regenera; este archivo es el
-# unico que CI instala siempre.
+# bridge-api declare la red del proxy.
 pyyaml

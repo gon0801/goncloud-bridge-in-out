@@ -31,17 +31,11 @@ ssh gonserver "cd /mnt/data/appdata/bridge && git pull origin main"
 
 No rebuild required — the container mounts `/mnt/data/appdata/bridge/app:/app`.
 
-<!-- >>> QUALITY-KIT CALIDAD SECTION START -- managed by quality-kit's init-repo.ps1. Do not hand-edit between these markers; re-running init-repo.ps1 will refresh this block cleanly. -->
-## Calidad (quality-kit)
-
-Candados de commit instalados (pre-commit):
-- base (limpieza de archivos)
-- ruff (lint + formato Python)
-
-Comandos para correr los candados a mano:
-- `pre-commit run --all-files` (todos los candados de commit)
-
-Reglas de hierro:
-1. Si un candado falla, se arregla el problema real -- JAMAS se usa `--no-verify` ni se saltea un candado.
-2. Cada bug arreglado incluye, en el mismo cambio, una prueba que lo habria atrapado.
-<!-- >>> QUALITY-KIT CALIDAD SECTION END -->
+## Pruebas y revisiones
+- Pruebas nuevas SOLO en 4 casos: dinero (pujas, precios, presupuestos, cobros), escribir datos de produccion
+  (base del servidor, Amazon, Mercado Libre, Shopify, Odoo), instalar/borrar/deshacer en las maquinas, y una
+  falla que ya paso en produccion (una prueba, no una bateria). Lo demas: basta comprobar que corre. Nunca
+  pruebas de texto, de las pruebas ni mutantes. Un revisor no pide pruebas fuera de eso.
+- Un revisor solo bloquea por seguridad, datos, el comportamiento pedido roto o un caso de los 4 sin su
+  prueba, siempre con el comando que lo reproduce. Lo demas va en notas y se corrige en la misma ronda.
+- Nunca subir contrasenas ni llaves a un repo.
