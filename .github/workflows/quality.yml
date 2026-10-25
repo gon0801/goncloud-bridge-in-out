@@ -26,4 +26,4 @@ jobs:
           ./gitleaks git --redact --no-banner -v .
       - name: El código carga
         if: ${{ !cancelled() }}
-        run: git ls-files -z '*.py' | xargs -0 python -m compileall -q
+        run: git ls-files -z '*.py' | xargs -0r python -m compileall -q
