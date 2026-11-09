@@ -126,7 +126,7 @@ Use this checklist during each section of the audit. Tick items as they are veri
 - [ ] All cron jobs log output to timestamped files
 - [ ] Cron failures trigger alert (or at minimum persist stderr)
 - [ ] `bridge_backup.sh` includes `bridge.db`, `.meli_tokens.json`, `amazon_credentials.json`
-- [ ] Backup retention policy defined and enforced
+- [ ] Backup retention policy defined and enforced (local: 3 days per prefix, `BRIDGE_BACKUP_KEEP`)
 - [ ] `cleanup_old_records.py` dry-run mode tested before production run
 - [ ] `check_tools_data_drift.sh` runs without false positives
 - [ ] `start_inbound.sh` checks preconditions (Redis up, DB writable)
