@@ -30,9 +30,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 # autenticado, en vez de crear uno nuevo: no habia motivo para pedir
 # credenciales nuevas solo por el nombre.
 #
-# Son ~16 GiB la primera corrida y ~2.4 GiB por noche. El script usa `sync`,
-# asi que el remoto espeja la ventana de 7 dias del backup local y queda
-# acotado en ~17 GiB en vez de crecer sin tope.
+# Son ~7.3 GiB la primera corrida y ~2.4 GiB por noche. El script usa `sync`,
+# asi que el remoto espeja la ventana de 3 dias del backup local y queda
+# acotado en ~7.3 GiB en vez de crecer sin tope.
 #
 # 03:30 UTC, despues del backup local de las 02:00.
 30 3 * * * root RCLONE_REMOTE=onedrive /mnt/data/appdata/bridge/tools/bridge_backup_offsite.sh >> /mnt/data/appdata/bridge/data/backup_offsite.log 2>&1
