@@ -131,6 +131,13 @@ Worker detecta:
 El poll NO debe saltear Pending si is_flex_mx == True.
 ```
 
+El setting `amazon_mx_afn_profile` (`FLEX_MX` | `FBA_MX`) decide el perfil de los
+pedidos AFN de MX. Sin setting, o con cualquier otro valor (se registra un aviso),
+vale `FLEX_MX` y el comportamiento es el descrito arriba. Con `FBA_MX` el worker
+usa el perfil `FBA_MX` (sin picking) y el poll vuelve a saltar los `Pending` de
+AFN MX. Worker y poll leen el mismo setting; cámbialo solo el día del traslado
+físico de Flex a FBA México.
+
 ### Formato de campos en Odoo (TODOS los canales)
 
 ```

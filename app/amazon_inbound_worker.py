@@ -1129,6 +1129,22 @@ _PROFILE_MAP = {
 }
 
 
+MX_AFN_PROFILES = ("FLEX_MX", "FBA_MX")
+
+
+def mx_afn_profile() -> str:
+    """Perfil de los pedidos AFN de MX según el setting amazon_mx_afn_profile."""
+    value = get_setting("amazon_mx_afn_profile", "FLEX_MX").strip().upper()
+    if value in MX_AFN_PROFILES:
+        return value
+    log(
+        "amazon_mx_afn_profile inválido, se usa FLEX_MX",
+        "WARN",
+        {"value": value, "valid": list(MX_AFN_PROFILES)},
+    )
+    return "FLEX_MX"
+
+
 def detect_order_profile(order: Dict[str, Any]) -> Tuple[str, str, str]:
     """Returns (channel_type, label, profile) e.g. ('FBM', 'Amazon Flex MX', 'FLEX_MX')."""
     channel = (order.get("FulfillmentChannel", "") or "").upper()
@@ -1136,7 +1152,7 @@ def detect_order_profile(order: Dict[str, Any]) -> Tuple[str, str, str]:
     is_mx = marketplace == AMZ_MX_MARKETPLACE
 
     if channel == "AFN":
-        profile = "FLEX_MX" if is_mx else "FBA_US"
+        profile = mx_afn_profile() if is_mx else "FBA_US"
     elif channel == "MFN":
         ess = order.get("EasyShipShipmentStatus")
         if ess is not None:

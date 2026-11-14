@@ -199,6 +199,21 @@ def get_setting(key: str, default: str = "") -> str:
         return default
 
 
+def mx_afn_profile() -> str:
+    """Perfil de los pedidos AFN de MX según amazon_mx_afn_profile.
+
+    Misma regla que el worker: solo FBA_MX lo cambia; cualquier otro valor es FLEX_MX.
+    """
+    value = (get_setting("amazon_mx_afn_profile") or "FLEX_MX").strip().upper()
+    if value in ("FLEX_MX", "FBA_MX"):
+        return value
+    print(
+        f"[poll] WARN: amazon_mx_afn_profile={value!r} inválido, se usa FLEX_MX",
+        file=sys.stderr,
+    )
+    return "FLEX_MX"
+
+
 def get_credentials():
     return {
         "client_id": get_setting("amazon_sp_api_client_id"),
@@ -426,6 +441,8 @@ def main():
     total_orders = 0
     total_pushed = 0
     total_skipped = 0
+    mx_afn_is_flex = mx_afn_profile() == "FLEX_MX"
+    print(f"[poll] amazon_mx_afn_profile={'FLEX_MX' if mx_afn_is_flex else 'FBA_MX'}")
 
     for mp_name, mp_id in marketplaces:
         print(f"[poll] Checking {mp_name} ({mp_id})...")
@@ -445,9 +462,11 @@ def main():
             status = order.get("OrderStatus", "unknown")
 
             # Skip pending orders — EXCEPTO Flex MX (AFN + marketplace MX)
-            # Flex MX necesita SO+picking aunque esté Pending (escáneo de paquetes)
+            # Flex MX necesita SO+picking aunque esté Pending (escáneo de paquetes).
+            # Con amazon_mx_afn_profile=FBA_MX el AFN de MX ya no es Flex.
             is_flex_mx = (
-                mp_id == "A1AM78C64UM0Y8"
+                mx_afn_is_flex
+                and mp_id == "A1AM78C64UM0Y8"
                 and order.get("FulfillmentChannel", "").upper() == "AFN"
             )
             if status == "Pending" and not is_flex_mx:
