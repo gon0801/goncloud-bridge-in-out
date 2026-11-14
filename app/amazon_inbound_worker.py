@@ -1372,16 +1372,16 @@ def process_fbm(
         if not is_enabled("amazon_inbound_fbm_paid_enabled"):
             mark_completed(dedupe_key, "skipped", {"reason": "paid_disabled"})
             return False
-        rc, out, err = run_tool(
-            "amazon_fbm_paid_one_shot",
-            {
-                "CLIENT_ORDER_REF": ref,
-                "ORDER_JSON": json.dumps(order),
-                "CHANNEL_LABEL": channel_label,
-                "BUYER_NAME": buyer_name,
-                "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
-            },
-        )
+        tool_env = {
+            "CLIENT_ORDER_REF": ref,
+            "ORDER_JSON": json.dumps(order),
+            "CHANNEL_LABEL": channel_label,
+            "BUYER_NAME": buyer_name,
+            "IS_USD_ORDER": "1" if marketplace != AMZ_MX_MARKETPLACE else "0",
+        }
+        if detect_order_profile(order)[2] == "FLEX_MX":
+            tool_env["WAREHOUSE_NAME"] = get_setting("warehouse_amazon_flex_mx").strip()
+        rc, out, err = run_tool("amazon_fbm_paid_one_shot", tool_env)
         result, detail = map_tool_result(rc, out, err)
         ms = int((time.time() - start) * 1000)
         return _finalize(dedupe_key, result, {"ref": ref, **detail}, ms)

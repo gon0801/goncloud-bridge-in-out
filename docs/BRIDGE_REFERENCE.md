@@ -138,6 +138,15 @@ usa el perfil `FBA_MX` (sin picking) y el poll vuelve a saltar los `Pending` de
 AFN MX. Worker y poll leen el mismo setting; cámbialo solo el día del traslado
 físico de Flex a FBA México.
 
+El setting `warehouse_amazon_flex_mx` (vacío por omisión) elige el almacén de Odoo
+de las SO de perfil `FLEX_MX`. Vacío, la SO usa el almacén por omisión (EHV-MX) y el
+picking sale de EHV/Stock. Con un nombre (p. ej. `FBA - MX`) la SO se crea en ese
+almacén y su picking sale de su ubicación (FBAMX/Stock); el picking se crea y no se
+cancela. Un nombre que no existe en Odoo aborta el pedido en vez de caer a EHV. Solo
+aplica a `FLEX_MX`: Easy MX, FBM MX y FBM US siguen en el almacén por omisión y FBA US
+usa `warehouse_amazon_fba_us`. El script es `tools/amazon_fbm_paid_one_shot.py`; el
+worker lo corre desde `/data/`, así que hay que copiarlo allí al desplegar.
+
 ### Formato de campos en Odoo (TODOS los canales)
 
 ```
