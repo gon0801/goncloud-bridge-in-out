@@ -307,6 +307,8 @@ def correr(od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print
         if aplicar and limite is not None and escrituras >= limite:
             r.dejadas += 1
             log(f"{v.accion.value:<9} {cabeza} estado={v.estado} -> pospuesta (limite)")
+            if vencida:
+                r.vencidas.append(e)
             continue
         try:
             resultado = cerrar(od, e.picking_id, v.accion, aplicar)

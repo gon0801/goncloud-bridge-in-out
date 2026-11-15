@@ -296,6 +296,32 @@ def test_el_limite_frena_las_escrituras(mod):
     assert (r.validadas, r.dejadas) == (1, 2)
 
 
+def test_una_vencida_pospuesta_por_el_limite_cuenta_para_el_aviso(mod):
+    """Con el tope lleno, una entrega de mas de 5 dias que no se alcanzo a
+    cerrar sigue abierta; si no cuenta, la corrida sale 0 y nadie se entera."""
+    od = _odoo_con_cuatro()
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Shipped"),
+            "2000015948650289": mod.decidir_meli(
+                {"status": "paid"}, {"status": "shipped"}
+            ),
+        },
+    )
+    lineas = []
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, limite=2, log=lineas.append)
+
+    assert od.pickings[3]["state"] == "assigned"
+    assert (r.validadas, r.dejadas, r.errores) == (2, 1, 0)
+    assert [e.so for e in r.vencidas] == ["S00103"]
+    assert r.fallo() is True
+    assert lineas[-1] == (
+        "VENCIDA   EHV/OUT/00003 S00103 MercadoLibre FBM orden=2000015948650289 14 dias"
+    )
+
+
 def test_con_lote_o_serie_no_valida(mod):
     od = FakeOdoo()
     od.entrega(
