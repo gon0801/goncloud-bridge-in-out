@@ -169,7 +169,12 @@ Las tools de venta confirman la SO y dejan su entrega (`EHV/OUT`) sin validar.
 | Plataforma | Valida (hecho = demanda, sin backorder) | Cancela la entrega | No la toca |
 |---|---|---|---|
 | Amazon MX/US (SP-API Orders v2026) | `Shipped`, `InvoiceUnconfirmed` | `Canceled` | el resto (`Pending`, `Unshipped`, `PartiallyShipped`…) |
-| MeLi (`/orders` + `/shipments`) | envío `shipped`, `delivered`, o `ready_to_ship/picked_up` | envío `cancelled`, u orden `cancelled` sin envío | el resto (`ready_to_print`, `not_delivered`…) |
+| MeLi (`/orders` + `/shipments`) | envío `shipped`, `delivered`, o `ready_to_ship/picked_up`, con la orden no cancelada ni reembolsada | envío `cancelled`, u orden `cancelled` sin envío | el resto (`ready_to_print`, `not_delivered`…) |
+
+En MeLi el envío de un pack es uno para todas sus órdenes. Una orden `cancelled` cuyo
+envío sigue vivo o ya salió, o una `partially_refunded`/`pending_cancel` con el envío
+fuera, no se valida ni se cancela: queda como `REVISAR` en el log y la corrida sale 1
+para que una persona ajuste esa entrega.
 
 Solo mira entregas de salida abiertas de EHV-MX cuya SO es de un canal conocido
 (`MercadoLibre FBM`, `Amazon Flex MX`, `Amazon Easy MX`, `Amazon FBM MX`, `Amazon FBM US`).

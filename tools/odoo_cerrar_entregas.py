@@ -6,6 +6,8 @@ pregunta a la plataforma el estado real de cada entrega abierta y actua:
 
     enviada, en camino, entregada o recolectada  -> valida (hecho = demanda)
     cancelada sin envio                          -> cancela la entrega
+    orden MeLi cancelada o con reembolso parcial
+    y envio vivo o ya fuera                      -> no la toca y avisa
     cualquier otro estado                        -> no la toca
 
 Por defecto solo muestra lo que haria, entrega por entrega. Con `--aplicar`
@@ -13,9 +15,9 @@ escribe en Odoo y registra cada accion, cada error y un resumen por corrida;
 las entregas que no toca solo se cuentan, para que el log no crezca 48 veces
 al dia con lo mismo.
 
-Sale 1 si algo fallo o si queda alguna entrega con mas de 5 dias abierta que no
-se pudo cerrar. Corre envuelto en `cron-avisa`, que con ese codigo avisa por
-Telegram una sola vez, y otra cuando vuelve a salir 0.
+Sale 1 si algo fallo, si alguna entrega pide revision o si queda alguna con mas
+de 5 dias abierta que no se pudo cerrar. Corre envuelto en `cron-avisa`, que con
+ese codigo avisa por Telegram una sola vez, y otra cuando vuelve a salir 0.
 
 Uso
 ---
@@ -66,6 +68,9 @@ CANAL_MELI = "MercadoLibre FBM"
 AMAZON_ENVIADA = {"Shipped", "InvoiceUnconfirmed"}
 AMAZON_CANCELADA = {"Canceled"}
 MELI_ENVIADA = {"shipped", "delivered"}
+# Con el envio ya fuera, validar la entrega completa descontaria unidades que
+# la orden cancelo o reembolso; eso lo resuelve una persona.
+MELI_ORDEN_A_REVISAR = {"cancelled", "partially_refunded", "pending_cancel"}
 
 CONTEXTO_VALIDAR = {"skip_backorder": True, "skip_sms": True}
 
@@ -80,6 +85,7 @@ class Accion(enum.Enum):
 class Veredicto:
     accion: Accion
     estado: str
+    avisar: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,25 +117,31 @@ def decidir_amazon(estado: str | None) -> Veredicto:
 
 
 def decidir_meli(orden: dict | None, envio: dict | None) -> Veredicto:
-    """Decide por el envio, que en un pack es uno solo para todas sus ordenes.
-
-    Cancelar por el estado de la orden romperia un pack en el que solo se
-    cancelo una de sus ordenes; por eso la orden cancelada solo cuenta cuando
-    no llego a tener envio.
-    """
+    """En un pack el envio es uno solo para todas sus ordenes, asi que su
+    estado no dice si salio la mercancia de esta orden: una orden cancelada
+    dentro de un pack enviado no se valida. Solo se cancela si su envio no
+    existe o tambien se cancelo; si no, se deja y se avisa."""
     if orden is None:
         return Veredicto(Accion.DEJAR, "orden no encontrada")
-    if not envio:
-        estado = f"orden {orden.get('status')}, sin envio"
-        if orden.get("status") == "cancelled":
+    orden_st = orden.get("status")
+    pack = f" pack {orden['pack_id']}" if orden.get("pack_id") else ""
+    status = sub = None
+    if envio:
+        status, sub = envio.get("status"), envio.get("substatus")
+    envio_st = "sin envio" if not envio else f"{status}/{sub}" if sub else str(status)
+    estado = f"orden {orden_st}{pack}, envio {envio_st}"
+    salio = status in MELI_ENVIADA or (status == "ready_to_ship" and sub == "picked_up")
+
+    if orden_st == "cancelled":
+        if status in (None, "cancelled"):
             return Veredicto(Accion.CANCELAR, estado)
-        return Veredicto(Accion.DEJAR, estado)
-    status, sub = envio.get("status"), envio.get("substatus")
-    estado = f"{status}/{sub}" if sub else str(status)
-    if status in MELI_ENVIADA or (status == "ready_to_ship" and sub == "picked_up"):
-        return Veredicto(Accion.VALIDAR, estado)
+        return Veredicto(Accion.DEJAR, estado, avisar=True)
     if status == "cancelled":
         return Veredicto(Accion.CANCELAR, estado)
+    if salio and orden_st in MELI_ORDEN_A_REVISAR:
+        return Veredicto(Accion.DEJAR, estado, avisar=True)
+    if salio:
+        return Veredicto(Accion.VALIDAR, estado)
     return Veredicto(Accion.DEJAR, estado)
 
 
@@ -260,9 +272,10 @@ class Resumen:
     dejadas: int = 0
     errores: int = 0
     vencidas: list = field(default_factory=list)
+    avisos: list = field(default_factory=list)
 
     def fallo(self) -> bool:
-        return bool(self.errores or self.vencidas)
+        return bool(self.errores or self.vencidas or self.avisos)
 
 
 def correr(od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print):
@@ -284,8 +297,10 @@ def correr(od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print
             continue
         if v.accion is Accion.DEJAR:
             r.dejadas += 1
-            if not aplicar or vencida:
+            if not aplicar or vencida or v.avisar:
                 log(f"DEJAR     {cabeza} estado={v.estado}")
+            if v.avisar:
+                r.avisos.append((e, v.estado))
             if vencida:
                 r.vencidas.append(e)
             continue
@@ -313,11 +328,13 @@ def correr(od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print
     log(
         f"RESUMEN   modo={modo} revisadas={r.revisadas} validar={r.validadas} "
         f"cancelar={r.canceladas} dejar={r.dejadas} errores={r.errores} "
-        f"vencidas={len(r.vencidas)} ignoradas={ignoradas}"
+        f"vencidas={len(r.vencidas)} avisos={len(r.avisos)} ignoradas={ignoradas}"
     )
     for e in r.vencidas:
         dias = (ahora - e.creada).days
         log(f"VENCIDA   {e.picking} {e.so} {e.canal} orden={e.orden} {dias} dias")
+    for e, estado in r.avisos:
+        log(f"REVISAR   {e.picking} {e.so} {e.canal} orden={e.orden} estado={estado}")
     return r
 
 

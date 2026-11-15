@@ -177,7 +177,7 @@ def test_valida_cancela_y_deja_segun_la_plataforma(mod):
     assert [e.so for e in r.vencidas] == ["S00103"]
     assert r.fallo() is True
     assert lineas[-2].startswith(
-        "RESUMEN   modo=aplicado revisadas=3 validar=1 cancelar=1 dejar=1 errores=0 vencidas=1 ignoradas=1"
+        "RESUMEN   modo=aplicado revisadas=3 validar=1 cancelar=1 dejar=1 errores=0 vencidas=1 avisos=0 ignoradas=1"
     )
     assert (
         lineas[-1]
@@ -350,21 +350,106 @@ def test_amazon(mod, estado, accion):
             "DEJAR",
         ),
         ({"status": "paid"}, {"status": "not_delivered"}, "DEJAR"),
+        ({"status": "paid"}, {"status": "cancelled"}, "CANCELAR"),
         ({"status": "cancelled"}, {"status": "cancelled"}, "CANCELAR"),
         ({"status": "cancelled"}, None, "CANCELAR"),
         ({"status": "paid"}, None, "DEJAR"),
-        # Pack: una orden cancelada pero el envio comun sigue vivo.
-        (
-            {"status": "cancelled"},
-            {"status": "ready_to_ship", "substatus": "printed"},
-            "DEJAR",
-        ),
-        ({"status": "cancelled"}, {"status": "shipped"}, "VALIDAR"),
         (None, None, "DEJAR"),
     ],
 )
 def test_meli(mod, orden, envio, accion):
-    assert mod.decidir_meli(orden, envio).accion.value == accion
+    v = mod.decidir_meli(orden, envio)
+    assert (v.accion.value, v.avisar) == (accion, False)
+
+
+@pytest.mark.parametrize(
+    "orden, envio, estado",
+    [
+        # Pack: la orden se cancelo pero el envio comun salio con las demas.
+        (
+            {"status": "cancelled", "pack_id": 2000009999},
+            {"status": "shipped"},
+            "orden cancelled pack 2000009999, envio shipped",
+        ),
+        (
+            {"status": "cancelled", "pack_id": 2000009999},
+            {"status": "delivered"},
+            "orden cancelled pack 2000009999, envio delivered",
+        ),
+        (
+            {"status": "cancelled", "pack_id": 2000009999},
+            {"status": "ready_to_ship", "substatus": "picked_up"},
+            "orden cancelled pack 2000009999, envio ready_to_ship/picked_up",
+        ),
+        # Pack: la orden se cancelo y el envio comun aun no sale.
+        (
+            {"status": "cancelled", "pack_id": 2000009999},
+            {"status": "ready_to_ship", "substatus": "printed"},
+            "orden cancelled pack 2000009999, envio ready_to_ship/printed",
+        ),
+        # Orden suelta cancelada con el envio fuera.
+        ({"status": "cancelled"}, {"status": "shipped"}, "orden cancelled, envio shipped"),
+        (
+            {"status": "partially_refunded"},
+            {"status": "shipped"},
+            "orden partially_refunded, envio shipped",
+        ),
+        (
+            {"status": "pending_cancel"},
+            {"status": "delivered"},
+            "orden pending_cancel, envio delivered",
+        ),
+    ],
+)
+def test_meli_orden_cancelada_o_reembolsada_no_valida_y_avisa(mod, orden, envio, estado):
+    assert mod.decidir_meli(orden, envio) == mod.Veredicto(
+        mod.Accion.DEJAR, estado, avisar=True
+    )
+
+
+def test_pack_con_una_orden_cancelada_valida_solo_la_viva_y_avisa(mod):
+    """Dos ordenes de un pack, un solo envio ya entregado; una de ellas se
+    cancelo. Validar la cancelada descontaria stock que nunca salio."""
+    od = FakeOdoo()
+    pack = {"pack_id": 2000009999}
+    od.entrega(
+        1,
+        101,
+        "MercadoLibre FBM",
+        "2000011111111111 | A",
+        "<p>MercadoLibre FBM | ORDER=2000009999 | A</p>",
+        "2026-11-14 10:00:00",
+        [{"id": 11, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+    od.entrega(
+        2,
+        102,
+        "MercadoLibre FBM",
+        "2000022222222222 | A",
+        "<p>MercadoLibre FBM | ORDER=2000009999 | A</p>",
+        "2026-11-14 10:00:00",
+        [{"id": 21, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+    envio = {"status": "delivered"}
+    consultar = _consulta(
+        mod,
+        {
+            "2000011111111111": mod.decidir_meli({"status": "paid", **pack}, envio),
+            "2000022222222222": mod.decidir_meli({"status": "cancelled", **pack}, envio),
+        },
+    )
+    lineas = []
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+
+    assert od.pickings[1]["state"] == "done"
+    assert od.pickings[2]["state"] == "assigned"
+    assert [x for x in od.escrituras if x[1] in (2, 21)] == []
+    assert (r.validadas, r.canceladas, r.dejadas, r.errores) == (1, 0, 1, 0)
+    assert r.fallo() is True
+    assert lineas[-1] == (
+        "REVISAR   EHV/OUT/00002 S00102 MercadoLibre FBM orden=2000022222222222 "
+        "estado=orden cancelled pack 2000009999, envio delivered"
+    )
 
 
 @pytest.mark.parametrize(
