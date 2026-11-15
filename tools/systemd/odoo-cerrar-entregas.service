@@ -1,0 +1,24 @@
+[Unit]
+Description=Cierra en Odoo las entregas de venta que la plataforma ya envio
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+# cron-avisa avisa por Telegram tras 2 corridas seguidas con salida distinta de
+# 0 (algo fallo o hay una entrega con mas de 5 dias abierta sin cerrar); con 2
+# un reinicio aislado de Odoo no avisa. --limite acota la carga sobre Odoo:
+# cada validacion tarda y 15 por corrida son 720 al dia.
+#
+# Matar el cliente `docker exec` no mata el Python dentro de bridge-api, asi que
+# el tope y el candado viven dentro del contenedor: `timeout` lo corta a los 20
+# minutos, antes del siguiente disparo, y sale 124; `flock -n` hace que una
+# corrida que encuentra otra viva salga 75 sin tocar nada. Ambos codigos llegan
+# a cron-avisa. TimeoutStartSec queda por encima para no matar a cron-avisa.
+ExecStart=/usr/local/bin/cron-avisa --nombre "Cierre automático de entregas de venta" --cada 0.5 --tras 2 -- /usr/bin/docker exec bridge-api flock -n -E 75 /tmp/odoo_cerrar_entregas.lock timeout -k 30s 20m python3 /data/odoo_cerrar_entregas.py --aplicar --limite 15
+StandardOutput=append:/mnt/data/appdata/bridge/data/cierre_entregas.log
+StandardError=append:/mnt/data/appdata/bridge/data/cierre_entregas.log
+SyslogIdentifier=odoo-cerrar-entregas
+TimeoutStartSec=25min

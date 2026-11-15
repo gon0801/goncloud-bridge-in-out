@@ -1,0 +1,677 @@
+"""Cierre de entregas de venta segun el estado real en la plataforma.
+
+Por que existe
+--------------
+El bridge confirma la venta y deja la entrega de EHV-MX sin validar. Un proceso
+externo las validaba a ciegas a los ~3 dias; se perdio al migrar de maquina el
+2026-11-09 y en seis dias se juntaron 136 entregas abiertas. Este job escribe
+en Odoo de produccion, asi que cada camino de escritura lleva su prueba.
+"""
+
+import importlib.util
+import re
+import shlex
+import sys
+import urllib.error
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+TOOL = Path(__file__).resolve().parent.parent / "tools" / "odoo_cerrar_entregas.py"
+AHORA = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(scope="module")
+def mod():
+    spec = importlib.util.spec_from_file_location("cerrar_entregas", TOOL)
+    m = importlib.util.module_from_spec(spec)
+    sys.modules["cerrar_entregas"] = m
+    spec.loader.exec_module(m)
+    return m
+
+
+class FakeOdoo:
+    """Lo minimo de Odoo 17 que toca el job: pickings, moves y ventas."""
+
+    def __init__(self, button_validate_devuelve=True):
+        self.pickings = {}
+        self.moves = {}
+        self.sos = {}
+        self.escrituras = []
+        self.button_validate_devuelve = button_validate_devuelve
+        self.antes_de_write = None
+
+    def entrega(self, pid, so_id, canal, ref, nota, creada, moves, state="assigned"):
+        self.sos[so_id] = {
+            "id": so_id,
+            "name": f"S{so_id:05d}",
+            "partner_id": [7, canal],
+            "client_order_ref": ref,
+            "note": nota,
+        }
+        self.pickings[pid] = {
+            "id": pid,
+            "name": f"EHV/OUT/{pid:05d}",
+            "sale_id": [so_id, f"S{so_id:05d}"],
+            "create_date": creada,
+            "state": state,
+            "move_ids": [m["id"] for m in moves],
+        }
+        for m in moves:
+            self.moves[m["id"]] = {"has_tracking": "none", "state": "assigned", **m}
+
+    def kw(self, model, method, args, kwargs=None):
+        kwargs = kwargs or {}
+        if (model, method) == ("stock.picking", "search_read"):
+            abiertos = ("waiting", "confirmed", "assigned")
+            return [p for p in self.pickings.values() if p["state"] in abiertos]
+        if (model, method) == ("sale.order", "read"):
+            return [self.sos[i] for i in args[0]]
+        if (model, method) == ("stock.picking", "read"):
+            return [self.pickings[i] for i in args[0]]
+        if (model, method) == ("stock.move", "read"):
+            return [self.moves[i] for i in args[0]]
+        if (model, method) == ("stock.move", "write"):
+            if self.antes_de_write:
+                self.antes_de_write(args[0][0], args[1])
+            self.escrituras.append(("move.write", args[0][0], args[1]))
+            self.moves[args[0][0]].update(args[1])
+            return True
+        if (model, method) == ("stock.picking", "button_validate"):
+            pid = args[0][0]
+            self.escrituras.append(("validate", pid, kwargs.get("context")))
+            res = self.button_validate_devuelve
+            if res is True:
+                for mid in self.pickings[pid]["move_ids"]:
+                    m = self.moves[mid]
+                    if (
+                        m["state"] != "cancel"
+                        and m.get("quantity") == m["product_uom_qty"]
+                    ):
+                        m["state"] = "done"
+                if all(
+                    self.moves[mid]["state"] in ("done", "cancel")
+                    for mid in self.pickings[pid]["move_ids"]
+                ):
+                    self.pickings[pid]["state"] = "done"
+            return res
+        if (model, method) == ("stock.picking", "action_cancel"):
+            self.escrituras.append(("cancel", args[0][0], None))
+            self.pickings[args[0][0]]["state"] = "cancel"
+            return True
+        raise AssertionError(f"llamada inesperada {model}.{method}")
+
+
+def _odoo_con_cuatro():
+    od = FakeOdoo()
+    od.entrega(
+        1,
+        101,
+        "Amazon Easy MX",
+        "701-1111111-1111111",
+        "",
+        "2026-11-14 10:00:00",
+        [
+            {"id": 11, "product_uom_qty": 2.0, "quantity": 2.0},
+            {"id": 12, "product_uom_qty": 1.0, "quantity": 0.0, "state": "confirmed"},
+        ],
+    )
+    od.entrega(
+        2,
+        102,
+        "Amazon FBM US",
+        "113-2222222-2222222",
+        "",
+        "2026-11-13 10:00:00",
+        [{"id": 21, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+    od.entrega(
+        3,
+        103,
+        "MercadoLibre FBM",
+        "2000015948650289 | COMPRADOR",
+        "<p>MercadoLibre FBM | ORDER=2000015948650289 | COMPRADOR</p>",
+        "2026-11-01 10:00:00",
+        [{"id": 31, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+    od.entrega(
+        4,
+        104,
+        "Cliente mostrador",
+        "PO-77",
+        "",
+        "2026-11-01 10:00:00",
+        [{"id": 41, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+    return od
+
+
+def _consulta(mod, por_orden):
+    def consultar(entregas):
+        return {e.picking_id: por_orden[e.orden] for e in entregas}
+
+    return consultar
+
+
+def test_valida_cancela_y_deja_segun_la_plataforma(mod):
+    od = _odoo_con_cuatro()
+    lineas = []
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Canceled"),
+            "2000015948650289": mod.decidir_meli(
+                {"status": "paid"}, {"status": "ready_to_ship", "substatus": "printed"}
+            ),
+        },
+    )
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+
+    assert od.pickings[1]["state"] == "done"
+    assert od.pickings[2]["state"] == "cancel"
+    assert od.pickings[3]["state"] == "assigned"
+    assert od.pickings[4]["state"] == "assigned"
+    assert od.escrituras == [
+        ("move.write", 11, {"quantity": 2.0, "picked": True}),
+        ("move.write", 12, {"quantity": 1.0, "picked": True}),
+        ("validate", 1, {"skip_backorder": True, "skip_sms": True}),
+        ("cancel", 2, None),
+    ]
+    assert (r.validadas, r.canceladas, r.dejadas, r.errores) == (1, 1, 1, 0)
+    assert [e.so for e in r.vencidas] == ["S00103"]
+    assert r.fallo() is True
+    assert lineas[-2].startswith(
+        "RESUMEN   modo=aplicado revisadas=3 validar=1 cancelar=1 dejar=1 errores=0 vencidas=1 avisos=0 ignoradas=1"
+    )
+    assert (
+        lineas[-1]
+        == "VENCIDA   EHV/OUT/00003 S00103 MercadoLibre FBM orden=2000015948650289 14 dias"
+    )
+
+
+def test_en_prueba_no_escribe_nada(mod):
+    od = _odoo_con_cuatro()
+    lineas = []
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Canceled"),
+            "2000015948650289": mod.decidir_meli(
+                {"status": "paid"}, {"status": "delivered"}
+            ),
+        },
+    )
+    r = mod.correr(od, consultar, aplicar=False, ahora=AHORA, log=lineas.append)
+
+    assert od.escrituras == []
+    assert {p["state"] for p in od.pickings.values()} == {"assigned"}
+    assert (r.validadas, r.canceladas, r.vencidas) == (2, 1, [])
+    assert "-> validaria" in lineas[0] and "-> cancelaria" in lineas[1]
+
+
+def test_una_entrega_ya_cerrada_por_otro_no_se_toca(mod):
+    od = _odoo_con_cuatro()
+    consultar_original = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Shipped"),
+            "2000015948650289": mod.decidir_meli(
+                {"status": "paid"}, {"status": "shipped"}
+            ),
+        },
+    )
+
+    def consultar(entregas):
+        od.pickings[1]["state"] = "done"
+        return consultar_original(entregas)
+
+    lineas = []
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+    assert [x for x in od.escrituras if x[1] == 1] == []
+    assert "-> ya estaba done" in lineas[0]
+    assert r.errores == 0
+
+
+def test_si_odoo_pide_un_asistente_es_error_y_no_queda_hecha(mod):
+    od = _odoo_con_cuatro()
+    od.button_validate_devuelve = {
+        "type": "ir.actions.act_window",
+        "res_model": "stock.backorder.confirmation",
+    }
+    lineas = []
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Pending"),
+            "2000015948650289": mod.decidir_meli(
+                {"status": "paid"}, {"status": "handling"}
+            ),
+        },
+    )
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+    assert od.pickings[1]["state"] == "assigned"
+    assert r.errores == 1
+    assert "Odoo pidio confirmacion (stock.backorder.confirmation)" in lineas[0]
+
+
+def test_una_consulta_fallida_cuenta_como_error_y_no_escribe(mod):
+    od = _odoo_con_cuatro()
+    falla = mod.ErrorCierre("MeLi HTTP 401 en /orders/2000015948650289")
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Unshipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Unshipped"),
+            "2000015948650289": falla,
+        },
+    )
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lambda _: None)
+    assert od.escrituras == []
+    assert r.errores == 1
+    assert [e.so for e in r.vencidas] == ["S00103"]
+
+
+def test_el_limite_frena_las_escrituras(mod):
+    od = _odoo_con_cuatro()
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Shipped"),
+            "2000015948650289": mod.decidir_meli(
+                {"status": "paid"}, {"status": "shipped"}
+            ),
+        },
+    )
+    r = mod.correr(
+        od, consultar, aplicar=True, ahora=AHORA, limite=1, log=lambda _: None
+    )
+    assert [p["state"] for p in od.pickings.values()] == [
+        "done",
+        "assigned",
+        "assigned",
+        "assigned",
+    ]
+    assert (r.validadas, r.dejadas) == (1, 2)
+
+
+def _odoo_amazon_dos_moves():
+    od = FakeOdoo()
+    od.entrega(
+        1,
+        101,
+        "Amazon Easy MX",
+        "701-1111111-1111111",
+        "",
+        "2026-11-14 10:00:00",
+        [
+            {"id": 11, "product_uom_qty": 2.0, "quantity": 0.0},
+            {"id": 12, "product_uom_qty": 3.0, "quantity": 0.0},
+        ],
+    )
+    return od
+
+
+def test_si_odoo_no_guarda_hecho_igual_a_demanda_no_valida(mod):
+    """Odoo puede guardar menos de lo escrito (redondeo de unidad, reserva).
+    Validar asi, con skip_backorder, crearia un backorder y contaria la
+    entrega como validada."""
+    od = _odoo_amazon_dos_moves()
+
+    def recorta(mid, vals):
+        if mid == 12:
+            vals["quantity"] = 2.0
+
+    od.antes_de_write = recorta
+    lineas = []
+    consultar = _consulta(mod, {"701-1111111-1111111": mod.decidir_amazon("Shipped")})
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+
+    assert od.pickings[1]["state"] == "assigned"
+    assert [x[0] for x in od.escrituras] == ["move.write", "move.write"]
+    assert (r.validadas, r.errores) == (0, 1)
+    assert "hecho distinto de la demanda en moves [12]" in lineas[0]
+
+
+def test_un_502_a_mitad_de_las_escrituras_no_valida_y_la_siguiente_corrida_cierra(mod):
+    od = _odoo_amazon_dos_moves()
+    od.entrega(
+        2,
+        102,
+        "Amazon FBM US",
+        "113-2222222-2222222",
+        "",
+        "2026-11-14 10:00:00",
+        [{"id": 21, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+
+    def gateway_caido(mid, vals):
+        if mid == 12:
+            raise urllib.error.HTTPError("https://odoo/jsonrpc", 502, "Bad Gateway", {}, None)
+
+    od.antes_de_write = gateway_caido
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Shipped"),
+        },
+    )
+    lineas = []
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+
+    assert od.pickings[1]["state"] == "assigned"
+    assert od.pickings[2]["state"] == "done"
+    assert ("validate", 1, mod.CONTEXTO_VALIDAR) not in od.escrituras
+    assert (r.validadas, r.errores) == (1, 1)
+    assert "HTTP Error 502: Bad Gateway" in lineas[0]
+
+    od.antes_de_write = None
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lambda _: None)
+    assert od.pickings[1]["state"] == "done"
+    assert (r.revisadas, r.validadas, r.errores) == (1, 1, 0)
+
+
+def test_una_vencida_pospuesta_por_el_limite_cuenta_para_el_aviso(mod):
+    """Con el tope lleno, una entrega de mas de 5 dias que no se alcanzo a
+    cerrar sigue abierta; si no cuenta, la corrida sale 0 y nadie se entera."""
+    od = _odoo_con_cuatro()
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Shipped"),
+            "2000015948650289": mod.decidir_meli(
+                {"status": "paid"}, {"status": "shipped"}
+            ),
+        },
+    )
+    lineas = []
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, limite=2, log=lineas.append)
+
+    assert od.pickings[3]["state"] == "assigned"
+    assert (r.validadas, r.dejadas, r.errores) == (2, 1, 0)
+    assert [e.so for e in r.vencidas] == ["S00103"]
+    assert r.fallo() is True
+    assert lineas[-1] == (
+        "VENCIDA   EHV/OUT/00003 S00103 MercadoLibre FBM orden=2000015948650289 14 dias"
+    )
+
+
+def test_con_lote_o_serie_no_valida(mod):
+    od = FakeOdoo()
+    od.entrega(
+        1,
+        101,
+        "Amazon Flex MX",
+        "701-1111111-1111111",
+        "",
+        "2026-11-14 10:00:00",
+        [{"id": 11, "product_uom_qty": 1.0, "quantity": 1.0, "has_tracking": "serial"}],
+    )
+    lineas = []
+    consultar = _consulta(mod, {"701-1111111-1111111": mod.decidir_amazon("Shipped")})
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+    assert od.escrituras == []
+    assert r.errores == 1
+    assert "requiere lote o serie" in lineas[0]
+
+
+@pytest.mark.parametrize(
+    "estado, accion",
+    [
+        ("Shipped", "VALIDAR"),
+        ("InvoiceUnconfirmed", "VALIDAR"),
+        ("Canceled", "CANCELAR"),
+        ("Unshipped", "DEJAR"),
+        ("PartiallyShipped", "DEJAR"),
+        ("Pending", "DEJAR"),
+        ("no encontrada", "DEJAR"),
+        (None, "DEJAR"),
+    ],
+)
+def test_amazon(mod, estado, accion):
+    assert mod.decidir_amazon(estado).accion.value == accion
+
+
+@pytest.mark.parametrize(
+    "orden, envio, accion",
+    [
+        (
+            {"status": "paid"},
+            {"status": "shipped", "substatus": "out_for_delivery"},
+            "VALIDAR",
+        ),
+        ({"status": "paid"}, {"status": "delivered"}, "VALIDAR"),
+        (
+            {"status": "paid"},
+            {"status": "ready_to_ship", "substatus": "picked_up"},
+            "VALIDAR",
+        ),
+        (
+            {"status": "paid"},
+            {"status": "ready_to_ship", "substatus": "ready_to_print"},
+            "DEJAR",
+        ),
+        ({"status": "paid"}, {"status": "not_delivered"}, "DEJAR"),
+        ({"status": "paid"}, {"status": "cancelled"}, "CANCELAR"),
+        ({"status": "cancelled"}, {"status": "cancelled"}, "CANCELAR"),
+        ({"status": "cancelled"}, None, "CANCELAR"),
+        ({"status": "paid"}, None, "DEJAR"),
+        (None, None, "DEJAR"),
+    ],
+)
+def test_meli(mod, orden, envio, accion):
+    v = mod.decidir_meli(orden, envio)
+    assert (v.accion.value, v.avisar) == (accion, False)
+
+
+@pytest.mark.parametrize(
+    "orden, envio, estado",
+    [
+        # Pack: la orden se cancelo pero el envio comun salio con las demas.
+        (
+            {"status": "cancelled", "pack_id": 2000009999},
+            {"status": "shipped"},
+            "orden cancelled pack 2000009999, envio shipped",
+        ),
+        (
+            {"status": "cancelled", "pack_id": 2000009999},
+            {"status": "delivered"},
+            "orden cancelled pack 2000009999, envio delivered",
+        ),
+        (
+            {"status": "cancelled", "pack_id": 2000009999},
+            {"status": "ready_to_ship", "substatus": "picked_up"},
+            "orden cancelled pack 2000009999, envio ready_to_ship/picked_up",
+        ),
+        # Pack: la orden se cancelo y el envio comun aun no sale.
+        (
+            {"status": "cancelled", "pack_id": 2000009999},
+            {"status": "ready_to_ship", "substatus": "printed"},
+            "orden cancelled pack 2000009999, envio ready_to_ship/printed",
+        ),
+        # Orden suelta cancelada con el envio fuera.
+        ({"status": "cancelled"}, {"status": "shipped"}, "orden cancelled, envio shipped"),
+        (
+            {"status": "partially_refunded"},
+            {"status": "shipped"},
+            "orden partially_refunded, envio shipped",
+        ),
+        (
+            {"status": "pending_cancel"},
+            {"status": "delivered"},
+            "orden pending_cancel, envio delivered",
+        ),
+    ],
+)
+def test_meli_orden_cancelada_o_reembolsada_no_valida_y_avisa(mod, orden, envio, estado):
+    assert mod.decidir_meli(orden, envio) == mod.Veredicto(
+        mod.Accion.DEJAR, estado, avisar=True
+    )
+
+
+def test_pack_con_una_orden_cancelada_valida_solo_la_viva_y_avisa(mod):
+    """Dos ordenes de un pack, un solo envio ya entregado; una de ellas se
+    cancelo. Validar la cancelada descontaria stock que nunca salio."""
+    od = FakeOdoo()
+    pack = {"pack_id": 2000009999}
+    od.entrega(
+        1,
+        101,
+        "MercadoLibre FBM",
+        "2000011111111111 | A",
+        "<p>MercadoLibre FBM | ORDER=2000009999 | A</p>",
+        "2026-11-14 10:00:00",
+        [{"id": 11, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+    od.entrega(
+        2,
+        102,
+        "MercadoLibre FBM",
+        "2000022222222222 | A",
+        "<p>MercadoLibre FBM | ORDER=2000009999 | A</p>",
+        "2026-11-14 10:00:00",
+        [{"id": 21, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+    envio = {"status": "delivered"}
+    consultar = _consulta(
+        mod,
+        {
+            "2000011111111111": mod.decidir_meli({"status": "paid", **pack}, envio),
+            "2000022222222222": mod.decidir_meli({"status": "cancelled", **pack}, envio),
+        },
+    )
+    lineas = []
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+
+    assert od.pickings[1]["state"] == "done"
+    assert od.pickings[2]["state"] == "assigned"
+    assert [x for x in od.escrituras if x[1] in (2, 21)] == []
+    assert (r.validadas, r.canceladas, r.dejadas, r.errores) == (1, 0, 1, 0)
+    assert r.fallo() is True
+    assert lineas[-1] == (
+        "REVISAR   EHV/OUT/00002 S00102 MercadoLibre FBM orden=2000022222222222 "
+        "estado=orden cancelled pack 2000009999, envio delivered"
+    )
+
+
+@pytest.mark.parametrize(
+    "canal, ref, nota, orden",
+    [
+        # Caso real S02864: la referencia es la orden y la nota trae el pack.
+        (
+            "MercadoLibre FBM",
+            "2000019433591650 | X",
+            "<p>MercadoLibre FBM | ORDER=2000015948650289 | X</p>",
+            "2000019433591650",
+        ),
+        (
+            "MercadoLibre FBM",
+            "",
+            "<p>MercadoLibre FBM | ORDER=2000011682284817 | X</p>",
+            "2000011682284817",
+        ),
+        ("Amazon Flex MX", "701-5245201-0475457", "", "701-5245201-0475457"),
+        (
+            "Amazon FBM US",
+            "AMZFBM:ATVPDKIKX0DER:114-6039747-8671463",
+            "",
+            "114-6039747-8671463",
+        ),
+        ("Amazon Easy MX", "sin id", "", None),
+    ],
+)
+def test_orden_de_venta(mod, canal, ref, nota, orden):
+    assert mod.orden_de_venta(canal, ref, nota) == orden
+
+
+def test_el_listado_de_amazon_sigue_todas_las_paginas(mod):
+    """En la v2026 el token viene en `pagination.nextToken`. Leerlo en la raiz
+    dejaba el listado en 100 ordenes y empujaba el resto a getOrder, que se
+    quedo en 429 en la primera corrida de prueba contra produccion."""
+
+    class Resp:
+        status_code = 200
+
+        def __init__(self, data):
+            self._data = data
+
+        def json(self):
+            return self._data
+
+    class Poll:
+        AMAZON_API_BASE = "https://sp"
+
+        def __init__(self):
+            self.pedidos = []
+
+        def _sp_api_get(self, token, url, params):
+            self.pedidos.append(params.get("paginationToken"))
+            if "paginationToken" not in params:
+                return Resp(
+                    {"orders": [{"orderId": "a"}], "pagination": {"nextToken": "t2"}}
+                )
+            return Resp({"orders": [{"orderId": "b"}], "pagination": {}})
+
+    poll = Poll()
+    ordenes = list(mod.listar_ordenes_amazon(poll, "tok", "MX", "2026-11-01T00:00:00Z"))
+    assert [o["orderId"] for o in ordenes] == ["a", "b"]
+    assert poll.pedidos == [None, "t2"]
+
+
+def test_el_listado_de_amazon_se_corta_si_el_token_se_repite(mod):
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"orders": [{"orderId": "a"}], "pagination": {"nextToken": "t2"}}
+
+    class Poll:
+        AMAZON_API_BASE = "https://sp"
+        pedidos = 0
+
+        def _sp_api_get(self, token, url, params):
+            self.pedidos += 1
+            assert self.pedidos < 5, "el listado no se corto"
+            return Resp()
+
+    poll = Poll()
+    with pytest.raises(mod.ErrorCierre, match="repitio nextToken"):
+        list(mod.listar_ordenes_amazon(poll, "tok", "MX", "2026-11-01T00:00:00Z"))
+    assert poll.pedidos == 2
+
+
+def _minutos(texto):
+    n, unidad = re.fullmatch(r"(\d+)(min|m|s)", texto).groups()
+    return int(n) / 60 if unidad == "s" else int(n)
+
+
+def test_el_tope_dentro_del_contenedor_cabe_entre_disparos():
+    """systemd solo mata al cliente `docker exec`; el Python de dentro sigue.
+    El `timeout` de dentro tiene que vencer antes del siguiente disparo y
+    antes de que systemd mate a cron-avisa, o la corrida no se reporta."""
+    unidades = TOOL.parent / "systemd"
+    servicio = (unidades / "odoo-cerrar-entregas.service").read_text()
+    timer = (unidades / "odoo-cerrar-entregas.timer").read_text()
+
+    exec_start = re.search(r"^ExecStart=(.*)$", servicio, re.M).group(1)
+    dentro = shlex.split(exec_start.split("/docker exec ", 1)[1])
+    assert dentro[:5] == ["bridge-api", "flock", "-n", "-E", "75"]
+    i = dentro.index("timeout")
+    assert dentro[i + 1 : i + 3] == ["-k", "30s"]
+    tope = _minutos(dentro[i + 3]) + _minutos(dentro[i + 2])
+    assert dentro[i + 4 :][:2] == ["python3", "/data/odoo_cerrar_entregas.py"]
+
+    minutos = sorted(
+        int(x) for x in re.search(r"OnCalendar=\S+ \*:([\d,]+):00", timer).group(1).split(",")
+    )
+    intervalo = min(b - a for a, b in zip(minutos, minutos[1:] + [minutos[0] + 60]))
+    systemd = _minutos(re.search(r"^TimeoutStartSec=(\S+)$", servicio, re.M).group(1))
+    assert tope < intervalo < 60
+    assert tope < systemd

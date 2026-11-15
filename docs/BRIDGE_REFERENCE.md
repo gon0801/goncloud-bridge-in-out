@@ -158,6 +158,51 @@ note del SO  =  "{CANAL} | ORDER={id} | {comprador}"
    Ej:  "Amazon FBA | ORDER=701-4611535-8534600 | Juan García"
 ```
 
+En MeLi, cuando la orden es parte de un pack, `ORDER=` de la nota trae el id del pack
+y no el de la orden; el id de la orden es el número con que empieza `client_order_ref`.
+
+### Cierre de entregas de venta (EHV-MX)
+
+Las tools de venta confirman la SO y dejan su entrega (`EHV/OUT`) sin validar.
+`tools/odoo_cerrar_entregas.py` las cierra según el estado real en la plataforma:
+
+| Plataforma | Valida (hecho = demanda, sin backorder) | Cancela la entrega | No la toca |
+|---|---|---|---|
+| Amazon MX/US (SP-API Orders v2026) | `Shipped`, `InvoiceUnconfirmed` | `Canceled` | el resto (`Pending`, `Unshipped`, `PartiallyShipped`…) |
+| MeLi (`/orders` + `/shipments`) | envío `shipped`, `delivered`, o `ready_to_ship/picked_up`, con la orden no cancelada ni reembolsada | envío `cancelled`, u orden `cancelled` sin envío | el resto (`ready_to_print`, `not_delivered`…) |
+
+En MeLi el envío de un pack es uno para todas sus órdenes. Una orden `cancelled` cuyo
+envío sigue vivo o ya salió, o una `partially_refunded`/`pending_cancel` con el envío
+fuera, no se valida ni se cancela: queda como `REVISAR` en el log y la corrida sale 1
+para que una persona ajuste esa entrega.
+
+Solo mira entregas de salida abiertas de EHV-MX cuya SO es de un canal conocido
+(`MercadoLibre FBM`, `Amazon Flex MX`, `Amazon Easy MX`, `Amazon FBM MX`, `Amazon FBM US`).
+No cancela la SO ni toca facturas: eso sigue en las tools de refund. Antes de escribir
+vuelve a leer la entrega, así que una cerrada a mano entre tanto se salta.
+
+Lo corre `tools/systemd/odoo-cerrar-entregas.timer` cada 30 min (`:17` y `:47` UTC)
+desde `/data/` con `--limite 15`, envuelto en `cron-avisa`. El log va a
+`data/cierre_entregas.log`. Sale 1 si una consulta o una escritura falló o si queda una
+entrega con más de 5 días abierta que no pudo cerrar; `cron-avisa` avisa por Telegram
+tras dos corridas seguidas así. Validar dispara el envío de stock de `meli_oerp_stock`
+dentro de Odoo, por eso cada validación tarda y el tope por corrida.
+
+Matar `docker exec` desde el host no mata el Python de dentro, así que la unidad corre
+`flock -n -E 75 /tmp/odoo_cerrar_entregas.lock timeout -k 30s 20m python3 …` dentro de
+`bridge-api`: una corrida que pasa de 20 min sale 124 antes del siguiente disparo, y una
+que encuentra otra viva sale 75 sin escribir. `TimeoutStartSec=25min` queda por encima.
+
+```bash
+# Qué haría, sin escribir (lista cada entrega):
+docker exec bridge-api python3 /data/odoo_cerrar_entregas.py
+# Primera corrida real, acotada:
+docker exec bridge-api python3 /data/odoo_cerrar_entregas.py --aplicar --limite 1
+```
+
+Despliegue: copiar el script a `data/` y las unidades a `/etc/systemd/system/`, luego
+`systemctl daemon-reload && systemctl enable --now odoo-cerrar-entregas.timer`.
+
 ---
 
 ## Reglas de negocio selladas
