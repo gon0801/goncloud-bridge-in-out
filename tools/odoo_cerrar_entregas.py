@@ -406,6 +406,7 @@ def listar_ordenes_amazon(poll, token: str, mkt_id: str, desde: str):
     """
     params = {"marketplaceIds": mkt_id, "lastUpdatedAfter": desde}
     params["includedData"] = "FULFILLMENT"
+    vistos: set[str] = set()
     while True:
         resp = poll._sp_api_get(
             token, f"{poll.AMAZON_API_BASE}/orders/2026-01-01/orders", params
@@ -417,6 +418,9 @@ def listar_ordenes_amazon(poll, token: str, mkt_id: str, desde: str):
         siguiente = (data.get("pagination") or {}).get("nextToken")
         if not siguiente:
             return
+        if siguiente in vistos:
+            raise ErrorCierre("SP-API repitio nextToken al listar ordenes")
+        vistos.add(siguiente)
         params = {**params, "paginationToken": siguiente}
 
 

@@ -188,6 +188,11 @@ entrega con más de 5 días abierta que no pudo cerrar; `cron-avisa` avisa por T
 tras dos corridas seguidas así. Validar dispara el envío de stock de `meli_oerp_stock`
 dentro de Odoo, por eso cada validación tarda y el tope por corrida.
 
+Matar `docker exec` desde el host no mata el Python de dentro, así que la unidad corre
+`flock -n -E 75 /tmp/odoo_cerrar_entregas.lock timeout -k 30s 20m python3 …` dentro de
+`bridge-api`: una corrida que pasa de 20 min sale 124 antes del siguiente disparo, y una
+que encuentra otra viva sale 75 sin escribir. `TimeoutStartSec=25min` queda por encima.
+
 ```bash
 # Qué haría, sin escribir (lista cada entrega):
 docker exec bridge-api python3 /data/odoo_cerrar_entregas.py

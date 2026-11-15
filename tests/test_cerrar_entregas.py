@@ -9,6 +9,8 @@ en Odoo de produccion, asi que cada camino de escritura lleva su prueba.
 """
 
 import importlib.util
+import re
+import shlex
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -514,3 +516,55 @@ def test_el_listado_de_amazon_sigue_todas_las_paginas(mod):
     ordenes = list(mod.listar_ordenes_amazon(poll, "tok", "MX", "2026-11-01T00:00:00Z"))
     assert [o["orderId"] for o in ordenes] == ["a", "b"]
     assert poll.pedidos == [None, "t2"]
+
+
+def test_el_listado_de_amazon_se_corta_si_el_token_se_repite(mod):
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"orders": [{"orderId": "a"}], "pagination": {"nextToken": "t2"}}
+
+    class Poll:
+        AMAZON_API_BASE = "https://sp"
+        pedidos = 0
+
+        def _sp_api_get(self, token, url, params):
+            self.pedidos += 1
+            assert self.pedidos < 5, "el listado no se corto"
+            return Resp()
+
+    poll = Poll()
+    with pytest.raises(mod.ErrorCierre, match="repitio nextToken"):
+        list(mod.listar_ordenes_amazon(poll, "tok", "MX", "2026-11-01T00:00:00Z"))
+    assert poll.pedidos == 2
+
+
+def _minutos(texto):
+    n, unidad = re.fullmatch(r"(\d+)(min|m|s)", texto).groups()
+    return int(n) / 60 if unidad == "s" else int(n)
+
+
+def test_el_tope_dentro_del_contenedor_cabe_entre_disparos():
+    """systemd solo mata al cliente `docker exec`; el Python de dentro sigue.
+    El `timeout` de dentro tiene que vencer antes del siguiente disparo y
+    antes de que systemd mate a cron-avisa, o la corrida no se reporta."""
+    unidades = TOOL.parent / "systemd"
+    servicio = (unidades / "odoo-cerrar-entregas.service").read_text()
+    timer = (unidades / "odoo-cerrar-entregas.timer").read_text()
+
+    exec_start = re.search(r"^ExecStart=(.*)$", servicio, re.M).group(1)
+    dentro = shlex.split(exec_start.split("/docker exec ", 1)[1])
+    assert dentro[:5] == ["bridge-api", "flock", "-n", "-E", "75"]
+    i = dentro.index("timeout")
+    assert dentro[i + 1 : i + 3] == ["-k", "30s"]
+    tope = _minutos(dentro[i + 3]) + _minutos(dentro[i + 2])
+    assert dentro[i + 4 :][:2] == ["python3", "/data/odoo_cerrar_entregas.py"]
+
+    minutos = sorted(
+        int(x) for x in re.search(r"OnCalendar=\S+ \*:([\d,]+):00", timer).group(1).split(",")
+    )
+    intervalo = min(b - a for a, b in zip(minutos, minutos[1:] + [minutos[0] + 60]))
+    systemd = _minutos(re.search(r"^TimeoutStartSec=(\S+)$", servicio, re.M).group(1))
+    assert tope < intervalo < 60
+    assert tope < systemd
