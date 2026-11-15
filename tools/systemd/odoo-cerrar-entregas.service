@@ -1,0 +1,16 @@
+[Unit]
+Description=Cierra en Odoo las entregas de venta que la plataforma ya envio
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+# cron-avisa avisa por Telegram cuando la corrida sale distinto de 0: algo
+# fallo o hay una entrega con mas de 5 dias abierta que no se pudo cerrar.
+ExecStart=/usr/local/bin/cron-avisa --nombre "Cierre automático de entregas de venta" --cada 0.5 -- /usr/bin/docker exec bridge-api python3 /data/odoo_cerrar_entregas.py --aplicar
+StandardOutput=append:/mnt/data/appdata/bridge/data/cierre_entregas.log
+StandardError=append:/mnt/data/appdata/bridge/data/cierre_entregas.log
+SyslogIdentifier=odoo-cerrar-entregas
+TimeoutStartSec=15min

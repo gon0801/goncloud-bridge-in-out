@@ -1,0 +1,12 @@
+[Unit]
+Description=Cerrar entregas de venta enviadas cada 30 minutos
+Requires=odoo-cerrar-entregas.service
+
+[Timer]
+# Desfasado de los minutos redondos en que corren meli-sync y amazon-sync.
+OnCalendar=*-*-* *:17,47:00 UTC
+Persistent=true
+Unit=odoo-cerrar-entregas.service
+
+[Install]
+WantedBy=timers.target
