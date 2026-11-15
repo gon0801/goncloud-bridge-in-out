@@ -356,7 +356,9 @@ class Odoo:
             data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
         )
-        raw = json.loads(urllib.request.urlopen(req, timeout=120).read())
+        # Validar una entrega dispara el envio de stock de meli_oerp_stock
+        # dentro de Odoo; se han visto llamadas de mas de 2 minutos.
+        raw = json.loads(urllib.request.urlopen(req, timeout=300).read())
         if "error" in raw:
             err = raw["error"]
             msg = (err.get("data") or {}).get("message") or err.get("message")

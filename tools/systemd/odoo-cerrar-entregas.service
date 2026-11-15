@@ -7,10 +7,12 @@ Requires=docker.service
 [Service]
 Type=oneshot
 User=root
-# cron-avisa avisa por Telegram cuando la corrida sale distinto de 0: algo
-# fallo o hay una entrega con mas de 5 dias abierta que no se pudo cerrar.
-ExecStart=/usr/local/bin/cron-avisa --nombre "Cierre automático de entregas de venta" --cada 0.5 -- /usr/bin/docker exec bridge-api python3 /data/odoo_cerrar_entregas.py --aplicar
+# cron-avisa avisa por Telegram tras 2 corridas seguidas con salida distinta de
+# 0 (algo fallo o hay una entrega con mas de 5 dias abierta sin cerrar); con 2
+# un reinicio aislado de Odoo no avisa. --limite acota la carga sobre Odoo:
+# cada validacion tarda y 15 por corrida son 720 al dia.
+ExecStart=/usr/local/bin/cron-avisa --nombre "Cierre automático de entregas de venta" --cada 0.5 --tras 2 -- /usr/bin/docker exec bridge-api python3 /data/odoo_cerrar_entregas.py --aplicar --limite 15
 StandardOutput=append:/mnt/data/appdata/bridge/data/cierre_entregas.log
 StandardError=append:/mnt/data/appdata/bridge/data/cierre_entregas.log
 SyslogIdentifier=odoo-cerrar-entregas
-TimeoutStartSec=15min
+TimeoutStartSec=25min

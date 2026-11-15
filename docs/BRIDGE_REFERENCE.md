@@ -177,9 +177,11 @@ No cancela la SO ni toca facturas: eso sigue en las tools de refund. Antes de es
 vuelve a leer la entrega, así que una cerrada a mano entre tanto se salta.
 
 Lo corre `tools/systemd/odoo-cerrar-entregas.timer` cada 30 min (`:17` y `:47` UTC)
-desde `/data/`, envuelto en `cron-avisa`. El log va a `data/cierre_entregas.log`. Sale 1,
-y `cron-avisa` avisa por Telegram, si una consulta o una escritura falló o si queda una
-entrega con más de 5 días abierta que no pudo cerrar.
+desde `/data/` con `--limite 15`, envuelto en `cron-avisa`. El log va a
+`data/cierre_entregas.log`. Sale 1 si una consulta o una escritura falló o si queda una
+entrega con más de 5 días abierta que no pudo cerrar; `cron-avisa` avisa por Telegram
+tras dos corridas seguidas así. Validar dispara el envío de stock de `meli_oerp_stock`
+dentro de Odoo, por eso cada validación tarda y el tope por corrida.
 
 ```bash
 # Qué haría, sin escribir (lista cada entrega):
