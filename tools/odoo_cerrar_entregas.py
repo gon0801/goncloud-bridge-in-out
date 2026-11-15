@@ -246,6 +246,18 @@ def cerrar(od, picking_id: int, accion: Accion, aplicar: bool) -> str:
             "write",
             [[m["id"]], {"quantity": m["product_uom_qty"], "picked": True}],
         )
+    # Con skip_backorder, validar con hecho < demanda crea un backorder y deja
+    # esta entrega en done; se comprueba lo que Odoo guardo antes de validar.
+    escritos = od.kw(
+        "stock.move", "read", [[m["id"] for m in activos], ["product_uom_qty", "quantity"]]
+    )
+    cortos = [
+        m["id"]
+        for m in escritos
+        if abs((m.get("quantity") or 0.0) - m["product_uom_qty"]) > 1e-6
+    ]
+    if cortos:
+        raise ErrorCierre(f"hecho distinto de la demanda en moves {cortos}")
     res = od.kw(
         "stock.picking",
         "button_validate",

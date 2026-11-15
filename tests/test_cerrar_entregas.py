@@ -12,6 +12,7 @@ import importlib.util
 import re
 import shlex
 import sys
+import urllib.error
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,6 +40,7 @@ class FakeOdoo:
         self.sos = {}
         self.escrituras = []
         self.button_validate_devuelve = button_validate_devuelve
+        self.antes_de_write = None
 
     def entrega(self, pid, so_id, canal, ref, nota, creada, moves, state="assigned"):
         self.sos[so_id] = {
@@ -71,6 +73,8 @@ class FakeOdoo:
         if (model, method) == ("stock.move", "read"):
             return [self.moves[i] for i in args[0]]
         if (model, method) == ("stock.move", "write"):
+            if self.antes_de_write:
+                self.antes_de_write(args[0][0], args[1])
             self.escrituras.append(("move.write", args[0][0], args[1]))
             self.moves[args[0][0]].update(args[1])
             return True
@@ -294,6 +298,83 @@ def test_el_limite_frena_las_escrituras(mod):
         "assigned",
     ]
     assert (r.validadas, r.dejadas) == (1, 2)
+
+
+def _odoo_amazon_dos_moves():
+    od = FakeOdoo()
+    od.entrega(
+        1,
+        101,
+        "Amazon Easy MX",
+        "701-1111111-1111111",
+        "",
+        "2026-11-14 10:00:00",
+        [
+            {"id": 11, "product_uom_qty": 2.0, "quantity": 0.0},
+            {"id": 12, "product_uom_qty": 3.0, "quantity": 0.0},
+        ],
+    )
+    return od
+
+
+def test_si_odoo_no_guarda_hecho_igual_a_demanda_no_valida(mod):
+    """Odoo puede guardar menos de lo escrito (redondeo de unidad, reserva).
+    Validar asi, con skip_backorder, crearia un backorder y contaria la
+    entrega como validada."""
+    od = _odoo_amazon_dos_moves()
+
+    def recorta(mid, vals):
+        if mid == 12:
+            vals["quantity"] = 2.0
+
+    od.antes_de_write = recorta
+    lineas = []
+    consultar = _consulta(mod, {"701-1111111-1111111": mod.decidir_amazon("Shipped")})
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+
+    assert od.pickings[1]["state"] == "assigned"
+    assert [x[0] for x in od.escrituras] == ["move.write", "move.write"]
+    assert (r.validadas, r.errores) == (0, 1)
+    assert "hecho distinto de la demanda en moves [12]" in lineas[0]
+
+
+def test_un_502_a_mitad_de_las_escrituras_no_valida_y_la_siguiente_corrida_cierra(mod):
+    od = _odoo_amazon_dos_moves()
+    od.entrega(
+        2,
+        102,
+        "Amazon FBM US",
+        "113-2222222-2222222",
+        "",
+        "2026-11-14 10:00:00",
+        [{"id": 21, "product_uom_qty": 1.0, "quantity": 1.0}],
+    )
+
+    def gateway_caido(mid, vals):
+        if mid == 12:
+            raise urllib.error.HTTPError("https://odoo/jsonrpc", 502, "Bad Gateway", {}, None)
+
+    od.antes_de_write = gateway_caido
+    consultar = _consulta(
+        mod,
+        {
+            "701-1111111-1111111": mod.decidir_amazon("Shipped"),
+            "113-2222222-2222222": mod.decidir_amazon("Shipped"),
+        },
+    )
+    lineas = []
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lineas.append)
+
+    assert od.pickings[1]["state"] == "assigned"
+    assert od.pickings[2]["state"] == "done"
+    assert ("validate", 1, mod.CONTEXTO_VALIDAR) not in od.escrituras
+    assert (r.validadas, r.errores) == (1, 1)
+    assert "HTTP Error 502: Bad Gateway" in lineas[0]
+
+    od.antes_de_write = None
+    r = mod.correr(od, consultar, aplicar=True, ahora=AHORA, log=lambda _: None)
+    assert od.pickings[1]["state"] == "done"
+    assert (r.revisadas, r.validadas, r.errores) == (1, 1, 0)
 
 
 def test_una_vencida_pospuesta_por_el_limite_cuenta_para_el_aviso(mod):
