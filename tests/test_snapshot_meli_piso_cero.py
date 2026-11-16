@@ -58,16 +58,27 @@ SIMPLES = {
     104: ("ARR-22", "product", {1: 5}, 0),
     105: ("COF-AGOTADO", "product", {1: 0}, 0),
     106: ("BOLSA", "consu", {}, 0),
+    107: ("CINTA-M", "product", {1: 1.5}, 0),
+    108: ("PERLA", "product", {1: 1}, 0),
 }
-# Kits phantom: id -> (codigo, [(componente, unidades por kit)])
+UNIDAD, DOCENA = 1, 2
+# Kits phantom: id -> (codigo, [(componente, unidades por kit[, unidad de la linea])])
 KITS = {
     20: ("SET-ITA-CEN", [(101, 1), (102, 1)]),
     21: ("SET-ITA-VCO", [(101, 1), (103, 1)]),
     22: ("SET-ARR-DOBLE", [(104, 2), (106, 1)]),
     23: ("SET-AGOTADO", [(102, 1), (105, 1)]),
     24: ("SET-ANIDADO", [(22, 1), (103, 1)]),
+    25: ("SET-REPETIDO", [(102, 1), (102, 1)]),
+    26: ("SUB-CEN-VCO", [(102, 1), (103, 1)]),
+    27: ("SET-REPETIDO-ANIDADO", [(26, 1), (102, 1)]),
+    28: ("SET-LINEA-DOCENA", [(102, 1, DOCENA)]),
+    29: ("SET-CINTA", [(107, 0.5)]),
+    30: ("SET-PERLA", [(108, 0.1)]),
+    31: ("SET-BOM-DOCENA", [(103, 1)]),
 }
-EN_MELI = [1, 2, 3, 4, 5, 20, 21, 22, 23, 24]
+UNIDAD_BOM = {31: DOCENA}
+EN_MELI = [1, 2, 3, 4, 5, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31]
 
 ALMACENES = [
     {"id": 1, "name": "EHV-MX", "code": "EHV"},
@@ -95,7 +106,7 @@ def _producto(pid: int, almacenes: list[int]) -> dict:
     else:
         codigo, receta = KITS[pid]
         tipo = "consu"
-        comps = [(_producto(c, almacenes), u) for c, u in receta]
+        comps = [(_producto(c, almacenes), u) for c, u, *_ in receta]
         comps = [(c, u) for c, u in comps if c["type"] == "product" or c["id"] in KITS]
         qa = min(c["qty_available"] // u for c, u in comps)
         out = min(c["outgoing_qty"] // u for c, u in comps)
@@ -106,6 +117,7 @@ def _producto(pid: int, almacenes: list[int]) -> dict:
         "qty_available": qa,
         "outgoing_qty": out,
         "product_tmpl_id": [1000 + pid, codigo],
+        "uom_id": [UNIDAD, "Units"],
     }
 
 
@@ -121,15 +133,21 @@ def _execute_kw(db, uid, pwd, model, method, args, kwargs):
                 "product_id": [k, codigo],
                 "product_tmpl_id": [1000 + k, codigo],
                 "product_qty": 1.0,
+                "product_uom_id": [UNIDAD_BOM.get(k, UNIDAD), "x"],
                 "bom_line_ids": [k * 10 + i for i in range(len(receta))],
             }
             for k, (codigo, receta) in KITS.items()
         ]
     if (model, method) == ("mrp.bom.line", "read"):
         lineas = {
-            k * 10 + i: {"id": k * 10 + i, "product_id": [c, "x"], "product_qty": float(u)}
+            k * 10 + i: {
+                "id": k * 10 + i,
+                "product_id": [linea[0], "x"],
+                "product_qty": float(linea[1]),
+                "product_uom_id": [(linea[2:] or (UNIDAD,))[0], "x"],
+            }
             for k, (_, receta) in KITS.items()
-            for i, (c, u) in enumerate(receta)
+            for i, linea in enumerate(receta)
         }
         return [lineas[i] for i in args[0]]
     if model == "product.product" and method in ("search_read", "read"):
@@ -268,6 +286,42 @@ def test_kit_con_un_componente_en_cero_queda_en_cero(corrida):
 def test_kit_anidado_se_calcula_hasta_sus_hojas(corrida):
     _, db_path = corrida
     assert _qty_de(db_path, "SET-ANIDADO") == 2
+
+
+def test_componente_repetido_en_dos_lineas_suma_lo_que_pide_el_kit(corrida):
+    """10 piezas con dos lineas de 1 por kit dan 5, no 10."""
+    _, db_path = corrida
+    assert _qty_de(db_path, "SET-REPETIDO") == 5
+
+
+def test_componente_repetido_en_dos_niveles_suma_lo_que_pide_el_kit(corrida):
+    """El subkit pide 1 MON-CEN y el kit otro: 2 por kit, 10 piezas dan 5."""
+    _, db_path = corrida
+    assert _qty_de(db_path, "SET-REPETIDO-ANIDADO") == 5
+
+
+def test_linea_en_otra_unidad_que_el_componente_publica_cero(corrida):
+    proc, db_path = corrida
+    assert _qty_de(db_path, "SET-LINEA-DOCENA") == 0
+    assert "kit 28: linea de 102 en otra unidad que el componente" in proc.stderr
+
+
+def test_bom_en_otra_unidad_que_el_kit_publica_cero(corrida):
+    proc, db_path = corrida
+    assert _qty_de(db_path, "SET-BOM-DOCENA") == 0
+    assert "kit 31: BOM en otra unidad que el producto" in proc.stderr
+
+
+def test_lo_libre_fraccionario_no_se_trunca_antes_de_dividir(corrida):
+    """1.5 m de cinta con 0.5 por kit dan 3 kits."""
+    _, db_path = corrida
+    assert _qty_de(db_path, "SET-CINTA") == 3
+
+
+def test_decimal_por_kit_no_pierde_un_kit_por_redondeo_binario(corrida):
+    """1 perla con 0.1 por kit da 10; en float 1 // 0.1 es 9."""
+    _, db_path = corrida
+    assert _qty_de(db_path, "SET-PERLA") == 10
 
 
 def test_sin_almacen_apartado_publica_todos_los_almacenes(corrida):
