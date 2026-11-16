@@ -1,52 +1,73 @@
 #!/usr/bin/env python3
-"""Arma kits y los deja en un almacen de canal (Meli-Full, FBA-MX, FBA-US, Flex-MX).
+"""Aparta en un almacen de canal (Flex en FBA - MX, Full, FBA-US) los componentes de N kits.
 
 Que resuelve
 ------------
-Segundo paso del modelo hibrido de PENDIENTES #3. El primero
-(`odoo_migrar_boms_picking_type.py`) hizo que las recetas apliquen SOLO en la
-entrega de EHV-MX, para que FULL y FBA muevan el kit como unidad armada.
+Para vender un kit desde otro almacen, ese almacen necesita las piezas. Esto
+las mueve de EHV/Stock a la ubicacion de stock del almacen destino con un solo
+picking, y lo deshace con `--desarmar`.
 
-Pero faltaba algo: **un producto con receta phantom no acumula stock propio**.
-Los kits existen solo como derivacion de sus componentes, asi que no hay forma
-directa de decir "hay 40 kits en la bodega de MeLi".
+Por que componentes y no el kit armado
+--------------------------------------
+Las recetas de los kits son phantom. En Odoo 17, `stock.move._action_explode`
+busca la receta phantom sin filtrar por tipo de operacion
+(`mrp/models/stock_move.py`: `_bom_find(move.product_id, ..., bom_type='phantom')`),
+asi que cualquier move de un kit que tenga tipo de operacion se convierte en
+moves de sus componentes. El `picking_type_id` de la receta no lo evita. Por
+eso:
 
-Esto lo resuelve moviendo por `Virtual Locations/Production`:
+* un picking que diera de alta el kit en el destino se explotaria en
+  componentes, y
+* la venta del kit desde el destino (la entrega del almacen de la SO) tambien
+  se explota y descuenta los componentes de ese almacen.
 
-    componentes:  EHV/Stock            -> Virtual Locations/Production
-    kit:          Virtual Locations/Production -> Full|FBAMX|FBAUS|FLEX /Stock
+Ademas `qty_available` de un kit siempre se calcula desde sus componentes. Lo
+que si funciona es lo que esta herramienta hace: poner en el destino las piezas
+de N kits. La venta Flex las descuenta de ahi y los snapshotters, que apartan
+ese almacen, dejan de ofrecerlas en MeLi y Amazon FBM.
 
-Es lo que hace una orden de fabricacion, pero sin necesitar recetas nuevas. Y a
-diferencia de dos ajustes de inventario sueltos, la valuacion queda coherente:
-el costo sale de los componentes y entra en el kit, sin inventar ni destruir
-valor.
+Limite: Odoo no sabe que piezas estan armadas. Si otro kit del destino
+comparte un componente, su venta puede tomarlo.
 
 Salvaguardas
 ------------
-* Simula por defecto. Escribe solo con `--aplicar`.
-* Exige que el kit tenga EXACTAMENTE una receta activa. Esta base tiene 1541
-  recetas archivadas contra 1009 vivas; agarrar la equivocada armaria el kit
-  con los componentes de otra version.
-* Verifica que TODOS los componentes alcancen antes de mover uno solo. Un
-  armado a medias deja componentes consumidos sin kit que los justifique.
-* Imprime el plan completo — que sale, que entra, en que ubicacion — antes de
-  tocar nada.
-* Cada movimiento lleva en `origin` el folio del armado. Odoo no da una
-  transaccion que abarque varios movimientos, asi que el folio es el registro
-  de lo hecho: repetir el comando con el mismo folio termina un movimiento a
-  medias y crea solo los que faltan, sin duplicar.
-* `--desarmar` es la reversa: el kit sale del destino y los componentes
-  vuelven a EHV/Stock. Saca primero el kit, para que un corte nunca deje kits
-  sin los componentes que los respaldan.
+* Simula por defecto. Escribe solo con `--aplicar --folio <clave>`.
+* Exige que el kit tenga EXACTAMENTE una receta activa y que sea phantom.
+* Verifica que TODOS los componentes alcancen en el origen antes de crear el
+  picking.
+* Solo metodos publicos por RPC: Odoo 17 rechaza los que empiezan con guion
+  bajo. `action_confirm`, `action_assign`, escribir `quantity`/`picked` en los
+  moves, `button_validate` y `action_cancel`.
+* El picking lleva en `origin` el folio. Repetir el comando con el mismo folio
+  termina un picking a medias o no hace nada si ya esta hecho; nunca duplica.
+  Un folio reusado con otro SKU o cantidad aborta.
+* Un move suelto del folio en draft, sin picking (lo dejo la version que
+  llamaba metodos privados, como el 9173), se cancela al aplicar. En otro
+  estado aborta.
+* Si al confirmar Odoo cambia los productos del picking (un componente que es
+  kit se exploto), se cancela el picking sin mover stock.
+* Antes de validar relee los moves: si `quantity` o `picked` no igualan lo
+  pedido, no valida. Si `button_validate` no deja el picking en done (por
+  ejemplo, devuelve el asistente `stock.backorder.confirmation`), o en el caso
+  anterior, cancela el picking para soltar la reserva en el origen y aborta.
+  Un picking reservado y sin validar le quitaria las piezas a MeLi sin que el
+  destino las reciba. Si `button_validate` devuelve una accion (un reporte para
+  imprimir) con el picking ya en done, es exito.
 
 Uso
 ---
     docker exec bridge-api python3 /data/odoo_armar_kits.py \\
-        --sku SET-ARR-COF-22-VCO-DOR --cantidad 20 --destino Full
+        --sku SET-PLA-CH-CEN-DOR --cantidad 4 --destino FLEX
 
-    # y con --aplicar --folio <clave unica> para ejecutarlo; si se corta,
-    # el mismo comando lo reanuda. La reversa, con su propio folio:
+    # y con --aplicar --folio <clave> para ejecutarlo; si se corta, el mismo
+    # comando lo reanuda. La reversa, con su propio folio:
     ... --destino FLEX --desarmar --aplicar --folio <clave>
+
+`--destino` acepta el nombre de un almacen de Odoo ("FBA - MX") o `FLEX`, que
+es solo el almacen del setting `warehouse_amazon_flex_mx`, el mismo que leen
+los snapshotters y las ventas Flex. Flex usa el almacen FBA - MX: ese setting
+debe valer 'FBA - MX'. El almacen 'Flex - MX' (codigo FLEX) se creo por error
+y se rechaza como destino.
 """
 
 import argparse
@@ -55,28 +76,26 @@ import os
 import sqlite3
 import sys
 import urllib.request
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
-LOC_PRODUCCION = "Virtual Locations/Production"
-DESTINOS = {
-    "Full": "Full/Stock",
-    "FBAMX": "FBAMX/Stock",
-    "FBAUS": "FBAUS/Stock",
-    "FLEX": "FLEX/Stock",
-}
-ORIGEN = "EHV/Stock"
+ALMACEN_PRINCIPAL = "EHV"
+SETTING_FLEX = "warehouse_amazon_flex_mx"
+ALMACEN_FLEX_ERRONEO = ("Flex - MX", "FLEX")
+CAMPOS_ALMACEN = ["id", "name", "code", "lot_stock_id", "int_type_id"]
+CAMPOS_MOVE = [
+    "id", "product_id", "product_uom_qty", "quantity", "picked", "state", "picking_id", "location_id", "location_dest_id",
+]
 
 
 def plan_de_componentes(lineas_bom: list, cantidad_kits: int) -> list:
-    """Cuanto de cada componente hace falta para armar `cantidad_kits`.
+    """Cuanto de cada componente hace falta para `cantidad_kits`.
 
     Devuelve `[{"product_id", "nombre", "necesario"}]`.
 
     La receta expresa cantidades para UN kit (`product_qty` por linea); se
-    multiplica. Se redondea hacia arriba nunca: si una receta pidiera 0.5 de
-    algo, armar 3 kits pide 1.5 y el faltante debe verse como tal, no
-    esconderse en un redondeo.
+    multiplica sin redondear: si una receta pidiera 0.5 de algo, 3 kits piden
+    1.5 y el faltante debe verse como tal, no esconderse en un redondeo.
     """
     plan = []
     for ln in lineas_bom:
@@ -92,7 +111,7 @@ def plan_de_componentes(lineas_bom: list, cantidad_kits: int) -> list:
 
 
 def faltantes(plan: list, disponible: dict) -> list:
-    """Componentes que no alcanzan. Lista vacia = se puede armar."""
+    """Componentes que no alcanzan. Lista vacia = se puede mover."""
     out = []
     for p in plan:
         hay = disponible.get(p["product_id"], 0)
@@ -109,7 +128,7 @@ def get_setting(key: str) -> str:
         ).fetchone()
     finally:
         con.close()
-    return row[0] if row and row[0] else ""
+    return (row[0] or "").strip() if row else ""
 
 
 class Odoo:
@@ -150,64 +169,105 @@ class Odoo:
             [self.db, self.uid, self.pw, model, method, args, kwargs or {}],
         )
 
-    def loc(self, nombre):
-        r = self.kw(
-            "stock.location",
-            "search_read",
-            [[["complete_name", "=", nombre]]],
-            {"fields": ["id"], "limit": 1},
-        )
-        if not r:
-            raise SystemExit(f"ERROR: no existe la ubicacion '{nombre}'")
-        return r[0]["id"]
-
 
 @dataclass(frozen=True)
-class Paso:
+class Linea:
     product_id: int
     nombre: str
     cantidad: float
+
+
+@dataclass(frozen=True)
+class Traslado:
+    """El picking: todas sus lineas van de `origen` a `destino` con el tipo de
+    operacion `tipo`."""
+
+    tipo: int
     origen: int
     destino: int
+    lineas: tuple
 
 
-def pasos(plan, kit, cantidad, loc_ehv, loc_prod, loc_canal, desarmar=False):
-    """Movimientos en orden. Armar consume los componentes y despues da de
-    alta el kit; desarmar invierte cada paso y el orden."""
-    consumo = [
-        Paso(p["product_id"], p["nombre"], p["necesario"], loc_ehv, loc_prod)
-        for p in plan
-    ]
-    alta = Paso(kit["id"], kit["default_code"], cantidad, loc_prod, loc_canal)
-    armado = [*consumo, alta]
-    if not desarmar:
-        return armado
-    return [replace(p, origen=p.destino, destino=p.origen) for p in reversed(armado)]
+def nombre_destino(destino: str) -> str:
+    """Nombre del almacen destino. `FLEX` sale de `warehouse_amazon_flex_mx`."""
+    if destino.upper() != "FLEX":
+        return destino
+    valor = get_setting(SETTING_FLEX)
+    if not valor:
+        raise SystemExit(f"ERROR: --destino FLEX necesita el setting {SETTING_FLEX}; ponle 'FBA - MX'")
+    return valor
 
 
-def estado_de(paso: Paso, movs: list) -> tuple:
-    """("hecho" | "a medias" | "pendiente", id del move) segun los movimientos
-    del folio. Un folio reusado con otra cantidad aborta."""
-    propios = [
-        m
-        for m in movs
-        if m["product_id"][0] == paso.product_id
-        and m["location_id"][0] == paso.origen
-        and m["location_dest_id"][0] == paso.destino
-        and m["state"] != "cancel"
-    ]
-    if not propios:
-        return "pendiente", None
-    if len(propios) > 1:
-        ids = [m["id"] for m in propios]
-        raise SystemExit(f"ERROR: el folio tiene {len(propios)} movimientos de {paso.nombre}: {ids}")
-    m = propios[0]
-    if abs(m["product_uom_qty"] - paso.cantidad) > 1e-6:
-        raise SystemExit(
-            f"ERROR: el folio ya movio {m['product_uom_qty']:g} de {paso.nombre} y este "
-            f"comando pide {paso.cantidad:g}; usa otro folio"
+def almacen(od, dominio: list, que: str) -> dict:
+    r = od.kw("stock.warehouse", "search_read", [dominio], {"fields": CAMPOS_ALMACEN}) or []
+    if len(r) != 1:
+        raise SystemExit(f"ERROR: se esperaba 1 almacen {que}, hay {len(r)}")
+    return r[0]
+
+
+def traslado(plan: list, ehv: dict, destino: dict, desarmar: bool) -> Traslado:
+    lineas = tuple(Linea(p["product_id"], p["nombre"], p["necesario"]) for p in plan)
+    if desarmar:
+        return Traslado(destino["int_type_id"][0], destino["lot_stock_id"][0], ehv["lot_stock_id"][0], lineas)
+    return Traslado(ehv["int_type_id"][0], ehv["lot_stock_id"][0], destino["lot_stock_id"][0], lineas)
+
+
+def _firma(pares) -> list:
+    return sorted((pid, round(qty, 6)) for pid, qty in pares)
+
+
+def _de_moves(moves) -> list:
+    return _firma((m["product_id"][0], m["product_uom_qty"]) for m in moves)
+
+
+def _esperado(t: Traslado) -> list:
+    return _firma((ln.product_id, ln.cantidad) for ln in t.lineas)
+
+
+def picking_del_folio(od, t: Traslado, origin: str):
+    """El picking vivo del folio, o None. Si no cuadra con este comando, aborta."""
+    pickings = [
+        p
+        for p in od.kw(
+            "stock.picking",
+            "search_read",
+            [[["origin", "=", origin]]],
+            {"fields": ["id", "state", "location_id", "location_dest_id"]},
         )
-    return ("hecho" if m["state"] == "done" else "a medias"), m["id"]
+        or []
+        if p["state"] != "cancel"
+    ]
+    if len(pickings) > 1:
+        raise SystemExit(f"ERROR: el folio tiene {len(pickings)} pickings vivos: {[p['id'] for p in pickings]}")
+    if not pickings:
+        return None
+    p = pickings[0]
+    ruta = (p["location_id"][0], p["location_dest_id"][0]) == (t.origen, t.destino)
+    if not ruta or _de_moves(moves_de(od, p["id"])) != _esperado(t):
+        raise SystemExit(
+            f"ERROR: el picking {p['id']} del folio no coincide con este comando "
+            f"(otro SKU, cantidad o destino); usa otro folio"
+        )
+    return p
+
+
+def sueltos_del_folio(od, origin: str) -> list:
+    """Moves del folio sin picking. Solo un draft se puede cancelar sin efecto."""
+    sueltos = [
+        m
+        for m in od.kw(
+            "stock.move",
+            "search_read",
+            [[["origin", "=", origin], ["picking_id", "=", False]]],
+            {"fields": CAMPOS_MOVE},
+        )
+        or []
+        if m["state"] != "cancel"
+    ]
+    otros = [f"{m['id']} ({m['state']})" for m in sueltos if m["state"] != "draft"]
+    if otros:
+        raise SystemExit(f"ERROR: el folio tiene moves sueltos que ya no estan en draft: {otros}; resuelvelos en Odoo")
+    return sueltos
 
 
 def disponible_en(od, ids: list, loc: int) -> dict:
@@ -223,55 +283,104 @@ def disponible_en(od, ids: list, loc: int) -> dict:
     disponible: dict = {}
     for q in quants:
         pid = q["product_id"][0]
-        disponible[pid] = (
-            disponible.get(pid, 0)
-            + (q["quantity"] or 0)
-            - (q["reserved_quantity"] or 0)
-        )
+        disponible[pid] = disponible.get(pid, 0) + (q["quantity"] or 0) - (q["reserved_quantity"] or 0)
     return disponible
 
 
-def crear(od, paso: Paso, origin: str, nombre: str) -> int:
-    return od.kw(
-        "stock.move",
-        "create",
-        [
-            {
-                "name": nombre,
-                "origin": origin,
-                "product_id": paso.product_id,
-                "product_uom_qty": paso.cantidad,
-                "location_id": paso.origen,
-                "location_dest_id": paso.destino,
-            }
-        ],
+def moves_de(od, picking_id: int) -> list:
+    movs = od.kw("stock.move", "search_read", [[["picking_id", "=", picking_id]]], {"fields": CAMPOS_MOVE}) or []
+    return [m for m in movs if m["state"] != "cancel"]
+
+
+def soltar(od, pid: int, motivo: str):
+    """Cancela el picking para que no quede reservado en el origen, y aborta."""
+    od.kw("stock.picking", "action_cancel", [[pid]])
+    raise SystemExit(
+        f"ERROR: {motivo}; se cancelo el picking {pid} para soltar la reserva. "
+        f"El mismo comando con el mismo folio crea uno nuevo"
     )
 
 
-def completar(od, mid: int, cantidad: float) -> None:
-    """Lleva a done un move en cualquier estado previo."""
-    estado = od.kw("stock.move", "read", [[mid]], {"fields": ["state"]})[0]["state"]
-    if estado == "draft":
-        od.kw("stock.move", "_action_confirm", [[mid]])
-    od.kw("stock.move", "_action_assign", [[mid]])
-    od.kw("stock.move", "write", [[mid], {"quantity": cantidad, "picked": True}])
-    od.kw("stock.move", "_action_done", [[mid]])
+def ejecutar(od, t: Traslado, picking, origin: str, etiqueta: str) -> int:
+    """Lleva el traslado a done solo con metodos publicos."""
+    pid = picking["id"] if picking else None
+    if pid is None:
+        pid = od.kw(
+            "stock.picking",
+            "create",
+            [
+                {
+                    "picking_type_id": t.tipo,
+                    "location_id": t.origen,
+                    "location_dest_id": t.destino,
+                    "origin": origin,
+                    "move_ids": [
+                        (
+                            0,
+                            0,
+                            {
+                                "name": f"{origin}: {ln.nombre[:40]} -> {etiqueta}",
+                                "origin": origin,
+                                "product_id": ln.product_id,
+                                "product_uom_qty": ln.cantidad,
+                                "location_id": t.origen,
+                                "location_dest_id": t.destino,
+                            },
+                        )
+                        for ln in t.lineas
+                    ],
+                }
+            ],
+        )
+
+    movs = moves_de(od, pid)
+    if any(m["state"] == "draft" for m in movs):
+        od.kw("stock.picking", "action_confirm", [[pid]])
+        movs = moves_de(od, pid)
+    if _de_moves(movs) != _esperado(t):
+        od.kw("stock.picking", "action_cancel", [[pid]])
+        raise SystemExit(
+            f"ERROR: al confirmar el picking {pid} Odoo cambio sus productos "
+            f"(un componente con receta phantom se exploto); se cancelo sin mover stock"
+        )
+    if any(m["state"] != "assigned" for m in movs):
+        od.kw("stock.picking", "action_assign", [[pid]])
+        movs = moves_de(od, pid)
+        cortos = [m["product_id"][1] for m in movs if m["state"] != "assigned"]
+        if cortos:
+            raise SystemExit(
+                f"ERROR: el picking {pid} no pudo reservar {cortos}; queda sin validar. "
+                f"El mismo comando lo reanuda cuando haya stock"
+            )
+    for m in movs:
+        od.kw("stock.move", "write", [[m["id"]], {"quantity": m["product_uom_qty"], "picked": True}])
+    distintos = [
+        m["product_id"][1]
+        for m in moves_de(od, pid)
+        if not m["picked"] or round(m["quantity"], 6) != round(m["product_uom_qty"], 6)
+    ]
+    if distintos:
+        soltar(od, pid, f"tras escribir las cantidades, {distintos} no igualan lo pedido")
+
+    res = od.kw("stock.picking", "button_validate", [[pid]])
+    estado = od.kw("stock.picking", "read", [[pid]], {"fields": ["state"]})[0]["state"]
+    if estado != "done":
+        accion = res.get("res_model") or res.get("type") if isinstance(res, dict) else res
+        soltar(od, pid, f"al validar, Odoo devolvio {accion!r} y el picking quedo en {estado}")
+    return pid
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Arma kits hacia un almacen de canal")
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--sku", required=True)
     ap.add_argument("--cantidad", type=int, required=True)
-    ap.add_argument("--destino", required=True, choices=sorted(DESTINOS))
+    ap.add_argument("--destino", required=True, help="nombre del almacen de Odoo, o FLEX")
     ap.add_argument("--aplicar", action="store_true")
-    ap.add_argument(
-        "--folio",
-        help="clave unica del armado; repetir con el mismo folio reanuda sin duplicar",
-    )
+    ap.add_argument("--folio", help="clave unica; repetir con el mismo folio reanuda sin duplicar")
     ap.add_argument(
         "--desarmar",
         action="store_true",
-        help="reversa: el kit sale del destino y los componentes vuelven a EHV/Stock",
+        help="reversa: los componentes vuelven del destino a EHV/Stock",
     )
     args = ap.parse_args(argv)
 
@@ -280,28 +389,46 @@ def main(argv=None) -> int:
     if args.aplicar and not args.folio:
         raise SystemExit("ERROR: --aplicar requiere --folio, la clave que permite reanudar")
 
+    nombre = nombre_destino(args.destino)
     od = Odoo()
+    ehv = almacen(od, [["code", "=", ALMACEN_PRINCIPAL]], f"con codigo {ALMACEN_PRINCIPAL}")
+    destino = almacen(od, [["name", "=", nombre]], f"llamado '{nombre}'")
+    if destino["id"] == ehv["id"]:
+        raise SystemExit(f"ERROR: el destino '{nombre}' es el almacen principal")
+    nombre_erroneo, codigo_erroneo = ALMACEN_FLEX_ERRONEO
+    if destino["name"] == nombre_erroneo or (destino["code"] or "").upper() == codigo_erroneo:
+        raise SystemExit(
+            f"ERROR: el almacen '{destino['name']}' (codigo {destino['code']}) se creo por error; "
+            f"Flex usa 'FBA - MX'. Si vino de {SETTING_FLEX}, ponle 'FBA - MX'"
+        )
+
     prods = (
         od.kw(
             "product.product",
             "search_read",
             [[["default_code", "=", args.sku]]],
-            {"fields": ["id", "default_code", "qty_available"]},
+            {"fields": ["id", "default_code", "product_tmpl_id"]},
         )
         or []
     )
     if len(prods) != 1:
-        raise SystemExit(
-            f"ERROR: se esperaba 1 producto con SKU '{args.sku}', hay {len(prods)}"
-        )
+        raise SystemExit(f"ERROR: se esperaba 1 producto con SKU '{args.sku}', hay {len(prods)}")
     kit = prods[0]
 
     boms = (
         od.kw(
             "mrp.bom",
             "search_read",
-            [[["product_id", "=", kit["id"]], ["active", "=", True]]],
-            {"fields": ["id", "bom_line_ids", "product_qty"]},
+            [
+                [
+                    "|",
+                    ["product_id", "=", kit["id"]],
+                    "&",
+                    ["product_id", "=", False],
+                    ["product_tmpl_id", "=", kit["product_tmpl_id"][0]],
+                ]
+            ],
+            {"fields": ["id", "bom_line_ids", "type"]},
         )
         or []
     )
@@ -310,103 +437,57 @@ def main(argv=None) -> int:
             f"ERROR: el kit tiene {len(boms)} recetas activas, se esperaba 1. "
             f"Con varias no se puede saber cual usar."
         )
-    bom = boms[0]
-
-    lineas = (
-        od.kw(
-            "mrp.bom.line",
-            "read",
-            [bom["bom_line_ids"]],
-            {"fields": ["product_id", "product_qty"]},
+    if boms[0]["type"] != "phantom":
+        raise SystemExit(
+            f"ERROR: la receta {boms[0]['id']} es '{boms[0]['type']}', no phantom; "
+            f"un kit con receta de fabricacion se arma con una orden de fabricacion"
         )
-        or []
-    )
-    plan = plan_de_componentes(lineas, args.cantidad)
 
-    nombres = {ORIGEN: od.loc(ORIGEN), LOC_PRODUCCION: od.loc(LOC_PRODUCCION)}
-    nombres[DESTINOS[args.destino]] = od.loc(DESTINOS[args.destino])
-    loc_nombre = {v: k for k, v in nombres.items()}
-    loc_prod = nombres[LOC_PRODUCCION]
-    lista = pasos(
-        plan,
-        kit,
-        args.cantidad,
-        nombres[ORIGEN],
-        loc_prod,
-        nombres[DESTINOS[args.destino]],
-        args.desarmar,
-    )
+    lineas = od.kw("mrp.bom.line", "read", [boms[0]["bom_line_ids"]], {"fields": ["product_id", "product_qty"]}) or []
+    plan = plan_de_componentes(lineas, args.cantidad)
+    t = traslado(plan, ehv, destino, args.desarmar)
+    stock = {ehv["lot_stock_id"][0]: ehv["lot_stock_id"][1], destino["lot_stock_id"][0]: destino["lot_stock_id"][1]}
 
     verbo = "Desarmado" if args.desarmar else "Armado"
     origin = f"{verbo} {args.folio}" if args.folio else None
-    movs = (
-        od.kw(
-            "stock.move",
-            "search_read",
-            [[["origin", "=", origin]]],
-            {
-                "fields": [
-                    "id",
-                    "product_id",
-                    "location_id",
-                    "location_dest_id",
-                    "product_uom_qty",
-                    "state",
-                ]
-            },
+    picking = picking_del_folio(od, t, origin) if origin else None
+    sueltos = sueltos_del_folio(od, origin) if origin else []
+    estado = "pendiente" if not picking else ("hecho" if picking["state"] == "done" else "a medias")
+
+    print(f"{verbo} {args.cantidad} x {kit['default_code']}: componentes {stock[t.origen]} -> {stock[t.destino]}")
+    print(f"Almacen destino: {destino['name']} (codigo {destino['code']}); tipo de operacion {t.tipo}")
+    print(f"Picking {picking['id'] if picking else 'nuevo'}: {estado}\n")
+    print("%-44s %9s" % ("COMPONENTE", "CANTIDAD"))
+    for ln in t.lineas:
+        print("%-44s %9.1f" % (ln.nombre[:44], ln.cantidad))
+    for m in sueltos:
+        print(
+            f"Move suelto {m['id']} del folio en draft ({m['product_id'][1]} "
+            f"{m['location_id'][1]} -> {m['location_dest_id'][1]}): se cancela al aplicar"
         )
-        if origin
-        else []
-    ) or []
-    estados = [estado_de(p, movs) for p in lista]
 
-    print(f"{verbo} {args.cantidad} x {kit['default_code']}  <->  {DESTINOS[args.destino]}")
-    print(f"Disponibilidad actual del kit: {kit['qty_available']}\n")
-    print("%-34s %9s  %-30s %s" % ("PRODUCTO", "CANTIDAD", "DE -> A", "ESTADO"))
-    for p, (estado, _) in zip(lista, estados):
-        ruta = f"{loc_nombre[p.origen]} -> {loc_nombre[p.destino]}"
-        print("%-34s %9.1f  %-30s %s" % (p.nombre[:34], p.cantidad, ruta, estado))
-
-    # Solo lo que aun no se crea sale de una ubicacion con stock que verificar;
-    # Production es virtual y siempre entrega.
-    por_salir = [
-        p for p, (e, _) in zip(lista, estados) if e == "pendiente" and p.origen != loc_prod
-    ]
-    if por_salir:
-        hay = disponible_en(od, [p.product_id for p in por_salir], por_salir[0].origen)
-        pedido = [
-            {"product_id": p.product_id, "nombre": p.nombre, "necesario": p.cantidad}
-            for p in por_salir
-        ]
-        falta = faltantes(pedido, hay)
+    if estado == "pendiente":
+        hay = disponible_en(od, [ln.product_id for ln in t.lineas], t.origen)
+        falta = faltantes(plan, hay)
         if falta:
-            print(f"\nNO SE PUEDE. Faltan en {loc_nombre[por_salir[0].origen]}:")
+            print(f"\nNO SE PUEDE. Faltan en {stock[t.origen]}:")
             for f in falta:
-                print("   %-40s faltan %.1f" % (f["nombre"][:40], f["falta"]))
+                print("   %-40s hay %.1f, faltan %.1f" % (f["nombre"][:40], f["hay"], f["falta"]))
             return 1
 
     if not args.aplicar:
-        print("\nSIMULACION. Con --aplicar --folio <clave> se ejecutan los movimientos.")
+        print("\nSIMULACION. Con --aplicar --folio <clave> se ejecuta.")
         return 0
 
-    hechos = []
-    for p, (estado, mid) in zip(lista, estados):
-        if estado == "hecho":
-            continue
-        if mid is None:
-            mid = crear(od, p, origin, f"{origin}: {p.nombre[:30]} -> {loc_nombre[p.destino]}")
-        completar(od, mid, p.cantidad)
-        hechos.append(mid)
-
-    despues = od.kw(
-        "product.product", "read", [[kit["id"]]], {"fields": ["qty_available"]}
-    )[0]
-    print(f"\nListo. {len(hechos)} movimientos nuevos o completados: {hechos}")
-    print(
-        f"Disponibilidad del kit: {kit['qty_available']} -> {despues['qty_available']}"
-    )
+    if sueltos:
+        od.kw("stock.move", "write", [[m["id"] for m in sueltos], {"state": "cancel"}])
+    if estado == "hecho":
+        print("\nYa estaba hecho; no se crea nada.")
+        return 0
+    pid = ejecutar(od, t, picking, origin, destino["name"])
+    print(f"\nListo. Picking {pid} en done.")
     if not args.desarmar:
-        print("Para deshacer: el mismo comando con --desarmar --aplicar --folio <clave>.")
+        print("Para deshacer: el mismo comando con --desarmar --aplicar --folio <otra clave>.")
     return 0
 
 
