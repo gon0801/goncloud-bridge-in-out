@@ -12,6 +12,7 @@ import xmlrpc.client  # noqa: E402
 from datetime import datetime  # noqa: E402
 
 from stock_disponible import (  # noqa: E402
+    CAMPOS_ALMACEN,
     CAMPOS_ODOO,
     almacen_apartado,
     contexto_publicable,
@@ -34,7 +35,7 @@ cur = con.cursor()
 apartado = almacen_apartado(con)
 almacenes = (
     models.execute_kw(
-        DBN, uid, PWD, "stock.warehouse", "search_read", [[]], {"fields": ["id", "name"]}
+        DBN, uid, PWD, "stock.warehouse", "search_read", [[]], {"fields": CAMPOS_ALMACEN}
     )
     if apartado
     else []

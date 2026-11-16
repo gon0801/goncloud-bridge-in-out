@@ -14,6 +14,7 @@ _defusedxml_xmlrpc.monkey_patch()
 import xmlrpc.client  # noqa: E402
 
 from stock_disponible import (  # noqa: E402
+    CAMPOS_ALMACEN,
     CAMPOS_ODOO,
     almacen_apartado,
     contexto_publicable,
@@ -120,7 +121,7 @@ if apartado:
         "stock.warehouse",
         "search_read",
         [[]],
-        {"fields": ["id", "name"]},
+        {"fields": CAMPOS_ALMACEN},
     )
     try:
         opciones["context"] = contexto_publicable(almacenes, apartado)

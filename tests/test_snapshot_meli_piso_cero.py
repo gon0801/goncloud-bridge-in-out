@@ -51,7 +51,10 @@ PRODUCTOS_ODOO = [
 
 # Stock de TEST-FLEX por almacen: 5 en EHV-MX y 49 apartadas en Flex. Odoo sin
 # contexto suma todos los almacenes; con `warehouse` suma solo los que recibe.
-ALMACENES = [{"id": 1, "name": "EHV-MX"}, {"id": 6, "name": "Flex - MX"}]
+ALMACENES = [
+    {"id": 1, "name": "EHV-MX", "code": "EHV"},
+    {"id": 6, "name": "Flex - MX", "code": "FLEX"},
+]
 FLEX_POR_ALMACEN = {1: 5, 6: 49}
 
 
@@ -210,6 +213,15 @@ def test_un_almacen_apartado_que_no_existe_no_publica_nada(tmp_path_factory):
     proc, db_path = _correr(tmp_path_factory, "Flex MX")
     assert proc.returncode == 1
     assert "almacen apartado 'Flex MX' no existe" in proc.stdout
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT count(*) FROM snapshot_items").fetchone() == (0,)
+    conn.close()
+
+
+def test_apartar_el_almacen_ehv_no_publica_nada(tmp_path_factory):
+    proc, db_path = _correr(tmp_path_factory, "EHV-MX")
+    assert proc.returncode == 1
+    assert "'EHV-MX' es el almacen principal EHV" in proc.stdout
     conn = sqlite3.connect(db_path)
     assert conn.execute("SELECT count(*) FROM snapshot_items").fetchone() == (0,)
     conn.close()

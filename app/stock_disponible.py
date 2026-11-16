@@ -20,6 +20,8 @@ import sqlite3
 
 CAMPOS_ODOO = ["qty_available", "outgoing_qty"]
 SETTING_APARTADO = "warehouse_amazon_flex_mx"
+ALMACEN_PRINCIPAL = "EHV"
+CAMPOS_ALMACEN = ["id", "name", "code"]
 
 
 def disponible(producto: dict) -> int:
@@ -39,12 +41,15 @@ def contexto_publicable(almacenes: list[dict], apartado: str) -> dict:
     """Contexto de Odoo con los almacenes activos menos el apartado.
 
     Un apartado que no existe aborta: publicar sin excluirlo ofreceria en las
-    plataformas las piezas apartadas. Una lista vacia tambien, porque Odoo lee
+    plataformas las piezas apartadas. Apartar EHV tambien: dejaria las
+    plataformas solo con el stock de los almacenes de canal. Una lista vacia tambien, porque Odoo lee
     `warehouse: []` como "todos los almacenes"."""
     if not apartado:
         return {}
     if apartado not in {a["name"] for a in almacenes}:
         raise ValueError(f"almacen apartado '{apartado}' no existe en Odoo")
+    if any(a["name"] == apartado and a.get("code") == ALMACEN_PRINCIPAL for a in almacenes):
+        raise ValueError(f"'{apartado}' es el almacen principal {ALMACEN_PRINCIPAL}; no se aparta")
     ids = [a["id"] for a in almacenes if a["name"] != apartado]
     if not ids:
         raise ValueError(f"'{apartado}' es el unico almacen; no queda stock que publicar")

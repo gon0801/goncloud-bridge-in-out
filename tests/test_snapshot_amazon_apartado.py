@@ -122,3 +122,10 @@ def test_un_apartado_que_no_existe_sale_1_sin_publicar(tmp_path):
     assert proc.returncode == 1
     assert "[FATAL] almacen apartado 'Flex MX' no existe en Odoo" in proc.stdout
     assert (filas, eventos) == ([], 0)
+
+
+def test_apartar_el_almacen_ehv_sale_1_sin_publicar(tmp_path):
+    proc, filas, eventos = _correr(tmp_path, "EHV-MX")
+    assert proc.returncode == 1
+    assert "[FATAL] 'EHV-MX' es el almacen principal EHV; no se aparta" in proc.stdout
+    assert (filas, eventos) == ([], 0)

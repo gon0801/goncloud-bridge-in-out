@@ -23,9 +23,9 @@ sys.path.insert(0, str(ROOT / "app"))
 import stock_disponible as sd  # noqa: E402
 
 ALMACENES = [
-    {"id": 1, "name": "EHV-MX"},
-    {"id": 2, "name": "Meli - Full"},
-    {"id": 5, "name": "Flex - MX"},
+    {"id": 1, "name": "EHV-MX", "code": "EHV"},
+    {"id": 2, "name": "Meli - Full", "code": "Full"},
+    {"id": 5, "name": "Flex - MX", "code": "FLEX"},
 ]
 
 
@@ -40,6 +40,11 @@ def test_el_apartado_queda_fuera_y_los_demas_cuentan():
 def test_un_apartado_que_no_existe_aborta():
     with pytest.raises(ValueError, match="no existe"):
         sd.contexto_publicable(ALMACENES, "Flex MX")
+
+
+def test_apartar_el_almacen_ehv_aborta():
+    with pytest.raises(ValueError, match="almacen principal EHV"):
+        sd.contexto_publicable(ALMACENES, "EHV-MX")
 
 
 def test_si_solo_queda_el_apartado_aborta():
