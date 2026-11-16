@@ -2,8 +2,11 @@
 
 Odoo 17 elige la BOM phantom de un producto con `mrp.bom._bom_find`, que
 ordena por "sequence, product_id, id": la de menor sequence gana aunque sea
-de plantilla. Las lineas "Apply on Variants" las salta Odoo segun la
-variante; el bridge no evalua atributos y deja el kit en 0. Una linea de
+de plantilla y, con la misma sequence, la de plantilla gana a la de producto
+(product_id ordena por "priority desc" de product.product y la plantilla
+tiene priority NULL, que PostgreSQL pone primero en DESC). Las lineas
+"Apply on Variants" las salta Odoo segun la variante; el bridge no evalua
+atributos y deja el kit en 0. Una linea de
 componente no almacenable se salta antes de mirar su unidad, como en Odoo.
 """
 
@@ -78,9 +81,11 @@ def test_bom_de_plantilla_con_menor_sequence_gana_a_la_de_producto():
     assert disponibles(_odoo(boms, LINEAS, COMPONENTES), [KIT], {}) == {1: 3}
 
 
-def test_con_la_misma_sequence_la_bom_de_producto_gana():
-    boms = [_bom(7, 1, [101]), _bom(8, 1, [100], producto=1)]
-    assert disponibles(_odoo(boms, LINEAS, COMPONENTES), [KIT], {}) == {1: 10}
+def test_con_la_misma_sequence_la_bom_de_plantilla_gana():
+    """La de plantilla (id 8) pide el 11, con 3; la de producto (id 7, menor)
+    pide el 10, con 10. Con la misma sequence Odoo usa la de plantilla: 3."""
+    boms = [_bom(7, 1, [100], producto=1), _bom(8, 1, [101])]
+    assert disponibles(_odoo(boms, LINEAS, COMPONENTES), [KIT], {}) == {1: 3}
 
 
 def test_entre_dos_boms_de_producto_con_la_misma_sequence_gana_la_de_menor_id():

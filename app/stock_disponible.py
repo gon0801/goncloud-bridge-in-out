@@ -10,9 +10,12 @@ min(fisico_i) - min(salidas_i), que no ve un componente comprometido por la
 venta de otro kit. `disponibles` calcula el kit desde sus componentes:
 min sobre i de floor((fisico_i - salidas_i) / unidades_por_kit_i). Como en
 Odoo (`mrp.bom._bom_find`, orden "sequence, product_id, id"), gana la BOM
-de menor sequence y, con la misma sequence, la del producto a la de su
-plantilla y luego la de menor id. Tambien como en Odoo, un componente no
-almacenable no limita y una BOM anidada se abre hasta sus hojas. Tambien
+de menor sequence y, con la misma sequence, la de la plantilla a la del
+producto y luego la de menor id: product_id ordena por el _order de
+product.product, que empieza por "priority desc", y la BOM de plantilla
+tiene priority NULL, que PostgreSQL pone primero en DESC. Tambien como en
+Odoo, un componente no almacenable no limita y una BOM anidada se abre
+hasta sus hojas. Tambien
 como en Odoo, unidades_por_kit_i suma todas las lineas del componente i,
 incluidas las de niveles anidados: dos lineas de 1 piden 2 por kit.
 
@@ -118,7 +121,7 @@ def recetas_phantom(ejecutar: Ejecutar) -> Callable[[dict], Receta | None]:
             },
         )
         lineas = {x["id"]: x for x in leidas}
-    # Clave de Odoo por BOM: (sequence, producto antes que plantilla, id).
+    # Clave de Odoo por BOM: (sequence, plantilla antes que producto, id).
     por_producto: dict[int, tuple[tuple[int, int, int], Receta]] = {}
     por_plantilla: dict[int, tuple[tuple[int, int, int], Receta]] = {}
     for b in boms:
@@ -136,9 +139,9 @@ def recetas_phantom(ejecutar: Ejecutar) -> Callable[[dict], Receta | None]:
             ),
         )
         if b["product_id"]:
-            destino, llave, clave = por_producto, b["product_id"][0], (b["sequence"], 0, b["id"])
+            destino, llave, clave = por_producto, b["product_id"][0], (b["sequence"], 1, b["id"])
         else:
-            destino, llave, clave = por_plantilla, b["product_tmpl_id"][0], (b["sequence"], 1, b["id"])
+            destino, llave, clave = por_plantilla, b["product_tmpl_id"][0], (b["sequence"], 0, b["id"])
         if llave not in destino or clave < destino[llave][0]:
             destino[llave] = (clave, receta)
 
@@ -196,8 +199,8 @@ def disponibles(ejecutar: Ejecutar, productos: list[dict], contexto: dict) -> di
                     comp["id"],
                 )
                 return None
-            hoja = receta_de(comp) is None
-            if hoja and comp.get("type") != "product":
+            es_hoja = receta_de(comp) is None
+            if es_hoja and comp.get("type") != "product":
                 continue
             if linea.uom != comp["uom_id"][0]:
                 log.warning(
@@ -206,7 +209,7 @@ def disponibles(ejecutar: Ejecutar, productos: list[dict], contexto: dict) -> di
                     comp["id"],
                 )
                 return None
-            if hoja:
+            if es_hoja:
                 total[comp["id"]] = total.get(comp["id"], 0) + linea.unidades
                 continue
             abiertas = por_kit(comp, profundidad + 1)
