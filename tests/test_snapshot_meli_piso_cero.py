@@ -38,24 +38,41 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "app" / "snapshotter_odoo_meli_run_once.py"
 
+# Productos simples: id -> (codigo, tipo, fisico por almacen, salidas sin enviar).
 # -102 replica el caso real de NH-CAR-ROJ-*; 134 es el control sano.
-# TEST-VENDIDO y TEST-KIT tienen ventas sin enviar (outgoing_qty): MeLi debe
-# recibir lo mismo que Amazon, fisico menos salidas. Para un kit phantom Odoo
-# calcula ambos campos desde la BOM, asi que llegan igual que los de un simple.
-PRODUCTOS_ODOO = [
-    {"default_code": "TEST-ROJ-NEG", "qty_available": -102, "outgoing_qty": 0},
-    {"default_code": "TEST-AZU-OK", "qty_available": 134, "outgoing_qty": 0},
-    {"default_code": "TEST-VENDIDO", "qty_available": 10, "outgoing_qty": 3},
-    {"default_code": "TEST-KIT", "qty_available": 4, "outgoing_qty": 6},
-]
+# TEST-VENDIDO y TEST-SOBREVENDIDO tienen ventas sin enviar (outgoing_qty):
+# MeLi debe recibir lo mismo que Amazon, fisico menos salidas.
+# TEST-FLEX tiene 5 en EHV-MX y 49 apartadas en Flex. Odoo sin contexto suma
+# todos los almacenes; con `warehouse` suma solo los que recibe.
+SIMPLES = {
+    1: ("TEST-ROJ-NEG", "product", {1: -102}, 0),
+    2: ("TEST-AZU-OK", "product", {1: 134}, 0),
+    3: ("TEST-VENDIDO", "product", {1: 10}, 3),
+    4: ("TEST-SOBREVENDIDO", "product", {1: 4}, 6),
+    5: ("TEST-FLEX", "product", {1: 5, 6: 49}, 0),
+    # Estuche Italia: 3 en EHV, las 3 vendidas en ventas de otros kits, y 40
+    # apartadas en Flex.
+    101: ("4405-BG", "product", {1: 3, 6: 40}, 3),
+    102: ("MON-CEN", "product", {1: 10}, 0),
+    103: ("MON-VCO", "product", {1: 9}, 0),
+    104: ("ARR-22", "product", {1: 5}, 0),
+    105: ("COF-AGOTADO", "product", {1: 0}, 0),
+    106: ("BOLSA", "consu", {}, 0),
+}
+# Kits phantom: id -> (codigo, [(componente, unidades por kit)])
+KITS = {
+    20: ("SET-ITA-CEN", [(101, 1), (102, 1)]),
+    21: ("SET-ITA-VCO", [(101, 1), (103, 1)]),
+    22: ("SET-ARR-DOBLE", [(104, 2), (106, 1)]),
+    23: ("SET-AGOTADO", [(102, 1), (105, 1)]),
+    24: ("SET-ANIDADO", [(22, 1), (103, 1)]),
+}
+EN_MELI = [1, 2, 3, 4, 5, 20, 21, 22, 23, 24]
 
-# Stock de TEST-FLEX por almacen: 5 en EHV-MX y 49 apartadas en Flex. Odoo sin
-# contexto suma todos los almacenes; con `warehouse` suma solo los que recibe.
 ALMACENES = [
     {"id": 1, "name": "EHV-MX", "code": "EHV"},
     {"id": 6, "name": "Flex - MX", "code": "FLEX"},
 ]
-FLEX_POR_ALMACEN = {1: 5, 6: 49}
 
 
 class _HandlerCualquierPath(SimpleXMLRPCRequestHandler):
@@ -68,19 +85,59 @@ def _authenticate(db, user, password, extra):
     return 2
 
 
+def _producto(pid: int, almacenes: list[int]) -> dict:
+    """Como Odoo 17: a un kit le da qty_available y outgoing_qty como el
+    minimo de cada campo sobre sus componentes almacenables, por separado."""
+    if pid in SIMPLES:
+        codigo, tipo, fisico, salidas = SIMPLES[pid]
+        qa = sum(q for a, q in fisico.items() if a in almacenes)
+        out = salidas
+    else:
+        codigo, receta = KITS[pid]
+        tipo = "consu"
+        comps = [(_producto(c, almacenes), u) for c, u in receta]
+        comps = [(c, u) for c, u in comps if c["type"] == "product" or c["id"] in KITS]
+        qa = min(c["qty_available"] // u for c, u in comps)
+        out = min(c["outgoing_qty"] // u for c, u in comps)
+    return {
+        "id": pid,
+        "default_code": codigo,
+        "type": tipo,
+        "qty_available": qa,
+        "outgoing_qty": out,
+        "product_tmpl_id": [1000 + pid, codigo],
+    }
+
+
 def _execute_kw(db, uid, pwd, model, method, args, kwargs):
+    almacenes = (kwargs.get("context") or {}).get("warehouse") or [1, 6]
+    campos = ["id", *(kwargs.get("fields") or [])]
     if (model, method) == ("stock.warehouse", "search_read"):
         return ALMACENES
-    if (model, method) != ("product.product", "search_read"):
-        raise ValueError(f"llamada inesperada: {model}.{method}")
-    campos = kwargs.get("fields") or []
-    almacenes = (kwargs.get("context") or {}).get("warehouse") or list(FLEX_POR_ALMACEN)
-    flex = {
-        "default_code": "TEST-FLEX",
-        "qty_available": sum(FLEX_POR_ALMACEN[a] for a in almacenes),
-        "outgoing_qty": 0,
-    }
-    return [{k: v for k, v in p.items() if k in campos} for p in [*PRODUCTOS_ODOO, flex]]
+    if (model, method) == ("mrp.bom", "search_read"):
+        return [
+            {
+                "id": k,
+                "product_id": [k, codigo],
+                "product_tmpl_id": [1000 + k, codigo],
+                "product_qty": 1.0,
+                "bom_line_ids": [k * 10 + i for i in range(len(receta))],
+            }
+            for k, (codigo, receta) in KITS.items()
+        ]
+    if (model, method) == ("mrp.bom.line", "read"):
+        lineas = {
+            k * 10 + i: {"id": k * 10 + i, "product_id": [c, "x"], "product_qty": float(u)}
+            for k, (_, receta) in KITS.items()
+            for i, (c, u) in enumerate(receta)
+        }
+        return [lineas[i] for i in args[0]]
+    if model == "product.product" and method in ("search_read", "read"):
+        ids = EN_MELI if method == "search_read" else args[0]
+        return [
+            {k: v for k, v in _producto(i, almacenes).items() if k in campos} for i in ids
+        ]
+    raise ValueError(f"llamada inesperada: {model}.{method}")
 
 
 def _crear_bridge_db(db_path: Path, apartado: str | None) -> None:
@@ -88,9 +145,8 @@ def _crear_bridge_db(db_path: Path, apartado: str | None) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE sku_mapping(channel TEXT, sku TEXT)")
     conn.execute(
-        "INSERT INTO sku_mapping(channel, sku) VALUES"
-        " ('meli','TEST-ROJ-NEG'),('meli','TEST-AZU-OK'),"
-        " ('meli','TEST-VENDIDO'),('meli','TEST-KIT'),('meli','TEST-FLEX')"
+        "INSERT INTO sku_mapping(channel, sku) VALUES "
+        + ",".join(f"('meli','{_producto(i, [1])['default_code']}')" for i in EN_MELI)
     )
     conn.execute("CREATE TABLE bridge_settings(key TEXT PRIMARY KEY, value TEXT)")
     if apartado is not None:
@@ -193,9 +249,25 @@ def test_descuenta_lo_vendido_sin_enviar(corrida):
     assert _qty_de(db_path, "TEST-VENDIDO") == 7
 
 
-def test_kit_con_mas_salidas_que_fisico_queda_en_cero(corrida):
+def test_mas_salidas_que_fisico_queda_en_cero(corrida):
     _, db_path = corrida
-    assert _qty_de(db_path, "TEST-KIT") == 0
+    assert _qty_de(db_path, "TEST-SOBREVENDIDO") == 0
+
+
+def test_kit_con_2_unidades_en_receta_publica_la_mitad(corrida):
+    """5 aros alcanzan para 2 sets; la bolsa no almacenable no limita."""
+    _, db_path = corrida
+    assert _qty_de(db_path, "SET-ARR-DOBLE") == 2
+
+
+def test_kit_con_un_componente_en_cero_queda_en_cero(corrida):
+    _, db_path = corrida
+    assert _qty_de(db_path, "SET-AGOTADO") == 0
+
+
+def test_kit_anidado_se_calcula_hasta_sus_hojas(corrida):
+    _, db_path = corrida
+    assert _qty_de(db_path, "SET-ANIDADO") == 2
 
 
 def test_sin_almacen_apartado_publica_todos_los_almacenes(corrida):
@@ -207,6 +279,17 @@ def test_lo_apartado_para_flex_no_se_publica(tmp_path_factory):
     proc, db_path = _correr(tmp_path_factory, "Flex - MX")
     assert proc.returncode == 0, f"stderr: {proc.stderr}\nstdout: {proc.stdout}"
     assert _qty_de(db_path, "TEST-FLEX") == 5
+
+
+def test_kit_no_publica_un_componente_vendido_en_otro_kit(tmp_path_factory):
+    """Caso Italia: el estuche tiene 3 en EHV y las 3 salen en ventas de
+    otros kits. Odoo da al kit qty_available 3 y outgoing_qty 0, asi que la
+    resta publicaba 3. Lo apartado en Flex tampoco cuenta."""
+    proc, db_path = _correr(tmp_path_factory, "Flex - MX")
+    assert proc.returncode == 0, f"stderr: {proc.stderr}\nstdout: {proc.stdout}"
+    assert _producto(20, [1])["qty_available"] - _producto(20, [1])["outgoing_qty"] == 3
+    assert _qty_de(db_path, "SET-ITA-CEN") == 0
+    assert _qty_de(db_path, "SET-ITA-VCO") == 0
 
 
 def test_un_almacen_apartado_que_no_existe_no_publica_nada(tmp_path_factory):

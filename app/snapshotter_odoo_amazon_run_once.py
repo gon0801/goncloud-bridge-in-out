@@ -16,7 +16,7 @@ from stock_disponible import (  # noqa: E402
     CAMPOS_ODOO,
     almacen_apartado,
     contexto_publicable,
-    disponible,
+    disponibles,
 )
 
 DB = os.getenv("BRIDGE_DB", os.getenv("BRIDGE_SQLITE_PATH", "/data/bridge.db"))
@@ -67,6 +67,13 @@ recs = models.execute_kw(
     opciones,
 )
 
+
+def ejecutar(modelo, metodo, args, kwargs):
+    return models.execute_kw(DBN, uid, PWD, modelo, metodo, args, kwargs)
+
+
+libres = disponibles(ejecutar, recs, contexto)
+
 cur.execute(
     "INSERT INTO events(created_at,channel,item_count,payload) VALUES(?,?,?,?)",
     (datetime.utcnow().isoformat(), "amazon_fbm", len(recs), "odoo_snapshot"),
@@ -75,7 +82,7 @@ eid = str(cur.lastrowid)
 
 for r in recs:
     odoo_sku = r["default_code"]
-    qty = disponible(r)
+    qty = libres[r["id"]]
 
     # Siempre enviar SKU de Odoo - el worker hace la conversión
     cur.execute(
