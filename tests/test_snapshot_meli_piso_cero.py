@@ -39,9 +39,14 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "app" / "snapshotter_odoo_meli_run_once.py"
 
 # -102 replica el caso real de NH-CAR-ROJ-*; 134 es el control sano.
+# TEST-VENDIDO y TEST-KIT tienen ventas sin enviar (outgoing_qty): MeLi debe
+# recibir lo mismo que Amazon, fisico menos salidas. Para un kit phantom Odoo
+# calcula ambos campos desde la BOM, asi que llegan igual que los de un simple.
 PRODUCTOS_ODOO = [
-    {"default_code": "TEST-ROJ-NEG", "qty_available": -102},
-    {"default_code": "TEST-AZU-OK", "qty_available": 134},
+    {"default_code": "TEST-ROJ-NEG", "qty_available": -102, "outgoing_qty": 0},
+    {"default_code": "TEST-AZU-OK", "qty_available": 134, "outgoing_qty": 0},
+    {"default_code": "TEST-VENDIDO", "qty_available": 10, "outgoing_qty": 3},
+    {"default_code": "TEST-KIT", "qty_available": 4, "outgoing_qty": 6},
 ]
 
 
@@ -58,7 +63,8 @@ def _authenticate(db, user, password, extra):
 def _execute_kw(db, uid, pwd, model, method, args, kwargs):
     if (model, method) != ("product.product", "search_read"):
         raise ValueError(f"llamada inesperada: {model}.{method}")
-    return [dict(p) for p in PRODUCTOS_ODOO]
+    campos = kwargs.get("fields") or []
+    return [{k: v for k, v in p.items() if k in campos} for p in PRODUCTOS_ODOO]
 
 
 def _crear_bridge_db(db_path: Path) -> None:
@@ -67,7 +73,8 @@ def _crear_bridge_db(db_path: Path) -> None:
     conn.execute("CREATE TABLE sku_mapping(channel TEXT, sku TEXT)")
     conn.execute(
         "INSERT INTO sku_mapping(channel, sku) VALUES"
-        " ('meli','TEST-ROJ-NEG'),('meli','TEST-AZU-OK')"
+        " ('meli','TEST-ROJ-NEG'),('meli','TEST-AZU-OK'),"
+        " ('meli','TEST-VENDIDO'),('meli','TEST-KIT')"
     )
     conn.execute(
         "CREATE TABLE events("
@@ -153,3 +160,14 @@ def test_qty_positiva_pasa_intacta(corrida):
     """Control: el piso no aplana las cantidades sanas."""
     _, db_path = corrida
     assert _qty_de(db_path, "TEST-AZU-OK") == 134
+
+
+def test_descuenta_lo_vendido_sin_enviar(corrida):
+    """MeLi publicaba qty_available y sobrevendia lo ya vendido sin enviar."""
+    _, db_path = corrida
+    assert _qty_de(db_path, "TEST-VENDIDO") == 7
+
+
+def test_kit_con_mas_salidas_que_fisico_queda_en_cero(corrida):
+    _, db_path = corrida
+    assert _qty_de(db_path, "TEST-KIT") == 0

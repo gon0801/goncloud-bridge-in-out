@@ -4,6 +4,7 @@ import os
 import re
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
@@ -375,6 +376,37 @@ def meli_set_qty_from_mapping(sku: str, qty: int) -> str:
 # AMAZON SP-API STOCK SYNC
 # =========================
 
+# marketplace_id de amazon_listing_prices -> nombre corto para el log
+AMAZON_MARKETPLACES = {
+    "A1AM78C64UM0Y8": "MX",
+    "ATVPDKIKX0DER": "US",
+}
+AMAZON_SIN_FILA = "sin_fila_en_amazon_listing_prices"
+# patchListingsItem admite 5 peticiones/s por cuenta; vamos a 4.
+AMAZON_PATCH_MIN_INTERVAL_S = 0.25
+AMAZON_RETRY_429_SLEEP_S = 2.0
+_amazon_last_patch_at = 0.0
+_amazon_token = {"value": None, "expires_at": 0.0}
+
+
+@dataclass(frozen=True)
+class AmazonTarget:
+    seller_sku: str
+    market: str
+    marketplace_id: str
+    skip_reason: str | None
+
+
+@dataclass(frozen=True)
+class AmazonResult:
+    """applied: al menos un PATCH aceptado y ninguna falla ni fila faltante.
+    noop: nada que mandar (todas AFN o marketplace no soportado).
+    error: alguna falla de Amazon, una publicacion sin fila o sin config.
+    """
+
+    status: str
+    detail: str
+
 
 def amazon_get_credentials():
     """Lee credenciales Amazon de bridge_settings."""
@@ -391,67 +423,179 @@ def amazon_get_credentials():
             "refresh_token": get("amazon_sp_api_refresh_token"),
             "client_id": get("amazon_sp_api_client_id"),
             "client_secret": get("amazon_sp_api_client_secret"),
-            "marketplace": get("amazon_marketplace_id") or "A1AM78C64UM0Y8",
             "seller_id": get("amazon_seller_id"),
         }
 
 
-def amazon_set_qty(sku: str, qty: int) -> str:
-    """Actualiza inventario en Amazon via SP-API directa."""
+def amazon_targets(conn, odoo_sku: str) -> list[AmazonTarget]:
+    """Cada publicacion de los seller SKUs mapeados a un codigo de Odoo.
+
+    En que marketplace existe cada seller SKU y como se surte lo dice
+    amazon_listing_prices, el reporte de Amazon que baja amazon-prices-sync,
+    no amazon_sku_mapping.keepa_domain: esa columna no tiene migracion y el
+    guardado de la UI la pisa. Solo se escribe donde el canal es DEFAULT
+    (FBM); AFN, Flex y FBA las maneja Amazon.
+    """
+    seller_skus = [
+        r[0]
+        for r in conn.execute(
+            "SELECT seller_sku FROM amazon_sku_mapping "
+            "WHERE odoo_default_code=? ORDER BY seller_sku",
+            (odoo_sku,),
+        )
+    ]
+    targets = []
+    for seller_sku in seller_skus:
+        listings = conn.execute(
+            "SELECT marketplace_id, fulfillment_channel FROM amazon_listing_prices "
+            "WHERE seller_sku=? ORDER BY marketplace_id",
+            (seller_sku,),
+        ).fetchall()
+        if not listings:
+            targets.append(AmazonTarget(seller_sku, "?", "", AMAZON_SIN_FILA))
+        for marketplace_id, channel in listings:
+            market = AMAZON_MARKETPLACES.get(marketplace_id)
+            if market is None:
+                market, skip = "?", f"marketplace_no_soportado:{marketplace_id}"
+            elif channel != "DEFAULT":
+                skip = f"no_fbm:{channel or 'vacio'}"
+            else:
+                skip = None
+            targets.append(AmazonTarget(seller_sku, market, marketplace_id, skip))
+    return targets
+
+
+def amazon_access_token(creds) -> str:
+    now = time.time()
+    if _amazon_token["value"] and _amazon_token["expires_at"] - now > 300:
+        return _amazon_token["value"]
+    token_data = urllib.parse.urlencode(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": creds["refresh_token"],
+            "client_id": creds["client_id"],
+            "client_secret": creds["client_secret"],
+        }
+    ).encode()
+    req = urllib.request.Request(
+        "https://api.amazon.com/auth/o2/token", data=token_data
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        j = json.loads(resp.read().decode())
+    _amazon_token["value"] = j["access_token"]
+    _amazon_token["expires_at"] = now + int(j.get("expires_in") or 3600)
+    return _amazon_token["value"]
+
+
+def _amazon_http_error_text(e: urllib.error.HTTPError) -> str:
+    try:
+        errors = json.loads(e.read().decode("utf-8", "ignore")).get("errors") or []
+    except Exception:
+        return ""
+    if not errors:
+        return ""
+    return f"{errors[0].get('code', '')}: {str(errors[0].get('message', ''))[:150]}"
+
+
+def amazon_patch_qty(
+    creds, token: str, target: AmazonTarget, qty: int
+) -> tuple[bool, str]:
+    """PATCH de fulfillment_availability (canal DEFAULT) en un marketplace."""
+    global _amazon_last_patch_at
+    url = (
+        "https://sellingpartnerapi-na.amazon.com/listings/2021-08-01/items/"
+        f"{creds['seller_id']}/{urllib.parse.quote(target.seller_sku, safe='')}"
+        f"?marketplaceIds={target.marketplace_id}"
+    )
+    body = json.dumps(
+        {
+            "productType": "PRODUCT",
+            "patches": [
+                {
+                    "op": "replace",
+                    "path": "/attributes/fulfillment_availability",
+                    "value": [
+                        {"fulfillment_channel_code": "DEFAULT", "quantity": int(qty)}
+                    ],
+                }
+            ],
+        }
+    ).encode()
+    for attempt in (1, 2):
+        wait = _amazon_last_patch_at + AMAZON_PATCH_MIN_INTERVAL_S - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _amazon_last_patch_at = time.monotonic()
+        req = urllib.request.Request(url, data=body, method="PATCH")
+        req.add_header("x-amz-access-token", token)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 1:
+                time.sleep(AMAZON_RETRY_429_SLEEP_S)
+                continue
+            return False, f"http={e.code} {_amazon_http_error_text(e)}".strip()
+        status = result.get("status")
+        if status == "ACCEPTED":
+            return True, "status=ACCEPTED"
+        issues = result.get("issues") or []
+        detail = str(issues[0].get("message", ""))[:150] if issues else ""
+        return False, f"status={status} {detail}".strip()
+    return False, "http=429"
+
+
+def amazon_set_qty(sku: str, qty: int) -> AmazonResult:
+    """Actualiza el stock FBM de cada publicacion mapeada al codigo de Odoo."""
     creds = amazon_get_credentials()
     if not creds["refresh_token"] or not creds["seller_id"]:
-        return "amazon_skip_no_credentials"
+        return AmazonResult("error", "amazon_skip_no_credentials")
     with closing(db_conn()) as conn:
         sql_init_conn(conn)
-        row = conn.execute(
-            "SELECT seller_sku FROM amazon_sku_mapping WHERE odoo_default_code=?",
-            (sku,),
-        ).fetchone()
-        if not row:
-            return f"amazon_skip_no_mapping odoo_sku={sku}"
-        amazon_sku = row[0]
-    try:
-        token_data = urllib.parse.urlencode(
-            {
-                "grant_type": "refresh_token",
-                "refresh_token": creds["refresh_token"],
-                "client_id": creds["client_id"],
-                "client_secret": creds["client_secret"],
-            }
-        ).encode()
-        req = urllib.request.Request(
-            "https://api.amazon.com/auth/o2/token", data=token_data
+        targets = amazon_targets(conn, sku)
+    if not targets:
+        return AmazonResult("error", f"amazon_skip_no_mapping odoo_sku={sku}")
+
+    qty_int = int(qty)
+    results: list[str] = []
+    ok_count = err_count = skip_count = missing_count = 0
+    for t in targets:
+        where = f"{t.seller_sku}@{t.market}"
+        if t.skip_reason == AMAZON_SIN_FILA:
+            missing_count += 1
+            results.append(f"MISSING[{t.seller_sku}] {t.skip_reason}")
+            continue
+        if t.skip_reason:
+            skip_count += 1
+            results.append(f"skip[{where}] {t.skip_reason}")
+            continue
+        try:
+            sent, info = amazon_patch_qty(creds, amazon_access_token(creds), t, qty_int)
+        except Exception as e:
+            sent, info = False, f"{type(e).__name__}: {str(e)[:120]}"
+        if sent:
+            ok_count += 1
+            results.append(f"put[{where}] {info}")
+        else:
+            err_count += 1
+            results.append(f"FAIL[{where}] {info}")
+        print(
+            f"[{utc_now_iso()}] amazon_send odoo_sku={sku} seller_sku={t.seller_sku} "
+            f"marketplace={t.market} qty={qty_int} {'ok' if sent else 'FAIL'} {info}"
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            access_token = json.loads(resp.read().decode())["access_token"]
-        url = f"https://sellingpartnerapi-na.amazon.com/listings/2021-08-01/items/{creds['seller_id']}/{urllib.parse.quote(amazon_sku, safe='')}?marketplaceIds={creds['marketplace']}"
-        body = json.dumps(
-            {
-                "productType": "PRODUCT",
-                "patches": [
-                    {
-                        "op": "replace",
-                        "path": "/attributes/fulfillment_availability",
-                        "value": [
-                            {
-                                "fulfillment_channel_code": "DEFAULT",
-                                "quantity": int(qty),
-                            }
-                        ],
-                    }
-                ],
-            }
-        ).encode()
-        req = urllib.request.Request(url, data=body, method="PATCH")
-        req.add_header("x-amz-access-token", access_token)
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode())
-        return f"amazon_put_ok odoo_sku={sku} amazon_sku={amazon_sku} qty={qty} status={result.get('status')}"
-    except urllib.error.HTTPError as e:
-        return f"amazon_put_error sku={sku} http={e.code}"
-    except Exception as e:
-        return f"amazon_put_error sku={sku} error={e}"
+
+    if err_count or missing_count:
+        status = "error"
+    elif ok_count:
+        status = "applied"
+    else:
+        status = "noop"
+    summary = (
+        f"amazon_multi_put odoo_sku={sku} targets={len(targets)} ok={ok_count} "
+        f"skip={skip_count} missing={missing_count} err={err_count} qty={qty_int}"
+    )
+    return AmazonResult(status, summary + " | " + " | ".join(results))
 
 
 def main():
@@ -604,14 +748,24 @@ def main():
             if channel.lower() == "amazon_fbm" and setting_is_true(
                 db_conn(), "amazon_fbm_enabled", "0"
             ):
-                detail = amazon_set_qty(str(sku), int(qty))
-                mark_event_done(str(event_id), "ok", detail)
+                result = amazon_set_qty(str(sku), int(qty))
+                if result.status == "error":
+                    mark_event_done(str(event_id), "error", result.detail)
+                    bump_metric("events_processed_error_total", 1)
+                    set_metric("last_error_at", utc_now_iso())
+                    set_metric("last_error", result.detail[:500])
+                    print(
+                        f"[{utc_now_iso()}] ERROR job(amazon_fail): channel={channel} "
+                        f"sku={sku} qty={qty} event_id={event_id} {result.detail}"
+                    )
+                    continue
+                mark_event_done(str(event_id), "ok", result.detail)
                 bump_metric("events_processed_ok_total", 1)
-                bump_metric("events_amazon_applied_total", 1)
+                bump_metric(f"events_amazon_{result.status}_total", 1)
                 set_metric("last_success_at", utc_now_iso())
                 print(
-                    f"[{utc_now_iso()}] job(amazon_applied): channel={channel} "
-                    f"sku={sku} qty={qty} event_id={event_id} {detail}"
+                    f"[{utc_now_iso()}] job(amazon_{result.status}): channel={channel} "
+                    f"sku={sku} qty={qty} event_id={event_id} {result.detail}"
                 )
                 continue
             # 5) listo para adapter noop

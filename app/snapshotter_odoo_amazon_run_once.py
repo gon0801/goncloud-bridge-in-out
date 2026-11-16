@@ -10,6 +10,8 @@ _defusedxml_xmlrpc.monkey_patch()
 import xmlrpc.client  # noqa: E402
 from datetime import datetime  # noqa: E402
 
+from stock_disponible import CAMPOS_ODOO, disponible  # noqa: E402
+
 DB = os.getenv("BRIDGE_DB", os.getenv("BRIDGE_SQLITE_PATH", "/data/bridge.db"))
 URL = os.getenv("ODOO_URL", "http://odoo:8069")
 DBN = os.getenv("ODOO_DB")
@@ -34,7 +36,7 @@ recs = models.execute_kw(
             ("default_code", "!=", False),
         ]
     ],
-    {"fields": ["id", "default_code", "qty_available", "outgoing_qty"]},
+    {"fields": ["id", "default_code", *CAMPOS_ODOO]},
 )
 
 con = sqlite3.connect(DB)
@@ -48,7 +50,7 @@ eid = str(cur.lastrowid)
 
 for r in recs:
     odoo_sku = r["default_code"]
-    qty = int(max((r.get("qty_available") or 0) - (r.get("outgoing_qty") or 0), 0))
+    qty = disponible(r)
 
     # Siempre enviar SKU de Odoo - el worker hace la conversión
     cur.execute(
