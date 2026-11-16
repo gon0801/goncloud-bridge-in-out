@@ -8,6 +8,12 @@ publicaciones solo una se actualizaba, las de US iban a MX y nunca recibian
 stock, y las publicaciones AFN (Flex/FBA) recibian un PATCH con canal
 DEFAULT.
 
+El marketplace y el canal de cada publicacion salen de
+`amazon_listing_prices` (el reporte de Amazon), no de
+`amazon_sku_mapping.keepa_domain`: esa columna no existe en la tabla que crea
+`amazon_inbound_worker.py` y el guardado de la UI la deja en 11. Por eso la
+prueba corre con las dos formas de esa tabla.
+
 Como se prueba
 --------------
 Se carga el worker real contra una SQLite temporal con las tablas que lee y
@@ -40,8 +46,19 @@ def _cargar_worker(db_path: Path):
     return mod
 
 
-def _crear_db(db_path: Path) -> None:
+MAPEO_SIN_KEEPA = """
+CREATE TABLE amazon_sku_mapping(seller_sku TEXT PRIMARY KEY,
+  odoo_default_code TEXT);
+"""
+MAPEO_KEEPA_PISADO = """
+CREATE TABLE amazon_sku_mapping(seller_sku TEXT PRIMARY KEY,
+  odoo_default_code TEXT, keepa_domain INTEGER DEFAULT 11);
+"""
+
+
+def _crear_db(db_path: Path, mapeo_ddl: str) -> None:
     conn = sqlite3.connect(db_path)
+    conn.executescript(mapeo_ddl)
     conn.executescript(
         """
         CREATE TABLE bridge_settings(key TEXT PRIMARY KEY, value TEXT);
@@ -49,20 +66,20 @@ def _crear_db(db_path: Path) -> None:
           ('amazon_sp_api_refresh_token','rt'),('amazon_sp_api_client_id','cid'),
           ('amazon_sp_api_client_secret','cs'),('amazon_seller_id','SELLER'),
           ('amazon_marketplace_id','A1AM78C64UM0Y8');
-        CREATE TABLE amazon_sku_mapping(seller_sku TEXT PRIMARY KEY,
-          odoo_default_code TEXT, keepa_domain INTEGER DEFAULT 11);
         CREATE TABLE amazon_listing_prices(seller_sku TEXT, marketplace_id TEXT,
           fulfillment_channel TEXT, UNIQUE(seller_sku, marketplace_id));
-        INSERT INTO amazon_sku_mapping VALUES
-          ('S-MX','SET-A',11),('S-MX-FLEX','SET-A',11),('S-US','SET-A',1),
-          ('S-MAL-DOMINIO','SET-A',11),('S-OTRO','SET-B',11);
+        INSERT INTO amazon_sku_mapping(seller_sku, odoo_default_code) VALUES
+          ('S-MX','SET-A'),('S-MX-FLEX','SET-A'),('S-US','SET-A'),
+          ('S-OTRO','SET-B'),('S-RARO','SET-C'),('S-CA','SET-C');
         INSERT INTO amazon_listing_prices VALUES
           ('S-MX','A1AM78C64UM0Y8','DEFAULT'),
           ('S-MX-FLEX','A1AM78C64UM0Y8','AMAZON_NA'),
           ('S-MX-FLEX','ATVPDKIKX0DER','AMAZON_NA'),
           ('S-US','ATVPDKIKX0DER','DEFAULT'),
-          ('S-MAL-DOMINIO','ATVPDKIKX0DER','DEFAULT'),
-          ('S-OTRO','A1AM78C64UM0Y8','DEFAULT');
+          ('S-OTRO','A1AM78C64UM0Y8','DEFAULT'),
+          ('S-RARO','A1AM78C64UM0Y8','AMAZON_EU'),
+          ('S-RARO','ATVPDKIKX0DER',''),
+          ('S-CA','A2EUQ1WTGCTBG2','DEFAULT');
         """
     )
     conn.commit()
@@ -109,10 +126,12 @@ class AmazonFalso:
         return _Resp(json.dumps(resp).encode())
 
 
-@pytest.fixture
-def entorno(tmp_path, monkeypatch):
+@pytest.fixture(
+    params=[MAPEO_SIN_KEEPA, MAPEO_KEEPA_PISADO], ids=["sin_keepa", "keepa_pisado"]
+)
+def entorno(request, tmp_path, monkeypatch):
     db_path = tmp_path / "bridge.db"
-    _crear_db(db_path)
+    _crear_db(db_path, request.param)
     worker = _cargar_worker(db_path)
     amazon = AmazonFalso()
     monkeypatch.setattr(worker.urllib.request, "urlopen", amazon.urlopen)
@@ -130,9 +149,21 @@ def test_cada_publicacion_fbm_recibe_el_stock_en_su_marketplace(entorno):
         assert p["availability"] == [
             {"fulfillment_channel_code": "DEFAULT", "quantity": 7}
         ]
-    assert "skip[S-MX-FLEX@MX] afn:AMAZON_NA" in detalle
-    assert "skip[S-MAL-DOMINIO@MX] sin_publicacion_en_marketplace" in detalle
+    assert "skip[S-MX-FLEX@MX] no_fbm:AMAZON_NA" in detalle
+    assert "skip[S-MX-FLEX@US] no_fbm:AMAZON_NA" in detalle
     assert "FAIL[" not in detalle
+
+
+def test_canal_distinto_de_default_o_marketplace_no_soportado_no_recibe_patch(
+    entorno,
+):
+    worker, amazon = entorno
+    detalle = worker.amazon_set_qty("SET-C", 4)
+
+    assert amazon.patches == []
+    assert "skip[S-RARO@MX] no_fbm:AMAZON_EU" in detalle
+    assert "skip[S-RARO@US] no_fbm:vacio" in detalle
+    assert "skip[S-CA@?] marketplace_no_soportado:A2EUQ1WTGCTBG2" in detalle
 
 
 def test_el_token_de_lwa_se_reusa_entre_jobs(entorno):

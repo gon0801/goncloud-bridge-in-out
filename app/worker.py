@@ -376,11 +376,12 @@ def meli_set_qty_from_mapping(sku: str, qty: int) -> str:
 # AMAZON SP-API STOCK SYNC
 # =========================
 
-# keepa_domain de amazon_sku_mapping -> (marketplace corto, marketplace_id)
+# marketplace_id de amazon_listing_prices -> nombre corto para el log
 AMAZON_MARKETPLACES = {
-    11: ("MX", "A1AM78C64UM0Y8"),
-    1: ("US", "ATVPDKIKX0DER"),
+    "A1AM78C64UM0Y8": "MX",
+    "ATVPDKIKX0DER": "US",
 }
+AMAZON_SIN_FILA = "sin_fila_en_amazon_listing_prices"
 # patchListingsItem admite 5 peticiones/s por cuenta; vamos a 4.
 AMAZON_PATCH_MIN_INTERVAL_S = 0.25
 AMAZON_RETRY_429_SLEEP_S = 2.0
@@ -416,40 +417,40 @@ def amazon_get_credentials():
 
 
 def amazon_targets(conn, odoo_sku: str) -> list[AmazonTarget]:
-    """Todas las publicaciones mapeadas a un codigo de Odoo, con su marketplace.
+    """Cada publicacion de los seller SKUs mapeados a un codigo de Odoo.
 
-    El marketplace sale de keepa_domain. Solo se escribe donde
-    amazon_listing_prices (lo llena amazon-prices-sync) dice que la
-    publicacion en ese marketplace es DEFAULT (FBM): las AFN, Flex y FBA,
-    las maneja Amazon y no se tocan.
+    En que marketplace existe cada seller SKU y como se surte lo dice
+    amazon_listing_prices, el reporte de Amazon que baja amazon-prices-sync,
+    no amazon_sku_mapping.keepa_domain: esa columna no tiene migracion y el
+    guardado de la UI la pisa. Solo se escribe donde el canal es DEFAULT
+    (FBM); AFN, Flex y FBA las maneja Amazon.
     """
-    rows = conn.execute(
-        "SELECT seller_sku, keepa_domain FROM amazon_sku_mapping "
-        "WHERE odoo_default_code=? ORDER BY seller_sku",
-        (odoo_sku,),
-    ).fetchall()
+    seller_skus = [
+        r[0]
+        for r in conn.execute(
+            "SELECT seller_sku FROM amazon_sku_mapping "
+            "WHERE odoo_default_code=? ORDER BY seller_sku",
+            (odoo_sku,),
+        )
+    ]
     targets = []
-    for seller_sku, keepa_domain in rows:
-        if keepa_domain not in AMAZON_MARKETPLACES:
-            targets.append(
-                AmazonTarget(
-                    seller_sku, "?", "", f"keepa_domain_desconocido:{keepa_domain}"
-                )
-            )
-            continue
-        market, marketplace_id = AMAZON_MARKETPLACES[keepa_domain]
-        listing = conn.execute(
-            "SELECT fulfillment_channel FROM amazon_listing_prices "
-            "WHERE seller_sku=? AND marketplace_id=?",
-            (seller_sku, marketplace_id),
-        ).fetchone()
-        if listing is None:
-            skip = "sin_publicacion_en_marketplace"
-        elif listing[0] != "DEFAULT":
-            skip = f"afn:{listing[0]}"
-        else:
-            skip = None
-        targets.append(AmazonTarget(seller_sku, market, marketplace_id, skip))
+    for seller_sku in seller_skus:
+        listings = conn.execute(
+            "SELECT marketplace_id, fulfillment_channel FROM amazon_listing_prices "
+            "WHERE seller_sku=? ORDER BY marketplace_id",
+            (seller_sku,),
+        ).fetchall()
+        if not listings:
+            targets.append(AmazonTarget(seller_sku, "?", "", AMAZON_SIN_FILA))
+        for marketplace_id, channel in listings:
+            market = AMAZON_MARKETPLACES.get(marketplace_id)
+            if market is None:
+                market, skip = "?", f"marketplace_no_soportado:{marketplace_id}"
+            elif channel != "DEFAULT":
+                skip = f"no_fbm:{channel or 'vacio'}"
+            else:
+                skip = None
+            targets.append(AmazonTarget(seller_sku, market, marketplace_id, skip))
     return targets
 
 

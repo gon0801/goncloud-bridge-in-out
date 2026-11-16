@@ -27,7 +27,7 @@ import worker  # noqa: E402
 from stock_disponible import CAMPOS_ODOO, disponible  # noqa: E402
 
 DB = os.getenv("BRIDGE_DB", "/data/bridge.db")
-MX = worker.AMAZON_MARKETPLACES[11][1]
+MX = "A1AM78C64UM0Y8"
 
 
 def productos_odoo() -> list[dict]:
