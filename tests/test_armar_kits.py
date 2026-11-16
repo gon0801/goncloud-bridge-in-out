@@ -87,17 +87,18 @@ def test_las_fracciones_no_se_redondean(mod):
     assert mod.faltantes(plan, {201: 1}) != [], "1 < 1.5 debe reportarse como faltante"
 
 
-EHV, FBAMX, FULL = 8, 49, 41
+EHV, FBAMX, FULL, FLEX_ERRONEO = 8, 49, 41, 60
 ALMACENES = [
     {"id": 1, "name": "EHV-MX", "code": "EHV", "lot_stock_id": [EHV, "EHV/Stock"], "int_type_id": [5, "EHV-MX: Internal Transfers"]},
     {"id": 2, "name": "Meli - Full", "code": "Full", "lot_stock_id": [FULL, "Full/Stock"], "int_type_id": [13, "Meli - Full: Internal Transfers"]},
-    {"id": 3, "name": "FBA - MX", "code": "FBAMX", "lot_stock_id": [FBAMX, "FBAMX/Stock"], "int_type_id": [21, "FBA - MX: Internal Transfers"]},
+    {"id": 5, "name": "Flex - MX", "code": "FLEX", "lot_stock_id": [FLEX_ERRONEO, "FLEX/Stock"], "int_type_id": [30, "Flex - MX: Internal Transfers"]},
+    {"id": 49, "name": "FBA - MX", "code": "FBAMX", "lot_stock_id": [FBAMX, "FBAMX/Stock"], "int_type_id": [21, "FBA - MX: Internal Transfers"]},
 ]
 INTERNO_EHV, INTERNO_FBAMX, INTERNO_FULL = 5, 21, 13
 PROD = 15
 KIT = 900
 COMPONENTES = (101, 102, 103)
-SETTINGS_FBA = {"warehouse_amazon_fba_mx": "FBA - MX"}
+SETTINGS_FLEX = {"warehouse_amazon_flex_mx": "FBA - MX"}
 
 
 def _cumple(reg, dominio):
@@ -255,7 +256,7 @@ STOCK_EHV = {(EHV, 101): 10, (EHV, 102): 10, (EHV, 103): 10}
 APARTADO_2 = {(EHV, 101): 8, (EHV, 102): 8, (EHV, 103): 6, (FBAMX, 101): 2, (FBAMX, 102): 2, (FBAMX, 103): 4}
 
 
-def _correr(mod, monkeypatch, od, *args, cantidad="2", destino="FLEX", settings=SETTINGS_FBA):
+def _correr(mod, monkeypatch, od, *args, cantidad="2", destino="FLEX", settings=SETTINGS_FLEX):
     monkeypatch.setattr(mod, "Odoo", lambda: od)
     monkeypatch.setattr(mod, "get_setting", lambda k: settings.get(k, ""))
     return mod.main(["--sku", "SET-X", "--cantidad", cantidad, "--destino", destino, *args])
@@ -279,16 +280,17 @@ def test_un_metodo_privado_rechazado_como_en_odoo_17(mod):
         FakeOdoo(STOCK_EHV).kw("stock.move", "_action_confirm", [[9173]])
 
 
-def test_flex_sin_setting_propio_aparta_en_fba_mx_con_un_picking_interno(mod, monkeypatch):
+def test_flex_con_el_setting_en_fba_mx_aparta_en_fbamx_con_un_picking_interno(mod, monkeypatch, capsys):
     od = FakeOdoo(STOCK_EHV)
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
+    assert "Almacen destino: FBA - MX (codigo FBAMX)" in capsys.readouterr().out
     assert od.quants == APARTADO_2
     assert _resumen(od) == [(INTERNO_EHV, EHV, FBAMX, "done", "Armado F1")]
 
 
 def test_flex_usa_el_setting_warehouse_amazon_flex_mx_cuando_existe(mod, monkeypatch):
     od = FakeOdoo(STOCK_EHV)
-    settings = {**SETTINGS_FBA, "warehouse_amazon_flex_mx": "Meli - Full"}
+    settings = {"warehouse_amazon_flex_mx": "Meli - Full", "warehouse_amazon_fba_mx": "FBA - MX"}
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1", settings=settings) == 0
     assert _resumen(od) == [(INTERNO_EHV, EHV, FULL, "done", "Armado F1")]
 
@@ -304,9 +306,25 @@ def test_flex_sin_settings_aborta(mod, monkeypatch):
         _correr(mod, monkeypatch, FakeOdoo(STOCK_EHV), settings={})
 
 
+def test_flex_no_cae_en_warehouse_amazon_fba_mx(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV)
+    with pytest.raises(SystemExit, match="ponle 'FBA - MX'"):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1", settings={"warehouse_amazon_fba_mx": "FBA - MX"})
+    assert od.pickings == {}
+
+
+def test_el_almacen_flex_mx_creado_por_error_no_es_destino(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV)
+    with pytest.raises(SystemExit, match=r"'Flex - MX' \(codigo FLEX\) se creo por error"):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1", destino="Flex - MX", settings={})
+    with pytest.raises(SystemExit, match="se creo por error"):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1", settings={"warehouse_amazon_flex_mx": "Flex - MX"})
+    assert od.pickings == {}
+
+
 def test_un_almacen_inexistente_aborta(mod, monkeypatch):
-    with pytest.raises(SystemExit, match="llamado 'Flex - MX'"):
-        _correr(mod, monkeypatch, FakeOdoo(STOCK_EHV), destino="Flex - MX")
+    with pytest.raises(SystemExit, match="llamado 'No existe'"):
+        _correr(mod, monkeypatch, FakeOdoo(STOCK_EHV), destino="No existe")
 
 
 def test_ehv_no_es_destino(mod, monkeypatch):

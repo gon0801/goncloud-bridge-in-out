@@ -64,8 +64,10 @@ Uso
     ... --destino FLEX --desarmar --aplicar --folio <clave>
 
 `--destino` acepta el nombre de un almacen de Odoo ("FBA - MX") o `FLEX`, que
-es el almacen del setting `warehouse_amazon_flex_mx` y, sin el, el de
-`warehouse_amazon_fba_mx`: Flex usa el almacen FBA - MX.
+es solo el almacen del setting `warehouse_amazon_flex_mx`, el mismo que leen
+los snapshotters y las ventas Flex. Flex usa el almacen FBA - MX: ese setting
+debe valer 'FBA - MX'. El almacen 'Flex - MX' (codigo FLEX) se creo por error
+y se rechaza como destino.
 """
 
 import argparse
@@ -78,7 +80,8 @@ from dataclasses import dataclass
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 ALMACEN_PRINCIPAL = "EHV"
-SETTINGS_FLEX = ("warehouse_amazon_flex_mx", "warehouse_amazon_fba_mx")
+SETTING_FLEX = "warehouse_amazon_flex_mx"
+ALMACEN_FLEX_ERRONEO = ("Flex - MX", "FLEX")
 CAMPOS_ALMACEN = ["id", "name", "code", "lot_stock_id", "int_type_id"]
 CAMPOS_MOVE = [
     "id", "product_id", "product_uom_qty", "quantity", "picked", "state", "picking_id", "location_id", "location_dest_id",
@@ -186,14 +189,13 @@ class Traslado:
 
 
 def nombre_destino(destino: str) -> str:
-    """Nombre del almacen destino. `FLEX` sale de los settings."""
+    """Nombre del almacen destino. `FLEX` sale de `warehouse_amazon_flex_mx`."""
     if destino.upper() != "FLEX":
         return destino
-    for key in SETTINGS_FLEX:
-        valor = get_setting(key)
-        if valor:
-            return valor
-    raise SystemExit(f"ERROR: --destino FLEX necesita uno de los settings {list(SETTINGS_FLEX)}")
+    valor = get_setting(SETTING_FLEX)
+    if not valor:
+        raise SystemExit(f"ERROR: --destino FLEX necesita el setting {SETTING_FLEX}; ponle 'FBA - MX'")
+    return valor
 
 
 def almacen(od, dominio: list, que: str) -> dict:
@@ -393,6 +395,12 @@ def main(argv=None) -> int:
     destino = almacen(od, [["name", "=", nombre]], f"llamado '{nombre}'")
     if destino["id"] == ehv["id"]:
         raise SystemExit(f"ERROR: el destino '{nombre}' es el almacen principal")
+    nombre_erroneo, codigo_erroneo = ALMACEN_FLEX_ERRONEO
+    if destino["name"] == nombre_erroneo or (destino["code"] or "").upper() == codigo_erroneo:
+        raise SystemExit(
+            f"ERROR: el almacen '{destino['name']}' (codigo {destino['code']}) se creo por error; "
+            f"Flex usa 'FBA - MX'. Si vino de {SETTING_FLEX}, ponle 'FBA - MX'"
+        )
 
     prods = (
         od.kw(
