@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Arma kits y los deja en un almacen de canal (Meli-Full, FBA-MX, FBA-US).
+"""Arma kits y los deja en un almacen de canal (Meli-Full, FBA-MX, FBA-US, Flex-MX).
 
 Que resuelve
 ------------
@@ -14,7 +14,7 @@ directa de decir "hay 40 kits en la bodega de MeLi".
 Esto lo resuelve moviendo por `Virtual Locations/Production`:
 
     componentes:  EHV/Stock            -> Virtual Locations/Production
-    kit:          Virtual Locations/Production -> Full|FBAMX|FBAUS /Stock
+    kit:          Virtual Locations/Production -> Full|FBAMX|FBAUS|FLEX /Stock
 
 Es lo que hace una orden de fabricacion, pero sin necesitar recetas nuevas. Y a
 diferencia de dos ajustes de inventario sueltos, la valuacion queda coherente:
@@ -49,7 +49,12 @@ import urllib.request
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 LOC_PRODUCCION = "Virtual Locations/Production"
-DESTINOS = {"Full": "Full/Stock", "FBAMX": "FBAMX/Stock", "FBAUS": "FBAUS/Stock"}
+DESTINOS = {
+    "Full": "Full/Stock",
+    "FBAMX": "FBAMX/Stock",
+    "FBAUS": "FBAUS/Stock",
+    "FLEX": "FLEX/Stock",
+}
 ORIGEN = "EHV/Stock"
 
 
