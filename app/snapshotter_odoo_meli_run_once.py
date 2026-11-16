@@ -13,6 +13,8 @@ import defusedxml.xmlrpc as _defusedxml_xmlrpc
 _defusedxml_xmlrpc.monkey_patch()
 import xmlrpc.client  # noqa: E402
 
+from stock_disponible import CAMPOS_ODOO, disponible  # noqa: E402
+
 # =========================
 # ENV OBLIGATORIA
 # =========================
@@ -101,7 +103,7 @@ domain = [
     ("sell_on_meli", "=", True),
     ("default_code", "!=", False),
 ]
-fields = ["default_code", "qty_available"]
+fields = ["default_code", *CAMPOS_ODOO]
 
 products = models.execute_kw(
     ODOO_DB,
@@ -126,7 +128,7 @@ for p in products:
         skipped_not_mapped += 1
         continue
 
-    qty = max(int(p.get("qty_available") or 0), 0)
+    qty = disponible(p)
 
     cur.execute(
         "INSERT INTO snapshot_items(event_id, channel, sku, qty) VALUES (?,?,?,?)",
