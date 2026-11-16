@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cierra en Odoo las entregas de venta de EHV-MX que la plataforma ya envio.
+"""Cierra en Odoo las entregas de venta de EHV-MX y del almacen Flex que la plataforma ya envio.
 
 El bridge confirma la venta y deja la entrega (WH/OUT) sin validar. Este job
 pregunta a la plataforma el estado real de cada entrega abierta y actua:
@@ -163,7 +163,16 @@ def fecha_odoo(texto: str) -> datetime:
     return datetime.fromisoformat(texto).replace(tzinfo=UTC)
 
 
-def listar_entregas(od, almacen: str = ALMACEN) -> tuple[list[Entrega], int]:
+def filtro_almacen(almacen_flex: str = "") -> list:
+    """EHV siempre; el almacen Flex (setting `warehouse_amazon_flex_mx`, por
+    nombre) cuando existe, porque las ventas Flex salen de ahi."""
+    ehv = ["picking_type_id.warehouse_id.code", "=", ALMACEN]
+    if not almacen_flex:
+        return [ehv]
+    return ["|", ehv, ["picking_type_id.warehouse_id.name", "=", almacen_flex]]
+
+
+def listar_entregas(od, almacen_flex: str = "") -> tuple[list[Entrega], int]:
     """Entregas de venta abiertas del almacen, y cuantas se ignoraron por no
     ser de un canal de marketplace conocido."""
     picks = (
@@ -173,7 +182,7 @@ def listar_entregas(od, almacen: str = ALMACEN) -> tuple[list[Entrega], int]:
             [
                 [
                     ["picking_type_code", "=", "outgoing"],
-                    ["picking_type_id.warehouse_id.code", "=", almacen],
+                    *filtro_almacen(almacen_flex),
                     ["state", "in", ["waiting", "confirmed", "assigned"]],
                     ["sale_id", "!=", False],
                 ]
@@ -290,10 +299,12 @@ class Resumen:
         return bool(self.errores or self.vencidas or self.avisos)
 
 
-def correr(od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print):
+def correr(
+    od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print, almacen_flex=""
+):
     """Recorre las entregas abiertas. `consultar(entregas)` devuelve, por
     picking_id, un Veredicto o la excepcion que impidio obtenerlo."""
-    entregas, ignoradas = listar_entregas(od)
+    entregas, ignoradas = listar_entregas(od, almacen_flex)
     veredictos = consultar(entregas)
     r = Resumen(revisadas=len(entregas))
     escrituras = 0
@@ -544,6 +555,7 @@ def main(argv=None) -> int:
         ahora,
         args.limite,
         log,
+        get_setting("warehouse_amazon_flex_mx").strip(),
     )
     return 1 if r.fallo() else 0
 

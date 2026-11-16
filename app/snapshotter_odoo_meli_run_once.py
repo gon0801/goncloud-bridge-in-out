@@ -13,7 +13,12 @@ import defusedxml.xmlrpc as _defusedxml_xmlrpc
 _defusedxml_xmlrpc.monkey_patch()
 import xmlrpc.client  # noqa: E402
 
-from stock_disponible import CAMPOS_ODOO, disponible  # noqa: E402
+from stock_disponible import (  # noqa: E402
+    CAMPOS_ODOO,
+    almacen_apartado,
+    contexto_publicable,
+    disponible,
+)
 
 # =========================
 # ENV OBLIGATORIA
@@ -104,6 +109,24 @@ domain = [
     ("default_code", "!=", False),
 ]
 fields = ["default_code", *CAMPOS_ODOO]
+opciones = {"fields": fields}
+
+apartado = almacen_apartado(conn)
+if apartado:
+    almacenes = models.execute_kw(
+        ODOO_DB,
+        uid,
+        ODOO_PASSWORD,
+        "stock.warehouse",
+        "search_read",
+        [[]],
+        {"fields": ["id", "name"]},
+    )
+    try:
+        opciones["context"] = contexto_publicable(almacenes, apartado)
+    except ValueError as e:
+        conn.close()
+        die(f"[FATAL] {e}")
 
 products = models.execute_kw(
     ODOO_DB,
@@ -112,7 +135,7 @@ products = models.execute_kw(
     "product.product",
     "search_read",
     [domain],
-    {"fields": fields},
+    opciones,
 )
 
 items = 0
