@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import sys
 import defusedxml.xmlrpc as _defusedxml_xmlrpc
 
 # monkey_patch() DEBE correr antes de importar xmlrpc.client: parcha el parser
@@ -39,7 +40,12 @@ almacenes = (
     else []
 )
 opciones = {"fields": ["id", "default_code", *CAMPOS_ODOO]}
-contexto = contexto_publicable(almacenes, apartado)
+try:
+    contexto = contexto_publicable(almacenes, apartado)
+except ValueError as e:
+    con.close()
+    print(f"[FATAL] {e}")
+    sys.exit(1)
 if contexto:
     opciones["context"] = contexto
 
