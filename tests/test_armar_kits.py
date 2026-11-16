@@ -1,19 +1,13 @@
-"""Armar kits no puede consumir componentes si alguno no alcanza.
+"""Apartar en un almacen de canal los componentes de N kits, sin mover nada a medias.
 
 Por que existe
 --------------
-Segundo paso del modelo hibrido de PENDIENTES #3. Un producto con receta
-phantom no acumula stock propio, asi que para que Meli-Full o FBA tengan kits
-armados hay que moverlos por `Virtual Locations/Production`: los componentes
-salen de EHV, el kit entra al almacen de canal.
+Para vender un kit desde FBA - MX (Flex) ese almacen necesita las piezas. Odoo
+17 explota la receta phantom en cualquier picking, asi que lo que se aparta son
+los componentes, en un solo picking EHV/Stock -> <destino>/Stock.
 
-El riesgo es el armado a medias. Si se consumen los componentes de a uno y el
-ultimo no alcanza, quedan materiales destruidos sin kit que los justifique — y
-en un catalogo donde 65 componentes sostienen 1009 kits, eso desarma decenas de
-publicaciones de golpe.
-
-Por eso la verificacion es previa y total: se calculan TODAS las necesidades,
-se comparan contra lo disponible, y solo si no falta nada se mueve algo.
+El riesgo es mover a medias: por eso la verificacion es previa y total, y el
+folio permite reanudar un corte sin duplicar.
 
 Sobre el redondeo
 -----------------
@@ -93,36 +87,78 @@ def test_las_fracciones_no_se_redondean(mod):
     assert mod.faltantes(plan, {201: 1}) != [], "1 < 1.5 debe reportarse como faltante"
 
 
-LOCS = {"EHV/Stock": 8, "Virtual Locations/Production": 15, "FLEX/Stock": 60, "Full/Stock": 61}
+EHV, FBAMX, FULL = 8, 49, 41
+ALMACENES = [
+    {"id": 1, "name": "EHV-MX", "code": "EHV", "lot_stock_id": [EHV, "EHV/Stock"], "int_type_id": [5, "EHV-MX: Internal Transfers"]},
+    {"id": 2, "name": "Meli - Full", "code": "Full", "lot_stock_id": [FULL, "Full/Stock"], "int_type_id": [13, "Meli - Full: Internal Transfers"]},
+    {"id": 3, "name": "FBA - MX", "code": "FBAMX", "lot_stock_id": [FBAMX, "FBAMX/Stock"], "int_type_id": [21, "FBA - MX: Internal Transfers"]},
+]
+INTERNO_EHV, INTERNO_FBAMX, INTERNO_FULL = 5, 21, 13
+PROD = 15
 KIT = 900
+COMPONENTES = (101, 102, 103)
+SETTINGS_FBA = {"warehouse_amazon_fba_mx": "FBA - MX"}
+
+
+def _cumple(reg, dominio):
+    for campo, op, valor in dominio:
+        actual = reg.get(campo)
+        actual = actual[0] if isinstance(actual, (list, tuple)) else actual
+        if op == "=" and actual != valor:
+            return False
+        if op == "in" and actual not in valor:
+            return False
+    return True
 
 
 class FakeOdoo:
-    """Moves con estados y quants por ubicacion. `cortar_en` corta la
-    conexion en la llamada numero N a ese metodo de stock.move."""
+    """Odoo 17. Como el real, rechaza por RPC cualquier metodo que empiece con
+    guion bajo, y al confirmar un picking explota en componentes cualquier
+    producto con receta phantom (`kits`), sin mirar el tipo de operacion.
+    `cortar_en` corta la conexion en la llamada numero N a ese metodo de
+    stock.picking."""
 
-    def __init__(self, stock, cortar_en=None, recetas=1):
+    def __init__(self, stock, cortar_en=None, recetas=1, tipo_receta="phantom", kits=(), asistente=None):
         self.quants = dict(stock)
         self.recetas = recetas
+        self.tipo_receta = tipo_receta
+        self.kits = {KIT, *kits}
+        self.asistente = asistente
+        self.pickings = {}
         self.moves = {}
         self.cortar_en = cortar_en or {}
         self.llamadas = {}
 
-    def loc(self, nombre):
-        return LOCS[nombre]
+    def _move(self, vals, picking_id=False):
+        mid = 9000 + len(self.moves)
+        self.moves[mid] = {"id": mid, "state": "draft", "quantity": 0, "picking_id": picking_id, **vals}
+        return mid
+
+    def _de_picking(self, pid):
+        return [m for m in self.moves.values() if m["picking_id"] == pid and m["state"] != "cancel"]
+
+    def _vista(self, reg):
+        return {
+            k: [v, f"nombre {v}"] if k in ("product_id", "location_id", "location_dest_id") or (k == "picking_id" and v) else v
+            for k, v in reg.items()
+        }
 
     def kw(self, model, method, args, kwargs=None):
         kwargs = kwargs or {}
-        if model == "stock.move" and method in self.cortar_en:
+        if method.startswith("_"):
+            raise SystemExit(
+                f"ERROR Odoo: AccessError: Private methods (such as '{model}.{method}') cannot be called remotely."
+            )
+        if model == "stock.picking" and method in self.cortar_en:
             self.llamadas[method] = self.llamadas.get(method, 0) + 1
             if self.llamadas[method] == self.cortar_en[method]:
                 raise ConnectionError("corte simulado")
+        if (model, method) == ("stock.warehouse", "search_read"):
+            return [a for a in ALMACENES if _cumple(a, args[0])]
         if (model, method) == ("product.product", "search_read"):
-            return [{"id": KIT, "default_code": "SET-X", "qty_available": 0}]
-        if (model, method) == ("product.product", "read"):
-            return [{"id": KIT, "qty_available": 0}]
+            return [{"id": KIT, "default_code": "SET-X", "product_tmpl_id": [77, "SET-X"]}]
         if (model, method) == ("mrp.bom", "search_read"):
-            return [{"id": i, "bom_line_ids": [1, 2, 3], "product_qty": 1} for i in range(self.recetas)]
+            return [{"id": i, "bom_line_ids": [1, 2, 3], "type": self.tipo_receta} for i in range(self.recetas)]
         if (model, method) == ("mrp.bom.line", "read"):
             return lineas()
         if (model, method) == ("stock.quant", "search_read"):
@@ -131,104 +167,195 @@ class FakeOdoo:
                 {"product_id": [pid, ""], "quantity": self.quants.get((loc, pid), 0), "reserved_quantity": 0}
                 for pid in ids
             ]
-        if (model, method) == ("stock.move", "search_read"):
-            origin = args[0][0][2]
-            return [
-                {
-                    **m,
-                    "product_id": [m["product_id"], ""],
-                    "location_id": [m["location_id"], ""],
-                    "location_dest_id": [m["location_dest_id"], ""],
-                }
-                for m in self.moves.values()
-                if m["origin"] == origin
-            ]
-        if (model, method) == ("stock.move", "create"):
-            mid = 1000 + len(self.moves)
-            self.moves[mid] = {"id": mid, "state": "draft", **args[0]}
-            return mid
-        m = self.moves[args[0][0]]
-        if method == "read":
-            return [{"state": m["state"]}]
-        if method == "_action_confirm":
-            m["state"] = "confirmed"
-        elif method == "_action_assign":
-            m["state"] = "assigned"
-        elif method == "write":
-            m.update(args[1])
-        elif method == "_action_done":
-            assert m["state"] == "assigned" and m["quantity"] == m["product_uom_qty"]
-            m["state"] = "done"
-            origen = (m["location_id"], m["product_id"])
-            destino = (m["location_dest_id"], m["product_id"])
-            self.quants[origen] = self.quants.get(origen, 0) - m["quantity"]
-            self.quants[destino] = self.quants.get(destino, 0) + m["quantity"]
-        else:
-            raise AssertionError(f"llamada inesperada {model}.{method}")
-        return True
+        if model == "stock.move":
+            if method == "search_read":
+                return [self._vista(m) for m in self.moves.values() if _cumple(m, args[0])]
+            if method == "write":
+                for i in args[0]:
+                    self.moves[i].update(args[1])
+                return True
+        if model == "stock.picking":
+            if method == "create":
+                vals = dict(args[0])
+                pid = 500 + len(self.pickings)
+                self.pickings[pid] = {"id": pid, "state": "draft", **{k: v for k, v in vals.items() if k != "move_ids"}}
+                for _, _, mv in vals["move_ids"]:
+                    self._move(mv, pid)
+                return pid
+            if method == "search_read":
+                return [self._vista(p) for p in self.pickings.values() if _cumple(p, args[0])]
+            pid = args[0][0]
+            p = self.pickings[pid]
+            if method == "read":
+                return [{"state": p["state"]}]
+            if method == "action_confirm":
+                for m in self._de_picking(pid):
+                    if m["product_id"] in self.kits:
+                        m["state"] = "cancel"
+                        for c in COMPONENTES:
+                            self._move({**m, "product_id": c, "state": "draft"}, pid)
+                for m in self._de_picking(pid):
+                    m["state"] = "confirmed"
+                p["state"] = "confirmed"
+                return True
+            if method == "action_assign":
+                for m in self._de_picking(pid):
+                    if self.quants.get((m["location_id"], m["product_id"]), 0) >= m["product_uom_qty"]:
+                        m["state"], m["quantity"] = "assigned", m["product_uom_qty"]
+                return True
+            if method == "button_validate":
+                if self.asistente and not kwargs.get("context", {}).get("skip_immediate"):
+                    return {"type": "ir.actions.act_window", "res_model": self.asistente}
+                for m in self._de_picking(pid):
+                    assert m["picked"] and m["quantity"] == m["product_uom_qty"]
+                    m["state"] = "done"
+                    origen = (m["location_id"], m["product_id"])
+                    destino = (m["location_dest_id"], m["product_id"])
+                    self.quants[origen] = self.quants.get(origen, 0) - m["quantity"]
+                    self.quants[destino] = self.quants.get(destino, 0) + m["quantity"]
+                p["state"] = "done"
+                return True
+            if method == "action_cancel":
+                for m in self._de_picking(pid):
+                    m["state"] = "cancel"
+                p["state"] = "cancel"
+                return True
+        raise AssertionError(f"llamada inesperada {model}.{method}")
 
 
-EHV, PROD, FLEX = LOCS["EHV/Stock"], LOCS["Virtual Locations/Production"], LOCS["FLEX/Stock"]
 STOCK_EHV = {(EHV, 101): 10, (EHV, 102): 10, (EHV, 103): 10}
+APARTADO_2 = {(EHV, 101): 8, (EHV, 102): 8, (EHV, 103): 6, (FBAMX, 101): 2, (FBAMX, 102): 2, (FBAMX, 103): 4}
 
 
-def _correr(mod, monkeypatch, od, *args):
+def _correr(mod, monkeypatch, od, *args, cantidad="2", destino="FLEX", settings=SETTINGS_FBA):
     monkeypatch.setattr(mod, "Odoo", lambda: od)
-    return mod.main(["--sku", "SET-X", "--cantidad", "2", "--destino", "FLEX", *args])
+    monkeypatch.setattr(mod, "get_setting", lambda k: settings.get(k, ""))
+    return mod.main(["--sku", "SET-X", "--cantidad", cantidad, "--destino", destino, *args])
 
 
-def _stock(od):
-    return {k: v for k, v in od.quants.items() if k[0] != PROD}
-
-
-def test_flex_consume_de_ehv_y_da_de_alta_en_flex_stock(mod, monkeypatch):
-    od = FakeOdoo(STOCK_EHV)
-    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
-    assert _stock(od) == {(EHV, 101): 8, (EHV, 102): 8, (EHV, 103): 6, (FLEX, KIT): 2}
-    alta = [m for m in od.moves.values() if m["product_id"] == KIT]
-    assert [(m["location_id"], m["location_dest_id"], m["origin"]) for m in alta] == [
-        (PROD, FLEX, "Armado F1")
+def _resumen(od):
+    """(tipo, origen, destino, estado, origin) de cada picking, en orden."""
+    return [
+        (p["picking_type_id"], p["location_id"], p["location_dest_id"], p["state"], p["origin"])
+        for p in od.pickings.values()
     ]
 
 
-def test_un_corte_a_mitad_se_reanuda_sin_duplicar(mod, monkeypatch):
-    od = FakeOdoo(STOCK_EHV, cortar_en={"_action_done": 3})
+def test_un_metodo_privado_rechazado_como_en_odoo_17(mod):
+    """El falso reproduce la falla de produccion con el move 9173."""
+    with pytest.raises(SystemExit, match="Private methods"):
+        FakeOdoo(STOCK_EHV).kw("stock.move", "_action_confirm", [[9173]])
+
+
+def test_flex_sin_setting_propio_aparta_en_fba_mx_con_un_picking_interno(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV)
+    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
+    assert od.quants == APARTADO_2
+    assert _resumen(od) == [(INTERNO_EHV, EHV, FBAMX, "done", "Armado F1")]
+
+
+def test_flex_usa_el_setting_warehouse_amazon_flex_mx_cuando_existe(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV)
+    settings = {**SETTINGS_FBA, "warehouse_amazon_flex_mx": "Meli - Full"}
+    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1", settings=settings) == 0
+    assert _resumen(od) == [(INTERNO_EHV, EHV, FULL, "done", "Armado F1")]
+
+
+def test_el_destino_acepta_el_nombre_del_almacen(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV)
+    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1", destino="FBA - MX", settings={}) == 0
+    assert od.quants == APARTADO_2
+
+
+def test_flex_sin_settings_aborta(mod, monkeypatch):
+    with pytest.raises(SystemExit, match="warehouse_amazon_flex_mx"):
+        _correr(mod, monkeypatch, FakeOdoo(STOCK_EHV), settings={})
+
+
+def test_un_almacen_inexistente_aborta(mod, monkeypatch):
+    with pytest.raises(SystemExit, match="llamado 'Flex - MX'"):
+        _correr(mod, monkeypatch, FakeOdoo(STOCK_EHV), destino="Flex - MX")
+
+
+def test_ehv_no_es_destino(mod, monkeypatch):
+    with pytest.raises(SystemExit, match="almacen principal"):
+        _correr(mod, monkeypatch, FakeOdoo(STOCK_EHV), destino="EHV-MX")
+
+
+def test_un_corte_al_validar_se_reanuda_sin_duplicar(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, cortar_en={"button_validate": 1})
     with pytest.raises(ConnectionError):
         _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
-    assert _stock(od) == {(EHV, 101): 8, (EHV, 102): 8, (EHV, 103): 10}
+    assert od.quants == STOCK_EHV
     od.cortar_en = {}
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
-    assert _stock(od) == {(EHV, 101): 8, (EHV, 102): 8, (EHV, 103): 6, (FLEX, KIT): 2}
-    assert len(od.moves) == 4
+    assert od.quants == APARTADO_2
+    assert len(od.pickings) == 1 and len(od.moves) == 3
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
-    assert len(od.moves) == 4
+    assert len(od.pickings) == 1 and len(od.moves) == 3
+    assert od.quants == APARTADO_2
 
 
-def test_desarmar_regresa_el_kit_de_flex_a_componentes_en_ehv(mod, monkeypatch):
+def test_un_picking_creado_y_sin_confirmar_se_reanuda(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, cortar_en={"action_confirm": 1})
+    with pytest.raises(ConnectionError):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
+    od.cortar_en = {}
+    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
+    assert [p[3] for p in _resumen(od)] == ["done"]
+    assert len(od.moves) == 3
+
+
+def _suelto_9173(od, estado="draft"):
+    """Lo que dejo en produccion la version que llamaba `_action_confirm`."""
+    return od._move(
+        {"origin": "Armado F1", "product_id": 101, "product_uom_qty": 2.0, "location_id": EHV, "location_dest_id": PROD, "state": estado}
+    )
+
+
+def test_el_move_suelto_en_draft_del_folio_se_cancela_al_aplicar(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV)
+    suelto = _suelto_9173(od)
+    assert _correr(mod, monkeypatch, od, "--folio", "F1") == 0
+    assert od.moves[suelto]["state"] == "draft", "la simulacion no lo toca"
+    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
+    assert od.moves[suelto]["state"] == "cancel"
+    assert od.quants == APARTADO_2
+    assert _resumen(od) == [(INTERNO_EHV, EHV, FBAMX, "done", "Armado F1")]
+
+
+def test_un_move_suelto_del_folio_fuera_de_draft_aborta_sin_escribir(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV)
+    _suelto_9173(od, estado="confirmed")
+    with pytest.raises(SystemExit, match="ya no estan en draft"):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
+    assert od.pickings == {}
+
+
+def test_desarmar_regresa_los_componentes_de_fba_mx_a_ehv(mod, monkeypatch):
     od = FakeOdoo(STOCK_EHV)
     _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
     assert _correr(mod, monkeypatch, od, "--desarmar", "--aplicar", "--folio", "F1") == 0
-    assert _stock(od) == {**STOCK_EHV, (FLEX, KIT): 0}
-    primero = min(m["id"] for m in od.moves.values() if m["origin"] == "Desarmado F1")
-    assert od.moves[primero]["product_id"] == KIT
+    assert od.quants == {**STOCK_EHV, (FBAMX, 101): 0, (FBAMX, 102): 0, (FBAMX, 103): 0}
+    assert _resumen(od)[1:] == [(INTERNO_FBAMX, FBAMX, EHV, "done", "Desarmado F1")]
 
 
-def test_desarmar_sin_kits_en_flex_no_mueve_nada(mod, monkeypatch):
+def test_desarmar_sin_componentes_en_el_destino_no_crea_pickings(mod, monkeypatch):
     od = FakeOdoo(STOCK_EHV)
     assert _correr(mod, monkeypatch, od, "--desarmar", "--aplicar", "--folio", "D1") == 1
-    assert od.moves == {}
+    assert od.pickings == {}
 
 
-def test_si_un_componente_no_alcanza_no_se_mueve_nada(mod, monkeypatch):
+def test_si_un_componente_no_alcanza_no_se_crea_nada(mod, monkeypatch):
     od = FakeOdoo({**STOCK_EHV, (EHV, 103): 3})
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 1
-    assert od.moves == {}
+    assert od.pickings == {}
 
 
 def test_la_simulacion_no_escribe(mod, monkeypatch):
     od = FakeOdoo(STOCK_EHV)
-    assert _correr(mod, monkeypatch, od) == 0
-    assert od.moves == {}
+    assert _correr(mod, monkeypatch, od, "--folio", "F1") == 0
+    assert od.pickings == {} and od.moves == {}
 
 
 def test_aplicar_sin_folio_aborta(mod, monkeypatch):
@@ -239,15 +366,42 @@ def test_aplicar_sin_folio_aborta(mod, monkeypatch):
 def test_un_folio_reusado_con_otra_cantidad_aborta(mod, monkeypatch):
     od = FakeOdoo(STOCK_EHV)
     _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
-    monkeypatch.setattr(mod, "Odoo", lambda: od)
     with pytest.raises(SystemExit, match="usa otro folio"):
-        mod.main(["--sku", "SET-X", "--cantidad", "3", "--destino", "FLEX", "--aplicar", "--folio", "F1"])
-    assert len(od.moves) == 4
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1", cantidad="3")
+    assert len(od.pickings) == 1
 
 
-def test_con_dos_recetas_activas_no_arma(mod, monkeypatch):
-    """1541 recetas archivadas contra 1009 vivas: agarrar la equivocada arma mal."""
+def test_con_dos_recetas_activas_no_mueve(mod, monkeypatch):
     od = FakeOdoo(STOCK_EHV, recetas=2)
     with pytest.raises(SystemExit, match="2 recetas activas"):
         _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
-    assert od.moves == {}
+    assert od.pickings == {}
+
+
+def test_una_receta_que_no_es_phantom_aborta(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, tipo_receta="normal")
+    with pytest.raises(SystemExit, match="no phantom"):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
+    assert od.pickings == {}
+
+
+def test_un_componente_que_es_kit_se_explota_y_el_picking_se_cancela_sin_mover_stock(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, kits=(103,))
+    with pytest.raises(SystemExit, match="phantom se exploto"):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
+    assert _resumen(od)[0][3] == "cancel"
+    assert od.quants == STOCK_EHV
+
+
+def test_el_asistente_de_backorder_aborta_sin_validar(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, asistente="stock.backorder.confirmation")
+    with pytest.raises(SystemExit, match="stock.backorder.confirmation"):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
+    assert _resumen(od)[0][3] == "confirmed"
+    assert od.quants == STOCK_EHV
+
+
+def test_el_asistente_de_transferencia_inmediata_se_salta_y_valida(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, asistente="stock.immediate.transfer")
+    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
+    assert od.quants == APARTADO_2
