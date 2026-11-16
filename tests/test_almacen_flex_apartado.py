@@ -12,6 +12,7 @@ quedarian abiertas para siempre.
 import importlib.util
 import sqlite3
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -99,3 +100,117 @@ def test_con_flex_el_cierre_lista_ehv_o_flex(cierre):
         ["state", "in", ["waiting", "confirmed", "assigned"]],
         ["sale_id", "!=", False],
     ]
+
+
+AHORA = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+
+
+class OdooFlex:
+    """Una venta Amazon Flex MX abierta en el almacen Flex que pide 2 piezas,
+    con `reservado` ya reservadas y `libre` libres en FLEX/Stock."""
+
+    def __init__(self, libre, reservado=0.0, creada="2026-11-14 10:00:00"):
+        self.libre = libre
+        self.creada = creada
+        self.state = "confirmed"
+        self.move = {
+            "id": 11,
+            "state": "confirmed",
+            "product_uom_qty": 2.0,
+            "quantity": reservado,
+            "has_tracking": "none",
+            "product_id": [40, "[SET-X] Set"],
+            "location_id": [50, "FLEX/Stock"],
+        }
+        self.escrituras = []
+
+    def kw(self, model, method, args, kwargs=None):
+        if (model, method) == ("stock.picking", "search_read"):
+            return [
+                {
+                    "id": 1,
+                    "name": "FLEX/OUT/00001",
+                    "sale_id": [9, "S00009"],
+                    "create_date": self.creada,
+                    "picking_type_id": [30, "Flex - MX: Entregas"],
+                }
+            ]
+        if (model, method) == ("stock.picking.type", "read"):
+            return [{"id": 30, "warehouse_id": [5, "Flex - MX"]}]
+        if (model, method) == ("sale.order", "read"):
+            return [
+                {
+                    "id": 9,
+                    "name": "S00009",
+                    "partner_id": [7, "Amazon Flex MX"],
+                    "client_order_ref": "701-1234567-1234567",
+                    "note": "",
+                }
+            ]
+        if (model, method) == ("stock.picking", "read"):
+            return [{"id": 1, "state": self.state, "move_ids": [11]}]
+        if (model, method) == ("stock.move", "read"):
+            return [dict(self.move)]
+        if (model, method) == ("product.product", "read"):
+            assert kwargs == {"context": {"location": 50}}
+            return [
+                {"id": 40, "type": "product", "free_qty": self.libre, "display_name": "[SET-X] Set"}
+            ]
+        self.escrituras.append((model, method))
+        if (model, method) == ("stock.move", "write"):
+            self.move.update(args[1])
+        if (model, method) == ("stock.picking", "button_validate"):
+            self.state = "done"
+        return True
+
+
+def _correr_flex(cierre, od):
+    lineas = []
+    r = cierre.correr(
+        od,
+        lambda entregas: {
+            e.picking_id: cierre.Veredicto(cierre.Accion.VALIDAR, "Shipped") for e in entregas
+        },
+        True,
+        AHORA,
+        log=lineas.append,
+        almacen_flex="Flex - MX",
+    )
+    return r, lineas
+
+
+def test_una_salida_flex_sin_stock_se_deja_quieta(cierre):
+    od = OdooFlex(libre=0.0)
+    r, _ = _correr_flex(cierre, od)
+    assert od.escrituras == []
+    assert (r.validadas, r.dejadas, r.sin_stock, r.errores) == (0, 1, 1, 0)
+    assert r.fallo() is False
+
+
+def test_una_salida_flex_con_stock_a_medias_tampoco_se_valida(cierre):
+    od = OdooFlex(libre=0.0, reservado=1.0)
+    r, _ = _correr_flex(cierre, od)
+    assert od.escrituras == []
+    assert r.sin_stock == 1
+
+
+def test_una_salida_flex_sin_stock_de_mas_de_5_dias_sale_1(cierre):
+    od = OdooFlex(libre=0.0, creada="2026-11-08 10:00:00")
+    r, lineas = _correr_flex(cierre, od)
+    assert od.escrituras == []
+    assert [e.picking for e in r.vencidas] == ["FLEX/OUT/00001"]
+    assert r.fallo() is True
+    assert (
+        "DEJAR     FLEX/OUT/00001 S00009 Amazon Flex MX orden=701-1234567-1234567 "
+        "estado=Shipped sin stock: [SET-X] Set pide 2, libre 0"
+    ) in lineas
+
+
+def test_una_salida_flex_cubierta_se_valida(cierre):
+    od = OdooFlex(libre=1.0, reservado=1.0)
+    r, _ = _correr_flex(cierre, od)
+    assert od.escrituras == [
+        ("stock.move", "write"),
+        ("stock.picking", "button_validate"),
+    ]
+    assert (r.validadas, r.sin_stock) == (1, 0)
