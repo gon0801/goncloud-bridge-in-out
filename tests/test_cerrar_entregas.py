@@ -183,7 +183,7 @@ def test_valida_cancela_y_deja_segun_la_plataforma(mod):
     assert [e.so for e in r.vencidas] == ["S00103"]
     assert r.fallo() is True
     assert lineas[-2].startswith(
-        "RESUMEN   modo=aplicado revisadas=3 validar=1 cancelar=1 dejar=1 errores=0 vencidas=1 avisos=0 ignoradas=1"
+        "RESUMEN   modo=aplicado revisadas=3 validar=1 cancelar=1 dejar=1 sin_stock=0 errores=0 vencidas=1 avisos=0 ignoradas=1"
     )
     assert (
         lineas[-1]

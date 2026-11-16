@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cierra en Odoo las entregas de venta de EHV-MX que la plataforma ya envio.
+"""Cierra en Odoo las entregas de venta de EHV-MX y del almacen Flex que la plataforma ya envio.
 
 El bridge confirma la venta y deja la entrega (WH/OUT) sin validar. Este job
 pregunta a la plataforma el estado real de cada entrega abierta y actua:
@@ -9,6 +9,11 @@ pregunta a la plataforma el estado real de cada entrega abierta y actua:
     orden MeLi cancelada o con reembolso parcial
     y envio vivo o ya fuera                      -> no la toca y avisa
     cualquier otro estado                        -> no la toca
+
+Una salida del almacen Flex solo se valida si lo reservado mas lo libre en su
+ubicacion de origen cubre la demanda. Si no, validar dejaria el quant de Flex
+en negativo; se deja, se cuenta en `sin_stock` y cuenta como vencida a los 5
+dias. EHV sigue validando con hecho = demanda, como el proceso que reemplaza.
 
 Por defecto solo muestra lo que haria, entrega por entrega. Con `--aplicar`
 escribe en Odoo y registra cada accion, cada error y un resumen por corrida;
@@ -97,6 +102,7 @@ class Entrega:
     orden: str
     marketplace: str | None
     creada: datetime
+    flex: bool = False
 
     @property
     def plataforma(self) -> str:
@@ -104,6 +110,10 @@ class Entrega:
 
 
 class ErrorCierre(Exception):
+    pass
+
+
+class SinStock(Exception):
     pass
 
 
@@ -163,7 +173,16 @@ def fecha_odoo(texto: str) -> datetime:
     return datetime.fromisoformat(texto).replace(tzinfo=UTC)
 
 
-def listar_entregas(od, almacen: str = ALMACEN) -> tuple[list[Entrega], int]:
+def filtro_almacen(almacen_flex: str = "") -> list:
+    """EHV siempre; el almacen Flex (setting `warehouse_amazon_flex_mx`, por
+    nombre) cuando existe, porque las ventas Flex salen de ahi."""
+    ehv = ["picking_type_id.warehouse_id.code", "=", ALMACEN]
+    if not almacen_flex:
+        return [ehv]
+    return ["|", ehv, ["picking_type_id.warehouse_id.name", "=", almacen_flex]]
+
+
+def listar_entregas(od, almacen_flex: str = "") -> tuple[list[Entrega], int]:
     """Entregas de venta abiertas del almacen, y cuantas se ignoraron por no
     ser de un canal de marketplace conocido."""
     picks = (
@@ -173,15 +192,24 @@ def listar_entregas(od, almacen: str = ALMACEN) -> tuple[list[Entrega], int]:
             [
                 [
                     ["picking_type_code", "=", "outgoing"],
-                    ["picking_type_id.warehouse_id.code", "=", almacen],
+                    *filtro_almacen(almacen_flex),
                     ["state", "in", ["waiting", "confirmed", "assigned"]],
                     ["sale_id", "!=", False],
                 ]
             ],
-            {"fields": ["id", "name", "sale_id", "create_date"], "order": "id"},
+            {
+                "fields": ["id", "name", "sale_id", "create_date", "picking_type_id"],
+                "order": "id",
+            },
         )
         or []
     )
+    tipos_flex = set()
+    if almacen_flex and picks:
+        tids = sorted({p["picking_type_id"][0] for p in picks})
+        for t in od.kw("stock.picking.type", "read", [tids, ["warehouse_id"]]):
+            if (t.get("warehouse_id") or [None, ""])[1] == almacen_flex:
+                tipos_flex.add(t["id"])
     sids = sorted({p["sale_id"][0] for p in picks})
     sos = {}
     if sids:
@@ -212,13 +240,43 @@ def listar_entregas(od, almacen: str = ALMACEN) -> tuple[list[Entrega], int]:
                 orden=orden,
                 marketplace=CANALES_AMAZON.get(canal),
                 creada=fecha_odoo(p["create_date"]),
+                flex=bool(tipos_flex) and p["picking_type_id"][0] in tipos_flex,
             )
         )
     return entregas, ignoradas
 
 
-def cerrar(od, picking_id: int, accion: Accion, aplicar: bool) -> str:
-    """Valida o cancela una entrega. La vuelve a leer antes: otro pudo cerrarla."""
+def sin_cubrir(od, moves: list) -> list[str]:
+    """Productos almacenables cuya demanda no cubren lo que el move ya reservo
+    (`quantity`) mas lo libre en su ubicacion de origen."""
+    falta: dict = {}
+    for m in moves:
+        clave = (m["location_id"][0], m["product_id"][0])
+        reservado = min(m.get("quantity") or 0.0, m["product_uom_qty"])
+        falta[clave] = falta.get(clave, 0.0) + m["product_uom_qty"] - reservado
+    cortos = []
+    for loc in sorted({loc for loc, _ in falta}):
+        pids = sorted(pid for lugar, pid in falta if lugar == loc)
+        productos = od.kw(
+            "product.product",
+            "read",
+            [pids, ["type", "free_qty", "display_name"]],
+            {"context": {"location": loc}},
+        )
+        for p in productos:
+            pide = falta[(loc, p["id"])]
+            libre = p.get("free_qty") or 0.0
+            if p.get("type") == "product" and pide > libre + 1e-6:
+                cortos.append(f"{p['display_name']} pide {pide:g}, libre {libre:g}")
+    return cortos
+
+
+def cerrar(
+    od, picking_id: int, accion: Accion, aplicar: bool, exigir_stock: bool = False
+) -> str:
+    """Valida o cancela una entrega. La vuelve a leer antes: otro pudo cerrarla.
+    Con `exigir_stock`, levanta SinStock antes de escribir si el origen no
+    cubre la demanda."""
     p = od.kw("stock.picking", "read", [[picking_id], ["state", "move_ids"]])[0]
     if p["state"] in ("done", "cancel"):
         return f"ya estaba {p['state']}"
@@ -231,13 +289,27 @@ def cerrar(od, picking_id: int, accion: Accion, aplicar: bool) -> str:
     moves = od.kw(
         "stock.move",
         "read",
-        [p["move_ids"], ["state", "product_uom_qty", "quantity", "has_tracking"]],
+        [
+            p["move_ids"],
+            [
+                "state",
+                "product_uom_qty",
+                "quantity",
+                "has_tracking",
+                "product_id",
+                "location_id",
+            ],
+        ],
     )
     activos = [m for m in moves if m["state"] not in ("done", "cancel")]
     if not activos:
         raise ErrorCierre("sin movimientos activos")
     if any((m.get("has_tracking") or "none") != "none" for m in activos):
         raise ErrorCierre("requiere lote o serie")
+    if exigir_stock:
+        cortos = sin_cubrir(od, activos)
+        if cortos:
+            raise SinStock("; ".join(cortos))
     if not aplicar:
         return "validaria"
     for m in activos:
@@ -282,6 +354,7 @@ class Resumen:
     validadas: int = 0
     canceladas: int = 0
     dejadas: int = 0
+    sin_stock: int = 0
     errores: int = 0
     vencidas: list = field(default_factory=list)
     avisos: list = field(default_factory=list)
@@ -290,10 +363,12 @@ class Resumen:
         return bool(self.errores or self.vencidas or self.avisos)
 
 
-def correr(od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print):
+def correr(
+    od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print, almacen_flex=""
+):
     """Recorre las entregas abiertas. `consultar(entregas)` devuelve, por
     picking_id, un Veredicto o la excepcion que impidio obtenerlo."""
-    entregas, ignoradas = listar_entregas(od)
+    entregas, ignoradas = listar_entregas(od, almacen_flex)
     veredictos = consultar(entregas)
     r = Resumen(revisadas=len(entregas))
     escrituras = 0
@@ -323,7 +398,17 @@ def correr(od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print
                 r.vencidas.append(e)
             continue
         try:
-            resultado = cerrar(od, e.picking_id, v.accion, aplicar)
+            resultado = cerrar(
+                od, e.picking_id, v.accion, aplicar, exigir_stock=e.flex
+            )
+        except SinStock as ex:
+            r.dejadas += 1
+            r.sin_stock += 1
+            if not aplicar or vencida:
+                log(f"DEJAR     {cabeza} estado={v.estado} sin stock: {ex}")
+            if vencida:
+                r.vencidas.append(e)
+            continue
         except Exception as ex:  # noqa: BLE001 - una entrega no frena las demas
             r.errores += 1
             log(f"ERROR     {cabeza} estado={v.estado} {v.accion.value}: {ex}")
@@ -341,7 +426,8 @@ def correr(od, consultar, aplicar: bool, ahora: datetime, limite=None, log=print
     modo = "aplicado" if aplicar else "prueba (sin escribir)"
     log(
         f"RESUMEN   modo={modo} revisadas={r.revisadas} validar={r.validadas} "
-        f"cancelar={r.canceladas} dejar={r.dejadas} errores={r.errores} "
+        f"cancelar={r.canceladas} dejar={r.dejadas} sin_stock={r.sin_stock} "
+        f"errores={r.errores} "
         f"vencidas={len(r.vencidas)} avisos={len(r.avisos)} ignoradas={ignoradas}"
     )
     for e in r.vencidas:
@@ -544,6 +630,7 @@ def main(argv=None) -> int:
         ahora,
         args.limite,
         log,
+        get_setting("warehouse_amazon_flex_mx").strip(),
     )
     return 1 if r.fallo() else 0
 

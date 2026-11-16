@@ -49,6 +49,14 @@ PRODUCTOS_ODOO = [
     {"default_code": "TEST-KIT", "qty_available": 4, "outgoing_qty": 6},
 ]
 
+# Stock de TEST-FLEX por almacen: 5 en EHV-MX y 49 apartadas en Flex. Odoo sin
+# contexto suma todos los almacenes; con `warehouse` suma solo los que recibe.
+ALMACENES = [
+    {"id": 1, "name": "EHV-MX", "code": "EHV"},
+    {"id": 6, "name": "Flex - MX", "code": "FLEX"},
+]
+FLEX_POR_ALMACEN = {1: 5, 6: 49}
+
 
 class _HandlerCualquierPath(SimpleXMLRPCRequestHandler):
     # El script pega contra /xmlrpc/2/common y /xmlrpc/2/object; con
@@ -61,21 +69,34 @@ def _authenticate(db, user, password, extra):
 
 
 def _execute_kw(db, uid, pwd, model, method, args, kwargs):
+    if (model, method) == ("stock.warehouse", "search_read"):
+        return ALMACENES
     if (model, method) != ("product.product", "search_read"):
         raise ValueError(f"llamada inesperada: {model}.{method}")
     campos = kwargs.get("fields") or []
-    return [{k: v for k, v in p.items() if k in campos} for p in PRODUCTOS_ODOO]
+    almacenes = (kwargs.get("context") or {}).get("warehouse") or list(FLEX_POR_ALMACEN)
+    flex = {
+        "default_code": "TEST-FLEX",
+        "qty_available": sum(FLEX_POR_ALMACEN[a] for a in almacenes),
+        "outgoing_qty": 0,
+    }
+    return [{k: v for k, v in p.items() if k in campos} for p in [*PRODUCTOS_ODOO, flex]]
 
 
-def _crear_bridge_db(db_path: Path) -> None:
+def _crear_bridge_db(db_path: Path, apartado: str | None) -> None:
     """Schema minimo: solo las tablas y columnas que el script toca."""
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE sku_mapping(channel TEXT, sku TEXT)")
     conn.execute(
         "INSERT INTO sku_mapping(channel, sku) VALUES"
         " ('meli','TEST-ROJ-NEG'),('meli','TEST-AZU-OK'),"
-        " ('meli','TEST-VENDIDO'),('meli','TEST-KIT')"
+        " ('meli','TEST-VENDIDO'),('meli','TEST-KIT'),('meli','TEST-FLEX')"
     )
+    conn.execute("CREATE TABLE bridge_settings(key TEXT PRIMARY KEY, value TEXT)")
+    if apartado is not None:
+        conn.execute(
+            "INSERT INTO bridge_settings VALUES ('warehouse_amazon_flex_mx', ?)", (apartado,)
+        )
     conn.execute(
         "CREATE TABLE events("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -89,8 +110,7 @@ def _crear_bridge_db(db_path: Path) -> None:
     conn.close()
 
 
-@pytest.fixture(scope="module")
-def corrida(tmp_path_factory):
+def _correr(tmp_path_factory, apartado=None):
     """Corre el snapshotter real una vez, como lo hace cron, contra el stub."""
     server = SimpleXMLRPCServer(
         ("127.0.0.1", 0),
@@ -104,7 +124,7 @@ def corrida(tmp_path_factory):
     hilo.start()
 
     db_path = tmp_path_factory.mktemp("bridge") / "bridge.db"
-    _crear_bridge_db(db_path)
+    _crear_bridge_db(db_path, apartado)
 
     env = {
         **os.environ,
@@ -130,6 +150,11 @@ def corrida(tmp_path_factory):
         hilo.join(timeout=5)
 
     return proc, db_path
+
+
+@pytest.fixture(scope="module")
+def corrida(tmp_path_factory):
+    return _correr(tmp_path_factory)
 
 
 def _qty_de(db_path: Path, sku: str) -> int:
@@ -171,3 +196,32 @@ def test_descuenta_lo_vendido_sin_enviar(corrida):
 def test_kit_con_mas_salidas_que_fisico_queda_en_cero(corrida):
     _, db_path = corrida
     assert _qty_de(db_path, "TEST-KIT") == 0
+
+
+def test_sin_almacen_apartado_publica_todos_los_almacenes(corrida):
+    _, db_path = corrida
+    assert _qty_de(db_path, "TEST-FLEX") == 54
+
+
+def test_lo_apartado_para_flex_no_se_publica(tmp_path_factory):
+    proc, db_path = _correr(tmp_path_factory, "Flex - MX")
+    assert proc.returncode == 0, f"stderr: {proc.stderr}\nstdout: {proc.stdout}"
+    assert _qty_de(db_path, "TEST-FLEX") == 5
+
+
+def test_un_almacen_apartado_que_no_existe_no_publica_nada(tmp_path_factory):
+    proc, db_path = _correr(tmp_path_factory, "Flex MX")
+    assert proc.returncode == 1
+    assert "almacen apartado 'Flex MX' no existe" in proc.stdout
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT count(*) FROM snapshot_items").fetchone() == (0,)
+    conn.close()
+
+
+def test_apartar_el_almacen_ehv_no_publica_nada(tmp_path_factory):
+    proc, db_path = _correr(tmp_path_factory, "EHV-MX")
+    assert proc.returncode == 1
+    assert "'EHV-MX' es el almacen principal EHV" in proc.stdout
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT count(*) FROM snapshot_items").fetchone() == (0,)
+    conn.close()

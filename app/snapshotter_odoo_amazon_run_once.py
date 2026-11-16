@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import sys
 import defusedxml.xmlrpc as _defusedxml_xmlrpc
 
 # monkey_patch() DEBE correr antes de importar xmlrpc.client: parcha el parser
@@ -10,7 +11,13 @@ _defusedxml_xmlrpc.monkey_patch()
 import xmlrpc.client  # noqa: E402
 from datetime import datetime  # noqa: E402
 
-from stock_disponible import CAMPOS_ODOO, disponible  # noqa: E402
+from stock_disponible import (  # noqa: E402
+    CAMPOS_ALMACEN,
+    CAMPOS_ODOO,
+    almacen_apartado,
+    contexto_publicable,
+    disponible,
+)
 
 DB = os.getenv("BRIDGE_DB", os.getenv("BRIDGE_SQLITE_PATH", "/data/bridge.db"))
 URL = os.getenv("ODOO_URL", "http://odoo:8069")
@@ -21,6 +28,27 @@ PWD = os.getenv("ODOO_PASSWORD")
 common = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/common")
 uid = common.authenticate(DBN, USR, PWD, {})
 models = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/object")
+
+con = sqlite3.connect(DB)
+cur = con.cursor()
+
+apartado = almacen_apartado(con)
+almacenes = (
+    models.execute_kw(
+        DBN, uid, PWD, "stock.warehouse", "search_read", [[]], {"fields": CAMPOS_ALMACEN}
+    )
+    if apartado
+    else []
+)
+opciones = {"fields": ["id", "default_code", *CAMPOS_ODOO]}
+try:
+    contexto = contexto_publicable(almacenes, apartado)
+except ValueError as e:
+    con.close()
+    print(f"[FATAL] {e}")
+    sys.exit(1)
+if contexto:
+    opciones["context"] = contexto
 
 # AMAZON FBM: solo variantes marcadas para Amazon FBM
 recs = models.execute_kw(
@@ -36,11 +64,8 @@ recs = models.execute_kw(
             ("default_code", "!=", False),
         ]
     ],
-    {"fields": ["id", "default_code", *CAMPOS_ODOO]},
+    opciones,
 )
-
-con = sqlite3.connect(DB)
-cur = con.cursor()
 
 cur.execute(
     "INSERT INTO events(created_at,channel,item_count,payload) VALUES(?,?,?,?)",
