@@ -31,13 +31,22 @@ Salvaguardas
   armado a medias deja componentes consumidos sin kit que los justifique.
 * Imprime el plan completo — que sale, que entra, en que ubicacion — antes de
   tocar nada.
+* Cada movimiento lleva en `origin` el folio del armado. Odoo no da una
+  transaccion que abarque varios movimientos, asi que el folio es el registro
+  de lo hecho: repetir el comando con el mismo folio termina un movimiento a
+  medias y crea solo los que faltan, sin duplicar.
+* `--desarmar` es la reversa: el kit sale del destino y los componentes
+  vuelven a EHV/Stock. Saca primero el kit, para que un corte nunca deje kits
+  sin los componentes que los respaldan.
 
 Uso
 ---
     docker exec bridge-api python3 /data/odoo_armar_kits.py \\
         --sku SET-ARR-COF-22-VCO-DOR --cantidad 20 --destino Full
 
-    # y con --aplicar para ejecutarlo
+    # y con --aplicar --folio <clave unica> para ejecutarlo; si se corta,
+    # el mismo comando lo reanuda. La reversa, con su propio folio:
+    ... --destino FLEX --desarmar --aplicar --folio <clave>
 """
 
 import argparse
@@ -46,6 +55,7 @@ import os
 import sqlite3
 import sys
 import urllib.request
+from dataclasses import dataclass, replace
 
 DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 LOC_PRODUCCION = "Virtual Locations/Production"
@@ -152,37 +162,123 @@ class Odoo:
         return r[0]["id"]
 
 
-def mover(od, product_id, cantidad, origen, destino, nombre):
-    mid = od.kw(
+@dataclass(frozen=True)
+class Paso:
+    product_id: int
+    nombre: str
+    cantidad: float
+    origen: int
+    destino: int
+
+
+def pasos(plan, kit, cantidad, loc_ehv, loc_prod, loc_canal, desarmar=False):
+    """Movimientos en orden. Armar consume los componentes y despues da de
+    alta el kit; desarmar invierte cada paso y el orden."""
+    consumo = [
+        Paso(p["product_id"], p["nombre"], p["necesario"], loc_ehv, loc_prod)
+        for p in plan
+    ]
+    alta = Paso(kit["id"], kit["default_code"], cantidad, loc_prod, loc_canal)
+    armado = [*consumo, alta]
+    if not desarmar:
+        return armado
+    return [replace(p, origen=p.destino, destino=p.origen) for p in reversed(armado)]
+
+
+def estado_de(paso: Paso, movs: list) -> tuple:
+    """("hecho" | "a medias" | "pendiente", id del move) segun los movimientos
+    del folio. Un folio reusado con otra cantidad aborta."""
+    propios = [
+        m
+        for m in movs
+        if m["product_id"][0] == paso.product_id
+        and m["location_id"][0] == paso.origen
+        and m["location_dest_id"][0] == paso.destino
+        and m["state"] != "cancel"
+    ]
+    if not propios:
+        return "pendiente", None
+    if len(propios) > 1:
+        ids = [m["id"] for m in propios]
+        raise SystemExit(f"ERROR: el folio tiene {len(propios)} movimientos de {paso.nombre}: {ids}")
+    m = propios[0]
+    if abs(m["product_uom_qty"] - paso.cantidad) > 1e-6:
+        raise SystemExit(
+            f"ERROR: el folio ya movio {m['product_uom_qty']:g} de {paso.nombre} y este "
+            f"comando pide {paso.cantidad:g}; usa otro folio"
+        )
+    return ("hecho" if m["state"] == "done" else "a medias"), m["id"]
+
+
+def disponible_en(od, ids: list, loc: int) -> dict:
+    quants = (
+        od.kw(
+            "stock.quant",
+            "search_read",
+            [[["product_id", "in", ids], ["location_id", "child_of", loc]]],
+            {"fields": ["product_id", "quantity", "reserved_quantity"]},
+        )
+        or []
+    )
+    disponible: dict = {}
+    for q in quants:
+        pid = q["product_id"][0]
+        disponible[pid] = (
+            disponible.get(pid, 0)
+            + (q["quantity"] or 0)
+            - (q["reserved_quantity"] or 0)
+        )
+    return disponible
+
+
+def crear(od, paso: Paso, origin: str, nombre: str) -> int:
+    return od.kw(
         "stock.move",
         "create",
         [
             {
                 "name": nombre,
-                "product_id": product_id,
-                "product_uom_qty": cantidad,
-                "location_id": origen,
-                "location_dest_id": destino,
+                "origin": origin,
+                "product_id": paso.product_id,
+                "product_uom_qty": paso.cantidad,
+                "location_id": paso.origen,
+                "location_dest_id": paso.destino,
             }
         ],
     )
-    od.kw("stock.move", "_action_confirm", [[mid]])
+
+
+def completar(od, mid: int, cantidad: float) -> None:
+    """Lleva a done un move en cualquier estado previo."""
+    estado = od.kw("stock.move", "read", [[mid]], {"fields": ["state"]})[0]["state"]
+    if estado == "draft":
+        od.kw("stock.move", "_action_confirm", [[mid]])
     od.kw("stock.move", "_action_assign", [[mid]])
     od.kw("stock.move", "write", [[mid], {"quantity": cantidad, "picked": True}])
     od.kw("stock.move", "_action_done", [[mid]])
-    return mid
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Arma kits hacia un almacen de canal")
     ap.add_argument("--sku", required=True)
     ap.add_argument("--cantidad", type=int, required=True)
     ap.add_argument("--destino", required=True, choices=sorted(DESTINOS))
     ap.add_argument("--aplicar", action="store_true")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--folio",
+        help="clave unica del armado; repetir con el mismo folio reanuda sin duplicar",
+    )
+    ap.add_argument(
+        "--desarmar",
+        action="store_true",
+        help="reversa: el kit sale del destino y los componentes vuelven a EHV/Stock",
+    )
+    args = ap.parse_args(argv)
 
     if args.cantidad <= 0:
         raise SystemExit("ERROR: --cantidad debe ser > 0")
+    if args.aplicar and not args.folio:
+        raise SystemExit("ERROR: --aplicar requiere --folio, la clave que permite reanudar")
 
     od = Odoo()
     prods = (
@@ -227,85 +323,90 @@ def main() -> int:
     )
     plan = plan_de_componentes(lineas, args.cantidad)
 
-    loc_origen = od.loc(ORIGEN)
-    ids = [p["product_id"] for p in plan]
-    quants = (
+    nombres = {ORIGEN: od.loc(ORIGEN), LOC_PRODUCCION: od.loc(LOC_PRODUCCION)}
+    nombres[DESTINOS[args.destino]] = od.loc(DESTINOS[args.destino])
+    loc_nombre = {v: k for k, v in nombres.items()}
+    loc_prod = nombres[LOC_PRODUCCION]
+    lista = pasos(
+        plan,
+        kit,
+        args.cantidad,
+        nombres[ORIGEN],
+        loc_prod,
+        nombres[DESTINOS[args.destino]],
+        args.desarmar,
+    )
+
+    verbo = "Desarmado" if args.desarmar else "Armado"
+    origin = f"{verbo} {args.folio}" if args.folio else None
+    movs = (
         od.kw(
-            "stock.quant",
+            "stock.move",
             "search_read",
-            [[["product_id", "in", ids], ["location_id", "child_of", loc_origen]]],
-            {"fields": ["product_id", "quantity", "reserved_quantity"]},
+            [[["origin", "=", origin]]],
+            {
+                "fields": [
+                    "id",
+                    "product_id",
+                    "location_id",
+                    "location_dest_id",
+                    "product_uom_qty",
+                    "state",
+                ]
+            },
         )
-        or []
-    )
-    disponible = {}
-    for q in quants:
-        pid = q["product_id"][0]
-        disponible[pid] = (
-            disponible.get(pid, 0)
-            + (q["quantity"] or 0)
-            - (q["reserved_quantity"] or 0)
-        )
+        if origin
+        else []
+    ) or []
+    estados = [estado_de(p, movs) for p in lista]
 
-    print(
-        f"Armar {args.cantidad} x {kit['default_code']}  ->  {DESTINOS[args.destino]}"
-    )
+    print(f"{verbo} {args.cantidad} x {kit['default_code']}  <->  {DESTINOS[args.destino]}")
     print(f"Disponibilidad actual del kit: {kit['qty_available']}\n")
-    print("%-40s %9s %9s" % ("COMPONENTE", "NECESARIO", "HAY EN EHV"))
-    for p in plan:
-        print(
-            "%-40s %9.1f %9.1f"
-            % (p["nombre"][:40], p["necesario"], disponible.get(p["product_id"], 0))
-        )
+    print("%-34s %9s  %-30s %s" % ("PRODUCTO", "CANTIDAD", "DE -> A", "ESTADO"))
+    for p, (estado, _) in zip(lista, estados):
+        ruta = f"{loc_nombre[p.origen]} -> {loc_nombre[p.destino]}"
+        print("%-34s %9.1f  %-30s %s" % (p.nombre[:34], p.cantidad, ruta, estado))
 
-    falta = faltantes(plan, disponible)
-    if falta:
-        print("\nNO SE PUEDE ARMAR. Faltan:")
-        for f in falta:
-            print("   %-40s faltan %.1f" % (f["nombre"][:40], f["falta"]))
-        return 1
+    # Solo lo que aun no se crea sale de una ubicacion con stock que verificar;
+    # Production es virtual y siempre entrega.
+    por_salir = [
+        p for p, (e, _) in zip(lista, estados) if e == "pendiente" and p.origen != loc_prod
+    ]
+    if por_salir:
+        hay = disponible_en(od, [p.product_id for p in por_salir], por_salir[0].origen)
+        pedido = [
+            {"product_id": p.product_id, "nombre": p.nombre, "necesario": p.cantidad}
+            for p in por_salir
+        ]
+        falta = faltantes(pedido, hay)
+        if falta:
+            print(f"\nNO SE PUEDE. Faltan en {loc_nombre[por_salir[0].origen]}:")
+            for f in falta:
+                print("   %-40s faltan %.1f" % (f["nombre"][:40], f["falta"]))
+            return 1
 
     if not args.aplicar:
-        print("\nSIMULACION. Con --aplicar se ejecutan los movimientos.")
+        print("\nSIMULACION. Con --aplicar --folio <clave> se ejecutan los movimientos.")
         return 0
 
-    loc_prod = od.loc(LOC_PRODUCCION)
-    loc_destino = od.loc(DESTINOS[args.destino])
-    etiqueta = f"Armado {args.sku} x{args.cantidad}"
-
-    movs = []
-    for p in plan:
-        movs.append(
-            mover(
-                od,
-                p["product_id"],
-                p["necesario"],
-                loc_origen,
-                loc_prod,
-                f"{etiqueta}: consumo {p['nombre'][:30]}",
-            )
-        )
-    movs.append(
-        mover(
-            od,
-            kit["id"],
-            args.cantidad,
-            loc_prod,
-            loc_destino,
-            f"{etiqueta}: alta en {args.destino}",
-        )
-    )
+    hechos = []
+    for p, (estado, mid) in zip(lista, estados):
+        if estado == "hecho":
+            continue
+        if mid is None:
+            mid = crear(od, p, origin, f"{origin}: {p.nombre[:30]} -> {loc_nombre[p.destino]}")
+        completar(od, mid, p.cantidad)
+        hechos.append(mid)
 
     despues = od.kw(
         "product.product", "read", [[kit["id"]]], {"fields": ["qty_available"]}
     )[0]
-    print(f"\nListo. {len(movs)} movimientos: {movs}")
+    print(f"\nListo. {len(hechos)} movimientos nuevos o completados: {hechos}")
     print(
         f"Disponibilidad del kit: {kit['qty_available']} -> {despues['qty_available']}"
     )
-    print(
-        "Para deshacer, revierte esos movimientos en Odoo (Inventario > Movimientos)."
-    )
+    if not args.desarmar:
+        print("Para deshacer: el mismo comando con --desarmar --aplicar --folio <clave>.")
     return 0
 
 
