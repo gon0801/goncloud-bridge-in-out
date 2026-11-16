@@ -15,10 +15,9 @@ ubicacion de origen cubre la demanda. Si no, validar dejaria el quant de Flex
 en negativo; se deja, se cuenta en `sin_stock` y cuenta como vencida a los 5
 dias. EHV sigue validando con hecho = demanda, como el proceso que reemplaza.
 
-Por defecto solo muestra lo que haria, entrega por entrega. Con `--aplicar`
-escribe en Odoo y registra cada accion, cada error y un resumen por corrida;
-las entregas que no toca solo se cuentan, para que el log no crezca 48 veces
-al dia con lo mismo.
+Por defecto solo muestra lo que haria. Con `--aplicar` escribe en Odoo. En los
+dos modos registra cada entrega revisada con su accion y el estado de la
+plataforma que la motivo, incluidas las que deja, y un resumen por corrida.
 
 Sale 1 si algo fallo, si alguna entrega pide revision o si queda alguna con mas
 de 5 dias abierta que no se pudo cerrar. Corre envuelto en `cron-avisa`, que con
@@ -384,8 +383,7 @@ def correr(
             continue
         if v.accion is Accion.DEJAR:
             r.dejadas += 1
-            if not aplicar or vencida or v.avisar:
-                log(f"DEJAR     {cabeza} estado={v.estado}")
+            log(f"DEJAR     {cabeza} estado={v.estado}")
             if v.avisar:
                 r.avisos.append((e, v.estado))
             if vencida:
@@ -404,8 +402,7 @@ def correr(
         except SinStock as ex:
             r.dejadas += 1
             r.sin_stock += 1
-            if not aplicar or vencida:
-                log(f"DEJAR     {cabeza} estado={v.estado} sin stock: {ex}")
+            log(f"DEJAR     {cabeza} estado={v.estado} sin stock: {ex}")
             if vencida:
                 r.vencidas.append(e)
             continue

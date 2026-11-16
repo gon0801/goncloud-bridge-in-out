@@ -32,6 +32,8 @@ class _HandlerCualquierPath(SimpleXMLRPCRequestHandler):
 def _execute_kw(db, uid, pwd, model, method, args, kwargs):
     if (model, method) == ("stock.warehouse", "search_read"):
         return ALMACENES
+    if (model, method) == ("mrp.bom", "search_read"):
+        return []
     if (model, method) != ("product.product", "search_read"):
         raise ValueError(f"llamada inesperada: {model}.{method}")
     almacenes = (kwargs.get("context") or {}).get("warehouse") or list(POR_ALMACEN)
@@ -39,6 +41,7 @@ def _execute_kw(db, uid, pwd, model, method, args, kwargs):
         {
             "id": 77,
             "default_code": "TEST-FLEX",
+            "product_tmpl_id": [7, "TEST-FLEX"],
             "qty_available": sum(POR_ALMACEN[a] for a in almacenes),
             "outgoing_qty": 1,
         }

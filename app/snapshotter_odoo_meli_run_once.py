@@ -18,7 +18,7 @@ from stock_disponible import (  # noqa: E402
     CAMPOS_ODOO,
     almacen_apartado,
     contexto_publicable,
-    disponible,
+    disponibles,
 )
 
 # =========================
@@ -139,6 +139,13 @@ products = models.execute_kw(
     opciones,
 )
 
+
+def ejecutar(modelo, metodo, args, kwargs):
+    return models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, modelo, metodo, args, kwargs)
+
+
+libres = disponibles(ejecutar, products, opciones.get("context", {}))
+
 items = 0
 skipped_not_mapped = 0
 
@@ -152,7 +159,7 @@ for p in products:
         skipped_not_mapped += 1
         continue
 
-    qty = disponible(p)
+    qty = libres[p["id"]]
 
     cur.execute(
         "INSERT INTO snapshot_items(event_id, channel, sku, qty) VALUES (?,?,?,?)",
