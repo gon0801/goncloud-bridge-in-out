@@ -135,6 +135,7 @@ def _execute_kw(db, uid, pwd, model, method, args, kwargs):
                 "product_qty": 1.0,
                 "product_uom_id": [UNIDAD_BOM.get(k, UNIDAD), "x"],
                 "bom_line_ids": [k * 10 + i for i in range(len(receta))],
+                "sequence": 0,
             }
             for k, (codigo, receta) in KITS.items()
         ]
@@ -145,6 +146,7 @@ def _execute_kw(db, uid, pwd, model, method, args, kwargs):
                 "product_id": [linea[0], "x"],
                 "product_qty": float(linea[1]),
                 "product_uom_id": [(linea[2:] or (UNIDAD,))[0], "x"],
+                "bom_product_template_attribute_value_ids": [],
             }
             for k, (_, receta) in KITS.items()
             for i, linea in enumerate(receta)

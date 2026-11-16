@@ -9,15 +9,27 @@ como el minimo sobre sus componentes. Restarlos daria
 min(fisico_i) - min(salidas_i), que no ve un componente comprometido por la
 venta de otro kit. `disponibles` calcula el kit desde sus componentes:
 min sobre i de floor((fisico_i - salidas_i) / unidades_por_kit_i). Como en
-Odoo, la BOM del producto gana a la de su plantilla, un componente no
-almacenable no limita y una BOM anidada se abre hasta sus hojas. Tambien
+Odoo (`mrp.bom._bom_find`, orden "sequence, product_id, id"), gana la BOM
+de menor sequence y, con la misma sequence, la de la plantilla a la del
+producto y luego la de menor id: product_id ordena por el _order de
+product.product, que empieza por "priority desc", y la BOM de plantilla
+tiene priority NULL, que PostgreSQL pone primero en DESC. Tambien como en
+Odoo, un componente no almacenable no limita y una BOM anidada se abre
+hasta sus hojas. Tambien
 como en Odoo, unidades_por_kit_i suma todas las lineas del componente i,
 incluidas las de niveles anidados: dos lineas de 1 piden 2 por kit.
 
 Unidades de medida: no se convierten. Un kit con una linea en otra unidad que
 la del componente, o con la BOM en otra unidad que la del kit, publica 0 y
-deja un aviso en el log. Las cantidades se operan como fracciones exactas:
+deja un aviso en el log. Como en Odoo, la linea de un componente no
+almacenable se salta antes de mirar su unidad. Las cantidades se operan como
+fracciones exactas:
 1 libre con 0.1 por kit da 10 kits, no 9, y 1.5 libres con 0.5 dan 3.
+
+Lineas "Apply on Variants" (bom_product_template_attribute_value_ids): Odoo
+las salta en las variantes que no casan (`mrp.bom.line._skip_bom_line`). El
+bridge no evalua atributos: un kit con una de esas lineas publica 0 y deja
+un aviso en el log.
 
 Almacen apartado: sin contexto, Odoo suma en qty_available y outgoing_qty
 todos los almacenes de la compania. El almacen que nombra el setting
@@ -47,6 +59,7 @@ class Linea:
     componente: int
     unidades: Fraction
     uom: int
+    por_variante: bool = False
 
 
 @dataclass(frozen=True)
@@ -86,6 +99,7 @@ def recetas_phantom(ejecutar: Ejecutar) -> Callable[[dict], Receta | None]:
                 "product_qty",
                 "product_uom_id",
                 "bom_line_ids",
+                "sequence",
             ],
             "order": "sequence, id",
         },
@@ -97,11 +111,19 @@ def recetas_phantom(ejecutar: Ejecutar) -> Callable[[dict], Receta | None]:
             "mrp.bom.line",
             "read",
             [ids_lineas],
-            {"fields": ["product_id", "product_qty", "product_uom_id"]},
+            {
+                "fields": [
+                    "product_id",
+                    "product_qty",
+                    "product_uom_id",
+                    "bom_product_template_attribute_value_ids",
+                ]
+            },
         )
         lineas = {x["id"]: x for x in leidas}
-    por_producto: dict[int, Receta] = {}
-    por_plantilla: dict[int, Receta] = {}
+    # Clave de Odoo por BOM: (sequence, plantilla antes que producto, id).
+    por_producto: dict[int, tuple[tuple[int, int, int], Receta]] = {}
+    por_plantilla: dict[int, tuple[tuple[int, int, int], Receta]] = {}
     for b in boms:
         receta = Receta(
             uom=b["product_uom_id"][0],
@@ -110,20 +132,29 @@ def recetas_phantom(ejecutar: Ejecutar) -> Callable[[dict], Receta | None]:
                     componente=lineas[i]["product_id"][0],
                     unidades=_cantidad(lineas[i]["product_qty"]) / _cantidad(b["product_qty"]),
                     uom=lineas[i]["product_uom_id"][0],
+                    por_variante=bool(lineas[i]["bom_product_template_attribute_value_ids"]),
                 )
                 for i in b["bom_line_ids"]
                 if lineas[i]["product_qty"]
             ),
         )
         if b["product_id"]:
-            por_producto.setdefault(b["product_id"][0], receta)
+            destino, llave, clave = por_producto, b["product_id"][0], (b["sequence"], 1, b["id"])
         else:
-            por_plantilla.setdefault(b["product_tmpl_id"][0], receta)
+            destino, llave, clave = por_plantilla, b["product_tmpl_id"][0], (b["sequence"], 0, b["id"])
+        if llave not in destino or clave < destino[llave][0]:
+            destino[llave] = (clave, receta)
 
     def receta_de(producto: dict) -> Receta | None:
-        if producto["id"] in por_producto:
-            return por_producto[producto["id"]]
-        return por_plantilla.get(producto["product_tmpl_id"][0])
+        candidatas = [
+            c
+            for c in (
+                por_producto.get(producto["id"]),
+                por_plantilla.get(producto["product_tmpl_id"][0]),
+            )
+            if c
+        ]
+        return min(candidatas, key=lambda c: c[0])[1] if candidatas else None
 
     return receta_de
 
@@ -161,6 +192,16 @@ def disponibles(ejecutar: Ejecutar, productos: list[dict], contexto: dict) -> di
         total: dict[int, Fraction] = {}
         for linea in receta.lineas:
             comp = componentes[linea.componente]
+            if linea.por_variante:
+                log.warning(
+                    "kit %s: linea de %s con filtro de variante (Apply on Variants); publica 0",
+                    producto["id"],
+                    comp["id"],
+                )
+                return None
+            es_hoja = receta_de(comp) is None
+            if es_hoja and comp.get("type") != "product":
+                continue
             if linea.uom != comp["uom_id"][0]:
                 log.warning(
                     "kit %s: linea de %s en otra unidad que el componente; publica 0",
@@ -168,9 +209,8 @@ def disponibles(ejecutar: Ejecutar, productos: list[dict], contexto: dict) -> di
                     comp["id"],
                 )
                 return None
-            if receta_de(comp) is None:
-                if comp.get("type") == "product":
-                    total[comp["id"]] = total.get(comp["id"], 0) + linea.unidades
+            if es_hoja:
+                total[comp["id"]] = total.get(comp["id"], 0) + linea.unidades
                 continue
             abiertas = por_kit(comp, profundidad + 1)
             if abiertas is None:
