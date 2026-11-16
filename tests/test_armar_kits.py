@@ -115,6 +115,8 @@ class FakeOdoo:
     """Odoo 17. Como el real, rechaza por RPC cualquier metodo que empiece con
     guion bajo, y al confirmar un picking explota en componentes cualquier
     producto con receta phantom (`kits`), sin mirar el tipo de operacion.
+    Reserva al confirmar (los tipos internos reservan `at_confirm`) y lleva la
+    reserva por ubicacion en `reservado`; cancelar o validar la suelta.
     `cortar_en` corta la conexion en la llamada numero N a ese metodo de
     stock.picking."""
 
@@ -123,6 +125,7 @@ class FakeOdoo:
         accion_al_validar=None, tope_quantity=None,
     ):
         self.quants = dict(stock)
+        self.reservado = {}
         self.recetas = recetas
         self.tipo_receta = tipo_receta
         self.kits = {KIT, *kits}
@@ -141,6 +144,18 @@ class FakeOdoo:
 
     def _de_picking(self, pid):
         return [m for m in self.moves.values() if m["picking_id"] == pid and m["state"] != "cancel"]
+
+    def _reservar(self, pid):
+        for m in self._de_picking(pid):
+            clave = (m["location_id"], m["product_id"])
+            libre = self.quants.get(clave, 0) - self.reservado.get(clave, 0)
+            if m["state"] == "confirmed" and libre >= m["product_uom_qty"]:
+                m["state"], m["quantity"], m["reserva"] = "assigned", m["product_uom_qty"], m["product_uom_qty"]
+                self.reservado[clave] = self.reservado.get(clave, 0) + m["reserva"]
+
+    def _soltar(self, m):
+        clave = (m["location_id"], m["product_id"])
+        self.reservado[clave] = self.reservado.get(clave, 0) - m.pop("reserva", 0)
 
     def _vista(self, reg):
         return {
@@ -169,7 +184,11 @@ class FakeOdoo:
         if (model, method) == ("stock.quant", "search_read"):
             ids, loc = args[0][0][2], args[0][1][2]
             return [
-                {"product_id": [pid, ""], "quantity": self.quants.get((loc, pid), 0), "reserved_quantity": 0}
+                {
+                    "product_id": [pid, ""],
+                    "quantity": self.quants.get((loc, pid), 0),
+                    "reserved_quantity": self.reservado.get((loc, pid), 0),
+                }
                 for pid in ids
             ]
         if model == "stock.move":
@@ -205,17 +224,17 @@ class FakeOdoo:
                 for m in self._de_picking(pid):
                     m["state"] = "confirmed"
                 p["state"] = "confirmed"
+                self._reservar(pid)
                 return True
             if method == "action_assign":
-                for m in self._de_picking(pid):
-                    if self.quants.get((m["location_id"], m["product_id"]), 0) >= m["product_uom_qty"]:
-                        m["state"], m["quantity"] = "assigned", m["product_uom_qty"]
+                self._reservar(pid)
                 return True
             if method == "button_validate":
                 movs = self._de_picking(pid)
                 if self.asistente or any(not m["picked"] or m["quantity"] < m["product_uom_qty"] for m in movs):
                     return {"type": "ir.actions.act_window", "res_model": self.asistente or "stock.backorder.confirmation"}
                 for m in movs:
+                    self._soltar(m)
                     m["state"] = "done"
                     origen = (m["location_id"], m["product_id"])
                     destino = (m["location_dest_id"], m["product_id"])
@@ -225,6 +244,7 @@ class FakeOdoo:
                 return self.accion_al_validar or True
             if method == "action_cancel":
                 for m in self._de_picking(pid):
+                    self._soltar(m)
                     m["state"] = "cancel"
                 p["state"] = "cancel"
                 return True
@@ -247,6 +267,10 @@ def _resumen(od):
         (p["picking_type_id"], p["location_id"], p["location_dest_id"], p["state"], p["origin"])
         for p in od.pickings.values()
     ]
+
+
+def _reservas(od):
+    return {k: v for k, v in od.reservado.items() if v}
 
 
 def test_un_metodo_privado_rechazado_como_en_odoo_17(mod):
@@ -295,9 +319,11 @@ def test_un_corte_al_validar_se_reanuda_sin_duplicar(mod, monkeypatch):
     with pytest.raises(ConnectionError):
         _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
     assert od.quants == STOCK_EHV
+    assert _reservas(od) == {(EHV, 101): 2, (EHV, 102): 2, (EHV, 103): 4}, "reservado desde la confirmacion"
     od.cortar_en = {}
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
     assert od.quants == APARTADO_2
+    assert _reservas(od) == {}
     assert len(od.pickings) == 1 and len(od.moves) == 3
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
     assert len(od.pickings) == 1 and len(od.moves) == 3
@@ -399,6 +425,7 @@ def test_un_componente_que_es_kit_se_explota_y_el_picking_se_cancela_sin_mover_s
         _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
     assert _resumen(od)[0][3] == "cancel"
     assert od.quants == STOCK_EHV
+    assert _reservas(od) == {}
 
 
 def test_el_asistente_de_backorder_cancela_el_picking_sin_mover_stock(mod, monkeypatch):
@@ -407,6 +434,18 @@ def test_el_asistente_de_backorder_cancela_el_picking_sin_mover_stock(mod, monke
         _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
     assert _resumen(od)[0][3] == "cancel"
     assert od.quants == STOCK_EHV
+    assert _reservas(od) == {}, "la reserva en EHV se suelta"
+
+
+def test_tras_el_backorder_el_mismo_folio_converge(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, asistente="stock.backorder.confirmation")
+    with pytest.raises(SystemExit):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
+    od.asistente = None
+    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
+    assert [p[3] for p in _resumen(od)] == ["cancel", "done"]
+    assert od.quants == APARTADO_2
+    assert _reservas(od) == {}
 
 
 def test_una_cantidad_que_no_iguala_lo_pedido_no_se_valida(mod, monkeypatch):
@@ -416,6 +455,7 @@ def test_una_cantidad_que_no_iguala_lo_pedido_no_se_valida(mod, monkeypatch):
     assert "button_validate" not in od.llamadas
     assert _resumen(od)[0][3] == "cancel"
     assert od.quants == STOCK_EHV
+    assert _reservas(od) == {}
 
 
 def test_una_accion_de_impresion_con_el_picking_en_done_es_exito(mod, monkeypatch):
@@ -423,3 +463,7 @@ def test_una_accion_de_impresion_con_el_picking_en_done_es_exito(mod, monkeypatc
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
     assert od.quants == APARTADO_2
     assert _resumen(od) == [(INTERNO_EHV, EHV, FBAMX, "done", "Armado F1")]
+    assert od.llamadas["button_validate"] == 1
+    assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
+    assert _resumen(od) == [(INTERNO_EHV, EHV, FBAMX, "done", "Armado F1")], "sin segundo traslado"
+    assert od.quants == APARTADO_2
