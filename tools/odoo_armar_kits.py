@@ -37,7 +37,7 @@ Salvaguardas
   picking.
 * Solo metodos publicos por RPC: Odoo 17 rechaza los que empiezan con guion
   bajo. `action_confirm`, `action_assign`, escribir `quantity`/`picked` en los
-  moves y `button_validate`.
+  moves, `button_validate` y `action_cancel`.
 * El picking lleva en `origin` el folio. Repetir el comando con el mismo folio
   termina un picking a medias o no hace nada si ya esta hecho; nunca duplica.
   Un folio reusado con otro SKU o cantidad aborta.
@@ -46,7 +46,13 @@ Salvaguardas
   estado aborta.
 * Si al confirmar Odoo cambia los productos del picking (un componente que es
   kit se exploto), se cancela el picking sin mover stock.
-* Si al validar Odoo pide el asistente de backorder, aborta sin validar.
+* Antes de validar relee los moves: si `quantity` o `picked` no igualan lo
+  pedido, no valida. Si `button_validate` no deja el picking en done (por
+  ejemplo, devuelve el asistente `stock.backorder.confirmation`), o en el caso
+  anterior, cancela el picking para soltar la reserva en el origen y aborta.
+  Un picking reservado y sin validar le quitaria las piezas a MeLi sin que el
+  destino las reciba. Si `button_validate` devuelve una accion (un reporte para
+  imprimir) con el picking ya en done, es exito.
 
 Uso
 ---
@@ -74,7 +80,9 @@ DB_PATH = os.getenv("BRIDGE_DB", "/data/bridge.db")
 ALMACEN_PRINCIPAL = "EHV"
 SETTINGS_FLEX = ("warehouse_amazon_flex_mx", "warehouse_amazon_fba_mx")
 CAMPOS_ALMACEN = ["id", "name", "code", "lot_stock_id", "int_type_id"]
-CAMPOS_MOVE = ["id", "product_id", "product_uom_qty", "state", "picking_id", "location_id", "location_dest_id"]
+CAMPOS_MOVE = [
+    "id", "product_id", "product_uom_qty", "quantity", "picked", "state", "picking_id", "location_id", "location_dest_id",
+]
 
 
 def plan_de_componentes(lineas_bom: list, cantidad_kits: int) -> list:
@@ -282,6 +290,15 @@ def moves_de(od, picking_id: int) -> list:
     return [m for m in movs if m["state"] != "cancel"]
 
 
+def soltar(od, pid: int, motivo: str):
+    """Cancela el picking para que no quede reservado en el origen, y aborta."""
+    od.kw("stock.picking", "action_cancel", [[pid]])
+    raise SystemExit(
+        f"ERROR: {motivo}; se cancelo el picking {pid} para soltar la reserva. "
+        f"El mismo comando con el mismo folio crea uno nuevo"
+    )
+
+
 def ejecutar(od, t: Traslado, picking, origin: str, etiqueta: str) -> int:
     """Lleva el traslado a done solo con metodos publicos."""
     pid = picking["id"] if picking else None
@@ -335,18 +352,19 @@ def ejecutar(od, t: Traslado, picking, origin: str, etiqueta: str) -> int:
             )
     for m in movs:
         od.kw("stock.move", "write", [[m["id"]], {"quantity": m["product_uom_qty"], "picked": True}])
+    distintos = [
+        m["product_id"][1]
+        for m in moves_de(od, pid)
+        if not m["picked"] or round(m["quantity"], 6) != round(m["product_uom_qty"], 6)
+    ]
+    if distintos:
+        soltar(od, pid, f"tras escribir las cantidades, {distintos} no igualan lo pedido")
 
     res = od.kw("stock.picking", "button_validate", [[pid]])
-    if isinstance(res, dict):
-        if res.get("res_model") != "stock.immediate.transfer":
-            raise SystemExit(
-                f"ERROR: Odoo pidio el asistente '{res.get('res_model')}' al validar el picking "
-                f"{pid}: las cantidades no cuadran con lo pedido; queda sin validar"
-            )
-        od.kw("stock.picking", "button_validate", [[pid]], {"context": {"skip_immediate": True}})
     estado = od.kw("stock.picking", "read", [[pid]], {"fields": ["state"]})[0]["state"]
     if estado != "done":
-        raise SystemExit(f"ERROR: el picking {pid} no quedo en done")
+        accion = res.get("res_model") or res.get("type") if isinstance(res, dict) else res
+        soltar(od, pid, f"al validar, Odoo devolvio {accion!r} y el picking quedo en {estado}")
     return pid
 
 

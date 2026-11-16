@@ -118,12 +118,17 @@ class FakeOdoo:
     `cortar_en` corta la conexion en la llamada numero N a ese metodo de
     stock.picking."""
 
-    def __init__(self, stock, cortar_en=None, recetas=1, tipo_receta="phantom", kits=(), asistente=None):
+    def __init__(
+        self, stock, cortar_en=None, recetas=1, tipo_receta="phantom", kits=(), asistente=None,
+        accion_al_validar=None, tope_quantity=None,
+    ):
         self.quants = dict(stock)
         self.recetas = recetas
         self.tipo_receta = tipo_receta
         self.kits = {KIT, *kits}
         self.asistente = asistente
+        self.accion_al_validar = accion_al_validar
+        self.tope_quantity = tope_quantity
         self.pickings = {}
         self.moves = {}
         self.cortar_en = cortar_en or {}
@@ -131,7 +136,7 @@ class FakeOdoo:
 
     def _move(self, vals, picking_id=False):
         mid = 9000 + len(self.moves)
-        self.moves[mid] = {"id": mid, "state": "draft", "quantity": 0, "picking_id": picking_id, **vals}
+        self.moves[mid] = {"id": mid, "state": "draft", "quantity": 0, "picked": False, "picking_id": picking_id, **vals}
         return mid
 
     def _de_picking(self, pid):
@@ -149,9 +154,9 @@ class FakeOdoo:
             raise SystemExit(
                 f"ERROR Odoo: AccessError: Private methods (such as '{model}.{method}') cannot be called remotely."
             )
-        if model == "stock.picking" and method in self.cortar_en:
+        if model == "stock.picking":
             self.llamadas[method] = self.llamadas.get(method, 0) + 1
-            if self.llamadas[method] == self.cortar_en[method]:
+            if self.llamadas[method] == self.cortar_en.get(method):
                 raise ConnectionError("corte simulado")
         if (model, method) == ("stock.warehouse", "search_read"):
             return [a for a in ALMACENES if _cumple(a, args[0])]
@@ -172,7 +177,10 @@ class FakeOdoo:
                 return [self._vista(m) for m in self.moves.values() if _cumple(m, args[0])]
             if method == "write":
                 for i in args[0]:
-                    self.moves[i].update(args[1])
+                    vals = dict(args[1])
+                    if self.tope_quantity is not None and "quantity" in vals:
+                        vals["quantity"] = min(vals["quantity"], self.tope_quantity)
+                    self.moves[i].update(vals)
                 return True
         if model == "stock.picking":
             if method == "create":
@@ -204,17 +212,17 @@ class FakeOdoo:
                         m["state"], m["quantity"] = "assigned", m["product_uom_qty"]
                 return True
             if method == "button_validate":
-                if self.asistente and not kwargs.get("context", {}).get("skip_immediate"):
-                    return {"type": "ir.actions.act_window", "res_model": self.asistente}
-                for m in self._de_picking(pid):
-                    assert m["picked"] and m["quantity"] == m["product_uom_qty"]
+                movs = self._de_picking(pid)
+                if self.asistente or any(not m["picked"] or m["quantity"] < m["product_uom_qty"] for m in movs):
+                    return {"type": "ir.actions.act_window", "res_model": self.asistente or "stock.backorder.confirmation"}
+                for m in movs:
                     m["state"] = "done"
                     origen = (m["location_id"], m["product_id"])
                     destino = (m["location_dest_id"], m["product_id"])
                     self.quants[origen] = self.quants.get(origen, 0) - m["quantity"]
                     self.quants[destino] = self.quants.get(destino, 0) + m["quantity"]
                 p["state"] = "done"
-                return True
+                return self.accion_al_validar or True
             if method == "action_cancel":
                 for m in self._de_picking(pid):
                     m["state"] = "cancel"
@@ -393,15 +401,25 @@ def test_un_componente_que_es_kit_se_explota_y_el_picking_se_cancela_sin_mover_s
     assert od.quants == STOCK_EHV
 
 
-def test_el_asistente_de_backorder_aborta_sin_validar(mod, monkeypatch):
+def test_el_asistente_de_backorder_cancela_el_picking_sin_mover_stock(mod, monkeypatch):
     od = FakeOdoo(STOCK_EHV, asistente="stock.backorder.confirmation")
     with pytest.raises(SystemExit, match="stock.backorder.confirmation"):
         _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
-    assert _resumen(od)[0][3] == "confirmed"
+    assert _resumen(od)[0][3] == "cancel"
     assert od.quants == STOCK_EHV
 
 
-def test_el_asistente_de_transferencia_inmediata_se_salta_y_valida(mod, monkeypatch):
-    od = FakeOdoo(STOCK_EHV, asistente="stock.immediate.transfer")
+def test_una_cantidad_que_no_iguala_lo_pedido_no_se_valida(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, tope_quantity=1)
+    with pytest.raises(SystemExit, match="no igualan lo pedido"):
+        _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1")
+    assert "button_validate" not in od.llamadas
+    assert _resumen(od)[0][3] == "cancel"
+    assert od.quants == STOCK_EHV
+
+
+def test_una_accion_de_impresion_con_el_picking_en_done_es_exito(mod, monkeypatch):
+    od = FakeOdoo(STOCK_EHV, accion_al_validar={"type": "ir.actions.report", "report_name": "stock.report_picking"})
     assert _correr(mod, monkeypatch, od, "--aplicar", "--folio", "F1") == 0
     assert od.quants == APARTADO_2
+    assert _resumen(od) == [(INTERNO_EHV, EHV, FBAMX, "done", "Armado F1")]
