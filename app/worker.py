@@ -397,6 +397,17 @@ class AmazonTarget:
     skip_reason: str | None
 
 
+@dataclass(frozen=True)
+class AmazonResult:
+    """applied: al menos un PATCH aceptado y ninguna falla ni fila faltante.
+    noop: nada que mandar (todas AFN o marketplace no soportado).
+    error: alguna falla de Amazon, una publicacion sin fila o sin config.
+    """
+
+    status: str
+    detail: str
+
+
 def amazon_get_credentials():
     """Lee credenciales Amazon de bridge_settings."""
     with closing(db_conn()) as conn:
@@ -535,22 +546,26 @@ def amazon_patch_qty(
     return False, "http=429"
 
 
-def amazon_set_qty(sku: str, qty: int) -> str:
+def amazon_set_qty(sku: str, qty: int) -> AmazonResult:
     """Actualiza el stock FBM de cada publicacion mapeada al codigo de Odoo."""
     creds = amazon_get_credentials()
     if not creds["refresh_token"] or not creds["seller_id"]:
-        return "amazon_skip_no_credentials"
+        return AmazonResult("error", "amazon_skip_no_credentials")
     with closing(db_conn()) as conn:
         sql_init_conn(conn)
         targets = amazon_targets(conn, sku)
     if not targets:
-        return f"amazon_skip_no_mapping odoo_sku={sku}"
+        return AmazonResult("error", f"amazon_skip_no_mapping odoo_sku={sku}")
 
     qty_int = int(qty)
     results: list[str] = []
-    ok_count = err_count = skip_count = 0
+    ok_count = err_count = skip_count = missing_count = 0
     for t in targets:
         where = f"{t.seller_sku}@{t.market}"
+        if t.skip_reason == AMAZON_SIN_FILA:
+            missing_count += 1
+            results.append(f"MISSING[{t.seller_sku}] {t.skip_reason}")
+            continue
         if t.skip_reason:
             skip_count += 1
             results.append(f"skip[{where}] {t.skip_reason}")
@@ -570,11 +585,17 @@ def amazon_set_qty(sku: str, qty: int) -> str:
             f"marketplace={t.market} qty={qty_int} {'ok' if sent else 'FAIL'} {info}"
         )
 
+    if err_count or missing_count:
+        status = "error"
+    elif ok_count:
+        status = "applied"
+    else:
+        status = "noop"
     summary = (
         f"amazon_multi_put odoo_sku={sku} targets={len(targets)} ok={ok_count} "
-        f"skip={skip_count} err={err_count} qty={qty_int}"
+        f"skip={skip_count} missing={missing_count} err={err_count} qty={qty_int}"
     )
-    return summary + " | " + " | ".join(results)
+    return AmazonResult(status, summary + " | " + " | ".join(results))
 
 
 def main():
@@ -727,25 +748,25 @@ def main():
             if channel.lower() == "amazon_fbm" and setting_is_true(
                 db_conn(), "amazon_fbm_enabled", "0"
             ):
-                detail = amazon_set_qty(str(sku), int(qty))
-                has_amazon_errors = "FAIL[" in detail
-                mark_event_done(str(event_id), "ok", detail)
-                bump_metric("events_processed_ok_total", 1)
-                bump_metric("events_amazon_applied_total", 1)
-                set_metric("last_success_at", utc_now_iso())
-                if has_amazon_errors:
-                    set_metric("last_error_at", utc_now_iso())
-                    set_metric("last_error", detail[:500])
+                result = amazon_set_qty(str(sku), int(qty))
+                if result.status == "error":
+                    mark_event_done(str(event_id), "error", result.detail)
                     bump_metric("events_processed_error_total", 1)
+                    set_metric("last_error_at", utc_now_iso())
+                    set_metric("last_error", result.detail[:500])
                     print(
-                        f"[{utc_now_iso()}] ERROR job(amazon_partial_fail): channel={channel} "
-                        f"sku={sku} qty={qty} event_id={event_id} {detail}"
+                        f"[{utc_now_iso()}] ERROR job(amazon_fail): channel={channel} "
+                        f"sku={sku} qty={qty} event_id={event_id} {result.detail}"
                     )
-                else:
-                    print(
-                        f"[{utc_now_iso()}] job(amazon_applied): channel={channel} "
-                        f"sku={sku} qty={qty} event_id={event_id} {detail}"
-                    )
+                    continue
+                mark_event_done(str(event_id), "ok", result.detail)
+                bump_metric("events_processed_ok_total", 1)
+                bump_metric(f"events_amazon_{result.status}_total", 1)
+                set_metric("last_success_at", utc_now_iso())
+                print(
+                    f"[{utc_now_iso()}] job(amazon_{result.status}): channel={channel} "
+                    f"sku={sku} qty={qty} event_id={event_id} {result.detail}"
+                )
                 continue
             # 5) listo para adapter noop
             mark_event_done(str(event_id), "ok", "ready_for_adapter_noop")

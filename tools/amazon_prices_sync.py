@@ -201,14 +201,25 @@ def download_report(token: str, document_id: str) -> str:
 
 # ── Parse & Save ──────────────────────────────────────────────────────────────
 def parse_and_save(tsv: str, db, marketplace_id: str, marketplace_name: str):
+    """Deja en amazon_listing_prices exactamente las publicaciones del reporte.
+
+    Las filas de ese marketplace que el reporte ya no trae se borran en la
+    misma transaccion: el worker de stock decide a donde manda PATCH por
+    fulfillment_channel, y una fila vieja que diga DEFAULT lo haria escribir
+    en una publicacion que ya no es FBM o ya no existe. Un reporte sin filas
+    no borra nada, porque es mas probable una descarga rota que una cuenta
+    sin publicaciones.
+    """
     reader = csv.DictReader(io.StringIO(tsv), delimiter="\t")
     count = 0
     skipped = 0
+    vistos = set()
     for row in reader:
         sku = (row.get("seller-sku") or "").strip()
         if not sku:
             skipped += 1
             continue
+        vistos.add(sku)
 
         price_str = (row.get("price") or "").strip()
         price = float(price_str) if price_str else None
@@ -245,9 +256,28 @@ def parse_and_save(tsv: str, db, marketplace_id: str, marketplace_name: str):
         )
         count += 1
 
+    if not vistos:
+        db.rollback()
+        log.error(
+            f"[{marketplace_name}] reporte sin publicaciones: no se toca la tabla"
+        )
+        return
+    fantasmas = [
+        (marketplace_id, r[0])
+        for r in db.execute(
+            "SELECT seller_sku FROM amazon_listing_prices WHERE marketplace_id=?",
+            (marketplace_id,),
+        ).fetchall()
+        if r[0] not in vistos
+    ]
+    db.executemany(
+        "DELETE FROM amazon_listing_prices WHERE marketplace_id=? AND seller_sku=?",
+        fantasmas,
+    )
     db.commit()
     log.info(
-        f"[{marketplace_name}] {count} listings guardados, {skipped} sin SKU ignorados"
+        f"[{marketplace_name}] {count} listings guardados, {skipped} sin SKU "
+        f"ignorados, {len(fantasmas)} que ya no vienen en el reporte borrados"
     )
 
 
