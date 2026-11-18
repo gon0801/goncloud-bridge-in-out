@@ -49,14 +49,10 @@ sigue y se anota por qué.
   sí lo esté. Nunca se espera a una persona. Solo bloquea por seguridad, datos, el comportamiento
   pedido roto o uno de los 4 casos sin su prueba, con el comando que lo reproduce o, si no se puede
   reproducir, la línea exacta y el riesgo. Lo demás va en notas.
-- DeepSeek opina en el PR; el revisor decide. Un hallazgo Low nunca abre otra vuelta.
 - Máximo 2 rondas con el mismo agente. Si lo que queda no es grave, se mergea y lo pendiente va en
   notas. Si queda algo grave, la 3.ª ronda la hace otro modelo más fuerte; solo se detiene si ese
   tampoco puede, y dice por qué.
-- Un cambio grande que altera algo que ya corre en producción va detrás de un interruptor apagado,
-  y lo enciende el revisor cuando lo comprobó. Si no se puede (cambios a la base de datos o a
-  horarios), el PR dice cómo regresarlo.
-- Los encargos o contratos para otro agente son cortos: qué debe pasar y cómo se comprueba.
+- Todo cambio que toca producción dice en el PR cómo regresarlo.
 - Nunca subas llaves ni contraseñas; no uses `--no-verify` sobre la revisión de secretos. Si marca
   algo que no es una llave, se agrega a `.gitleaksignore` con su razón y se sigue.
 - No agregues compuertas (tamaño, lint, tipos, checklists, baterías, CI obligatorio) ni revisiones
