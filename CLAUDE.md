@@ -28,8 +28,8 @@ Este repo integra MercadoLibre y Amazon con Odoo 17. Las órdenes entran a Odoo;
 
 Iguales en todos los repos de David. Si otro documento de este repo dice otra cosa sobre calidad,
 candados, evidencia, rondas o pruebas, manda esto, salvo un plan que David aprobó para ese trabajo:
-ahí manda el plan, salvo en las dos reglas sin excepción. Si una regla no se puede cumplir, el
-trabajo sigue y se anota por qué en el PR. Un paso solo se detiene por secretos, por seguridad, por
+ahí manda el plan, salvo en las dos reglas sin excepción. Si una regla con criterio no se puede
+cumplir, el trabajo sigue y se anota por qué en el PR. Un paso solo se detiene por secretos, por seguridad, por
 algo que el plan no autoriza (borrar datos, gastar, escribir en producción, hablar con terceros en
 nombre de David) o por un bloqueo de revisión que quedó sin resolver; eso espera a David. Lo demás
 no espera a nadie.
