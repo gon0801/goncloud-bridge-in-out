@@ -28,10 +28,11 @@ Este repo integra MercadoLibre y Amazon con Odoo 17. Las órdenes entran a Odoo;
 
 Iguales en todos los repos de David. Si otro documento de este repo dice otra cosa sobre calidad,
 candados, evidencia, rondas o pruebas, manda esto, salvo un plan que David aprobó para ese trabajo:
-ahí manda el plan. Si una regla no se puede cumplir, el trabajo sigue y se anota por qué en el PR.
-Solo se detiene ese paso, hasta resolverlo, por secretos, por seguridad o por algo que el plan no
-autoriza (borrar datos, gastar, escribir en producción, hablar con terceros en nombre de David),
-que espera su aprobación. Lo demás no espera a nadie.
+ahí manda el plan, salvo en las dos reglas sin excepción. Si una regla no se puede cumplir, el
+trabajo sigue y se anota por qué en el PR. Un paso solo se detiene por secretos, por seguridad, por
+algo que el plan no autoriza (borrar datos, gastar, escribir en producción, hablar con terceros en
+nombre de David) o por un bloqueo de revisión que quedó sin resolver; eso espera a David. Lo demás
+no espera a nadie.
 
 Sin excepción:
 
@@ -57,7 +58,8 @@ Con criterio:
 - Sin tope de rondas mientras cada una traiga avance. Si queda un bloqueo concreto, el implementador
   lo corrige y el revisor comprueba la corrección; cuando solo quedan notas, se integra el PR. Si el
   mismo bloqueo vuelve 3 rondas seguidas sin avance, lo revisa otro modelo; si ese tampoco lo
-  resuelve, se escala a David con el bloqueo y su evidencia.
+  resuelve, ese PR queda sin integrar y se avisa a David con el bloqueo y su evidencia. El resto del
+  trabajo sigue.
 - Todo cambio que toca producción dice en el PR cómo regresarlo.
 - Compuertas (tamaño, lint, tipos, checklists, baterías, CI obligatorio) y revisores extra además
   del normal se agregan solo si David lo pide.
