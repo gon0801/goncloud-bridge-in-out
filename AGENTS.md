@@ -36,8 +36,9 @@ No rebuild required — the container mounts `/mnt/data/appdata/bridge/app:/app`
 Iguales en todos los repos de David. Si otro documento de este repo dice otra cosa sobre calidad,
 candados, evidencia, rondas o pruebas, manda esto, salvo un plan que David aprobó para ese trabajo:
 ahí manda el plan. Si una regla no se puede cumplir, el trabajo sigue y se anota por qué en el PR.
-Tres casos sí detienen ese paso hasta resolverlo: secretos, seguridad y escrituras en datos de
-producción que el plan no autoriza.
+Solo se detiene ese paso, hasta resolverlo, por secretos, por seguridad o por algo que el plan no
+autoriza (borrar datos, gastar, escribir en producción, hablar con terceros en nombre de David),
+que espera su aprobación. Lo demás no espera a nadie.
 
 Sin excepción:
 
@@ -60,8 +61,6 @@ Con criterio:
   sí lo esté. La revisión no espera a una persona. Solo bloquea por seguridad, datos, el
   comportamiento pedido roto o uno de los 4 casos sin su prueba, con el comando que lo reproduce o,
   si no se puede reproducir, la línea exacta y el riesgo. Lo demás va en notas.
-- Lo que el plan no autoriza (borrar datos, gastar, escribir en producción, hablar con terceros en
-  nombre de David) espera su aprobación. Lo demás no espera a nadie.
 - Sin tope de rondas mientras cada una traiga avance. Si queda un bloqueo concreto, el implementador
   lo corrige y el revisor comprueba la corrección; cuando solo quedan notas, se integra el PR. Si el
   mismo bloqueo vuelve 3 rondas seguidas sin avance, lo revisa otro modelo; si ese tampoco lo
