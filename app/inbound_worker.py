@@ -1249,6 +1249,16 @@ def process_full(
     )
 
 
+def fbm_so_note(order: dict, visible_ref: str, full_name: str) -> str:
+    """Nota del SO de MeLi FBM. Lleva el numero de envio (`ENVIO=`) delante de
+    `ORDER=` porque ML ya lo imprime en la etiqueta y el ticket del picking
+    (x_ticket.report_picking_80mm) imprime `sale.order.note`. Los lectores de la
+    nota buscan `ORDER=` por patron, no por posicion."""
+    shipping_id = (order.get("shipping") or {}).get("id")
+    envio = f"ENVIO={shipping_id} | " if shipping_id else ""
+    return f"MercadoLibre FBM | {envio}ORDER={visible_ref} | {full_name or 'N/A'}"
+
+
 def process_fbm(
     order: dict,
     order_id: str,
@@ -1309,7 +1319,7 @@ def process_fbm(
             buyer_name + (" " + buyer_last if buyer_last else "")
         ).strip() or "UNKNOWN"
 
-        so_note = f"MercadoLibre FBM | ORDER={visible_ref} | {full_name or 'N/A'}"
+        so_note = fbm_so_note(order, visible_ref, full_name)
 
         rc, out, err = run_tool(
             "inbound_fbm_so_apply_paid_one_shot",
