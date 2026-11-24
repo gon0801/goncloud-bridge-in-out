@@ -64,3 +64,30 @@ def test_el_lector_saca_el_order_de_la_nota_nueva(worker, cerrar):
         cerrar.orden_de_venta("MercadoLibre FBM", "", f"<p>{nota}</p>")
         == "2000011682284817"
     )
+
+
+def test_process_fbm_manda_la_nota_con_el_envio_al_tool(worker, monkeypatch):
+    """La conexion: `process_fbm` tiene que usar la nota nueva. Sin esto, revertir
+    la linea que arma `so_note` dejaba pasar todas las pruebas."""
+    llamadas = []
+    monkeypatch.setattr(worker, "is_enabled", lambda key: True)
+    monkeypatch.setattr(worker, "parse_items", lambda order: [{"sku": "X", "qty": 1}])
+    monkeypatch.setattr(
+        worker,
+        "run_tool",
+        lambda nombre, env, **kw: llamadas.append((nombre, env)) or (0, "", ""),
+    )
+    monkeypatch.setattr(worker, "mark_completed", lambda *a, **k: None)
+    orden = {
+        "shipping": {"id": 46789012345},
+        "buyer": {"nickname": "COMPRADOR1", "last_name": "Perez"},
+    }
+
+    worker.process_fbm(
+        orden, "2000011682284817", "MLM", "paid", "dk", "2000011682284817", "lk"
+    )
+
+    assert [n for n, _ in llamadas] == ["inbound_fbm_so_apply_paid_one_shot"]
+    assert llamadas[0][1]["SO_NOTE"] == (
+        "MercadoLibre FBM | ENVIO=46789012345 | ORDER=2000011682284817 | COMPRADOR1 Perez"
+    )
