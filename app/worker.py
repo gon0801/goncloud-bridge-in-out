@@ -395,6 +395,7 @@ class AmazonTarget:
     market: str
     marketplace_id: str
     skip_reason: str | None
+    preserve_afn: bool = False
 
 
 @dataclass(frozen=True)
@@ -433,8 +434,12 @@ def amazon_targets(conn, odoo_sku: str) -> list[AmazonTarget]:
     En que marketplace existe cada seller SKU y como se surte lo dice
     amazon_listing_prices, el reporte de Amazon que baja amazon-prices-sync,
     no amazon_sku_mapping.keepa_domain: esa columna no tiene migracion y el
-    guardado de la UI la pisa. Solo se escribe donde el canal es DEFAULT
-    (FBM); AFN, Flex y FBA las maneja Amazon.
+    guardado de la UI la pisa.
+
+    En MX/US las publicaciones con canal AMAZON_NA (Flex/FBA) conservan una
+    oferta dual DEFAULT (bodega/Easy Ship) en Amazon; si no se actualiza ese
+    canal DEFAULT, queda congelado con stock viejo y vende sin existencias.
+    Para AMAZON_NA se envia el PATCH preservando AMAZON_NA junto con DEFAULT.
     """
     seller_skus = [
         r[0]
@@ -455,13 +460,19 @@ def amazon_targets(conn, odoo_sku: str) -> list[AmazonTarget]:
             targets.append(AmazonTarget(seller_sku, "?", "", AMAZON_SIN_FILA))
         for marketplace_id, channel in listings:
             market = AMAZON_MARKETPLACES.get(marketplace_id)
+            preserve_afn = False
             if market is None:
                 market, skip = "?", f"marketplace_no_soportado:{marketplace_id}"
-            elif channel != "DEFAULT":
-                skip = f"no_fbm:{channel or 'vacio'}"
-            else:
+            elif channel == "DEFAULT":
                 skip = None
-            targets.append(AmazonTarget(seller_sku, market, marketplace_id, skip))
+            elif channel == "AMAZON_NA":
+                skip = None
+                preserve_afn = True
+            else:
+                skip = f"no_fbm:{channel or 'vacio'}"
+            targets.append(
+                AmazonTarget(seller_sku, market, marketplace_id, skip, preserve_afn)
+            )
     return targets
 
 
@@ -507,6 +518,14 @@ def amazon_patch_qty(
         f"{creds['seller_id']}/{urllib.parse.quote(target.seller_sku, safe='')}"
         f"?marketplaceIds={target.marketplace_id}"
     )
+    availability = (
+        [
+            {"fulfillment_channel_code": "AMAZON_NA"},
+            {"fulfillment_channel_code": "DEFAULT", "quantity": int(qty)},
+        ]
+        if target.preserve_afn
+        else [{"fulfillment_channel_code": "DEFAULT", "quantity": int(qty)}]
+    )
     body = json.dumps(
         {
             "productType": "PRODUCT",
@@ -514,9 +533,7 @@ def amazon_patch_qty(
                 {
                     "op": "replace",
                     "path": "/attributes/fulfillment_availability",
-                    "value": [
-                        {"fulfillment_channel_code": "DEFAULT", "quantity": int(qty)}
-                    ],
+                    "value": availability,
                 }
             ],
         }

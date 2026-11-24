@@ -178,19 +178,29 @@ def entorno(request, tmp_path, monkeypatch):
     return worker, amazon, db_path
 
 
-def test_cada_publicacion_fbm_recibe_el_stock_en_su_marketplace(entorno):
+def test_cada_publicacion_fbm_y_dual_afn_recibe_el_stock_en_su_marketplace(entorno):
     worker, amazon, _ = entorno
     detalle = worker.amazon_set_qty("SET-A", 7).detail
 
     enviados = sorted((p["seller_sku"], p["marketplace"]) for p in amazon.patches)
-    assert enviados == [("S-MX", MX), ("S-US", US)]
-    for p in amazon.patches:
-        assert p["method"] == "PATCH"
-        assert p["availability"] == [
+    assert enviados == [
+        ("S-MX", MX),
+        ("S-MX-FLEX", MX),
+        ("S-MX-FLEX", US),
+        ("S-US", US),
+    ]
+    por_clave = {(p["seller_sku"], p["marketplace"]): p for p in amazon.patches}
+    for clave in (("S-MX", MX), ("S-US", US)):
+        assert por_clave[clave]["method"] == "PATCH"
+        assert por_clave[clave]["availability"] == [
             {"fulfillment_channel_code": "DEFAULT", "quantity": 7}
         ]
-    assert "skip[S-MX-FLEX@MX] no_fbm:AMAZON_NA" in detalle
-    assert "skip[S-MX-FLEX@US] no_fbm:AMAZON_NA" in detalle
+    for clave in (("S-MX-FLEX", MX), ("S-MX-FLEX", US)):
+        assert por_clave[clave]["method"] == "PATCH"
+        assert por_clave[clave]["availability"] == [
+            {"fulfillment_channel_code": "AMAZON_NA"},
+            {"fulfillment_channel_code": "DEFAULT", "quantity": 7},
+        ]
     assert "FAIL[" not in detalle
 
 
@@ -211,7 +221,7 @@ def test_el_token_de_lwa_se_reusa_entre_jobs(entorno):
     worker.amazon_set_qty("SET-A", 7)
     worker.amazon_set_qty("SET-B", 3)
     assert amazon.tokens == 1
-    assert len(amazon.patches) == 3
+    assert len(amazon.patches) == 5
 
 
 def test_rechazo_de_amazon_queda_como_falla_y_429_se_reintenta(entorno):
@@ -232,7 +242,7 @@ def test_job_con_todas_las_publicaciones_aceptadas_cuenta_como_aplicado(entorno)
     worker, amazon, db_path = entorno
     status, metricas = _correr_job(worker, db_path, "SET-A")
 
-    assert len(amazon.patches) == 2
+    assert len(amazon.patches) == 4
     assert status == "ok"
     assert metricas == {
         "events_processed_ok_total": "1",
@@ -260,7 +270,12 @@ def test_falla_parcial_no_cuenta_como_aplicado(entorno):
 
     status, metricas = _correr_job(worker, db_path, "SET-A")
 
-    assert sorted(p["seller_sku"] for p in amazon.patches) == ["S-MX", "S-US"]
+    assert sorted(p["seller_sku"] for p in amazon.patches) == [
+        "S-MX",
+        "S-MX-FLEX",
+        "S-MX-FLEX",
+        "S-US",
+    ]
     assert status == "error"
     assert metricas == {"events_processed_error_total": "1"}
 
