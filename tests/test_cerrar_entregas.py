@@ -577,6 +577,19 @@ def test_pack_con_una_orden_cancelada_valida_solo_la_viva_y_avisa(mod):
             "<p>MercadoLibre FBM | ORDER=2000011682284817 | X</p>",
             "2000011682284817",
         ),
+        # Nota con ENVIO= delante de ORDER= (formato nuevo): el id sigue siendo ORDER.
+        (
+            "MercadoLibre FBM",
+            "",
+            "<p>MercadoLibre FBM | ENVIO=46789012345 | ORDER=2000011682284817 | X</p>",
+            "2000011682284817",
+        ),
+        (
+            "MercadoLibre FBM",
+            "2000019433591650 | X",
+            "<p>MercadoLibre FBM | ENVIO=46789012345 | ORDER=2000015948650289 | X</p>",
+            "2000019433591650",
+        ),
         ("Amazon Flex MX", "701-5245201-0475457", "", "701-5245201-0475457"),
         (
             "Amazon FBM US",
